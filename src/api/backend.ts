@@ -24,6 +24,8 @@ import type {
   EnvVariableSet,
   EnvWriteBackRequest,
   EnvWriteBackResult,
+  FlowScriptDryRunRequest,
+  FlowScriptDryRunResult,
   ExecuteTemporaryScriptRequest,
   ExtendBreakpointRequest,
   InterceptorCreateRequest,
@@ -125,6 +127,12 @@ export interface Backend {
     saveGlobals(request: ReplaceEnvGlobalsRequest): Promise<EnvGlobalVariables>;
     writeBack(request: EnvWriteBackRequest): Promise<EnvWriteBackResult>;
   };
+  /**
+   * 流程 pre/post 脚本试跑（计划 Task 18）：在服务端 flow 引擎载荷里以一次性
+   * VM 执行脚本并返回结果/错误分类，不落库不广播。未实现时脚本编辑器不展示
+   * 「试跑」入口。
+   */
+  flowScriptDryRun?(request: FlowScriptDryRunRequest): Promise<FlowScriptDryRunResult>;
   readonly host?: HostOperations;
 
   fetchBody(target: BodyTarget, side: BodySide, maxSize?: number): Promise<LoadedBody>;

@@ -19,6 +19,8 @@ import type {
   EnvVariableSet,
   EnvWriteBackRequest,
   EnvWriteBackResult,
+  FlowScriptDryRunRequest,
+  FlowScriptDryRunResult,
   ExecuteTemporaryScriptRequest,
   ExtendBreakpointRequest,
   HttpApiChange,
@@ -427,6 +429,8 @@ export function createHttpBackend(
       writeBack: (request: EnvWriteBackRequest) =>
         call<EnvWriteBackResult>("/api/env-write-back", json("POST", request)),
     },
+    flowScriptDryRun: (request: FlowScriptDryRunRequest) =>
+      call<FlowScriptDryRunResult>("/api/flow/script/dry-run", json("POST", request)),
     getSystemLogs: (requestValue: SystemLogsQuery) =>
       call(query("/api/system-logs", requestValue as unknown as Record<string, unknown>)),
     clearSystemLogs: () => call("/api/system-logs", json("DELETE")),

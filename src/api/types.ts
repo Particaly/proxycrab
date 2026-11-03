@@ -647,6 +647,39 @@ export interface EnvWriteBackResult {
   dropped: number;
 }
 
+// ---------- flow script dry-run (flow/dry_run.rs; wire format is camelCase) ----------
+
+/** 脚本模式：pre = 前置处理（请求前），post = 后置处理（响应后） */
+export type FlowScriptSide = "pre" | "post";
+
+/** 试跑错误分类（对齐引擎 ScriptError.kind 的有限集合） */
+export type FlowScriptDryRunErrorKind =
+  "syntax" | "blocked" | "runtime" | "timeout" | "invalid-return";
+
+export interface FlowScriptDryRunRequest {
+  side: FlowScriptSide;
+  script: string;
+  /** pre 脚本的样例入参（上游聚合对象，任意 JSON） */
+  sampleInput?: unknown;
+  /** post 脚本的样例响应信封（任意 JSON） */
+  sampleResponse?: unknown;
+}
+
+export interface FlowScriptDryRunError {
+  kind: FlowScriptDryRunErrorKind;
+  /** 面向用户的可读信息（服务端已本地化） */
+  message: string;
+}
+
+/** 一次脚本试跑的结果：成功带返回值与警告列表，失败带分类错误 */
+export interface FlowScriptDryRunResult {
+  ok: boolean;
+  /** 成功返回值：pre 为请求上下文覆盖对象，post 为节点 output（未 return 时默认 response.body） */
+  value?: unknown;
+  warnings: string[];
+  error?: FlowScriptDryRunError;
+}
+
 export interface HttpServiceStatus {
   running: boolean;
   host: string;
