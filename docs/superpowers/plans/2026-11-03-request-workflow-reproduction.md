@@ -214,9 +214,9 @@
 - Modify: `crates/proxy-crab-mgr/src/{http.rs,dto.rs,manager.rs,permission.rs}`
 - Modify: `docs/backend-api.md`
 
-- [ ] **Step 1: 路由**：项目/流程 CRUD、图保存（整体替换）、`POST /api/workflows/{id}/validate`。
-- [ ] **Step 2: 权限登记**：读 `allow`、写 `approval`、删 `approval`。
-- [ ] **Step 3: 契约测试** + 分享面不实现。
+- [x] **Step 1: 路由**：项目/流程 CRUD、图保存（整体替换）、`POST /api/workflows/{id}/validate`。
+- [x] **Step 2: 权限登记**：读 `allow`、写 `approval`、删 `approval`。
+- [x] **Step 3: 契约测试** + 分享面不实现。
 
 ### Task 12: 画布窗口骨架
 
