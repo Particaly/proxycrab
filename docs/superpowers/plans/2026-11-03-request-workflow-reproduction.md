@@ -154,10 +154,10 @@
 - Modify: `crates/proxy-crab-mgr/src/http.rs`、`crates/proxy-crab-mgr/src/dto.rs`、`crates/proxy-crab-mgr/src/manager.rs`、`crates/proxy-crab-mgr/src/permission.rs`
 - Modify: `crates/proxy-crab-mgr/tests/permission_contract.rs`
 
-- [ ] **Step 1: 路由**：`GET/POST /api/request-library`、`GET/PUT/DELETE /api/request-library/{id}`、`POST /api/request-library/from-capture`、`GET /api/request-library/{id}/body`。
-- [ ] **Step 2: 权限目录登记**：读 `allow`、写 `approval`、删 `approval`（并更新 `docs/backend-api.md`）。
-- [ ] **Step 3: 契约测试**：权限契约 + DTO 形状（含分页与上限）。
-- [ ] **Step 4: 分享面**：`share-backend.ts` 明确不实现（自动隐藏入口）。
+- [x] **Step 1: 路由**：`GET/POST /api/request-library`、`GET/PUT/DELETE /api/request-library/{id}`、`POST /api/request-library/from-capture`、`GET /api/request-library/{id}/body`。
+- [x] **Step 2: 权限目录登记**：读 `allow`、写 `approval`、删 `approval`（并更新 `docs/backend-api.md`）。
+- [x] **Step 3: 契约测试**：权限契约 + DTO 形状（含分页与上限）。
+- [x] **Step 4: 分享面**：`share-backend.ts` 明确不实现（自动隐藏入口）。
 
 ### Task 7: 请求库窗口
 
