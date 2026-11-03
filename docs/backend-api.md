@@ -297,16 +297,14 @@ browser UI.
 | `/api/env-globals` | `PUT` replace the global variables table (default: `approval`) |
 | `/api/env-write-back` | `POST` script env write-back batches into a set (default: `approval`) |
 | `/api/system-logs` | `GET`, `DELETE` |
-<<<<<<< HEAD
 | `/api/flow-projects`, `/api/flow-projects/{id}` | workflow project CRUD (`GET` default: `allow`; `POST`/`PUT`/`DELETE` default: `approval`) |
 | `/api/workflows`, `/api/workflows/{id}` | workflow definition CRUD with whole-graph save (`GET` default: `allow`; `POST`/`PUT`/`DELETE` default: `approval`) |
 | `/api/workflows/{id}/validate` | `POST` run the structural graph validator (default: `allow`; read-only despite the POST verb) |
-=======
 | `/api/request-library` | `GET` filtered page, `POST` manual entry (both default: `allow`/`approval`) |
 | `/api/request-library/{id}` | `GET` (default: `allow`); `PUT` partial update, `DELETE` (both default: `approval`) |
 | `/api/request-library/from-capture` | `POST` ingest one capture (default: `approval`) |
 | `/api/request-library/{id}/body` | `GET` raw stored request body (default: `allow`) |
->>>>>>> roadmap/task-6
+| `/api/flow/script/dry-run` | `POST` dry-run one pre/post script against a sample payload in a throwaway flow VM (default: `approval`; request body is excluded from the audit preview) |
 
 System logs accept `after_seq` and are capped at 10,000 entries.
 
@@ -1089,6 +1087,7 @@ camelCase and identical to the stored documents (`Project` / `Workflow` with `no
 | `PUT /api/workflows/{id}` | `approval` | partial update; `nodes`+`edges` form one graph unit and must be sent together (whole replacement) — sending only one returns `400 bad_request` |
 | `DELETE /api/workflows/{id}` | `approval` | deletes the definition |
 | `POST /api/workflows/{id}/validate` | `allow` | runs `validate_workflow_graph` on the stored definition and returns `{issues:[{code,message,nodeIds}]}`; an empty list means the graph is valid. Registered as a read (`allow`) because the operation is read-only despite the POST verb (POST = "execute validation") |
+| `POST /api/flow/script/dry-run` | `approval` | dry-run one pre/post script against a sample payload (plan Task 18); body `{side:"pre"\|"post",script,sampleInput?,sampleResponse?}`. The script executes in the flow engine payload inside a throwaway VM with a 5s timeout plus the runtime instruction/memory limits. Returns `{ok,value,warnings}` on success or `{ok:false,error:{kind,message}}` with kind `syntax\|blocked\|runtime\|timeout\|invalid-return`. Nothing is created, persisted, broadcast, or replayed, and the request body is excluded from the permission audit preview so script content never reaches logs or the approval window |
 
 Writes persist documents at the current `schemaVersion`; lower-version documents migrate on read.
 Shape violations (empty name, empty `projectId`, unsupported schema version, missing node ids,

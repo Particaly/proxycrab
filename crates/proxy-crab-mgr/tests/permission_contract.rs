@@ -20,7 +20,7 @@ fn permission_catalog_contains_every_unique_route_action() {
         .map(|action| action.id)
         .collect::<BTreeSet<_>>();
 
-    assert_eq!(actions.len(), 107);
+    assert_eq!(actions.len(), 108);
     assert_eq!(ids.len(), actions.len());
     assert!(
         actions
@@ -133,6 +133,7 @@ fn permission_catalog_has_the_confirmed_default_matrix() {
         "DELETE /api/request-library/{id}",
         "DELETE /api/session-shares/{id}",
         "POST /api/flow-projects",
+        "POST /api/flow/script/dry-run",
         "POST /api/workflows",
         "PUT /api/flow-projects/{id}",
         "PUT /api/workflows/{id}",
@@ -206,6 +207,20 @@ fn permission_lookup_uses_both_method_and_route_template() {
             .unwrap()
             .default_mode,
         PermissionMode::Allow
+    );
+    // Script dry-run (plan Task 18): arbitrary script execution defaults to
+    // approval, and the route is addressable for the audit preview bypass.
+    assert_eq!(
+        find_api_action("POST", "/api/flow/script/dry-run")
+            .unwrap()
+            .default_mode,
+        PermissionMode::Approval
+    );
+    assert_eq!(
+        api_actions_for_path("/api/flow/script/dry-run")
+            .map(|action| action.id)
+            .collect::<Vec<_>>(),
+        vec!["POST /api/flow/script/dry-run"]
     );
     assert_eq!(
         find_api_action("GET", "/api/flow-projects/{id}")

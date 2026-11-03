@@ -45,7 +45,7 @@ use crate::{
         ExecuteTemporaryScriptRequest, ExtendBreakpointRequest, FlowListQuery,
         FlowProjectCreateRequest, FlowProjectUpdateRequest, HttpApiChange, HttpApiResource,
         IngestCaptureRequest, InterceptorCreateRequest, InterceptorUpdateRequest,
-        LogIdsRequest, LogViewsRequest, ManagerError, ManagerResult,
+        FlowScriptDryRunRequest, LogIdsRequest, LogViewsRequest, ManagerError, ManagerResult,
         ReplaceActiveEnvSetRequest, ReplaceEnvGlobalsRequest,
         ReplaceSessionInterceptorsRequest, ReplaceSessionViewRequest, ReplayRequestPayload,
         RequestLibraryBodyQuery, RequestLibraryQuery, RoutingSelection, SaveEnvSetRequest,
@@ -441,6 +441,7 @@ fn router_with_changes_and_extra(
             get(workflow).put(update_workflow).delete(delete_workflow),
         )
         .route("/api/workflows/{id}/validate", post(validate_workflow))
+        .route("/api/flow/script/dry-run", post(flow_script_dry_run))
         .route(
             "/api/request-library",
             get(request_library_list).post(request_library_create),
@@ -516,6 +517,10 @@ fn secured_router_with_changes_and_extra(
 
 const BODY_PREVIEW_LIMIT: usize = 16 * 1024;
 
+/// 脚本试跑端点的权限目录 action id：该请求体整体跳过审计/审批预览
+/// （请求体内嵌脚本内容，不写入任何日志或审批展示）。
+const FLOW_SCRIPT_DRY_RUN_ACTION_ID: &str = "POST /api/flow/script/dry-run";
+
 async fn authorize_request(
     State(permissions): State<Arc<dyn PermissionManager>>,
     request: Request,
@@ -573,8 +578,14 @@ async fn authorize_request(
         .and_then(|value| value.parse().ok());
     let actual_path = request.uri().path().to_owned();
     let query = request.uri().query().map(str::to_owned);
+    // The script dry-run request body embeds the whole script source; it is
+    // kept out of the audit/approval preview entirely (plan Task 18 Step 4).
     let (request, body_preview, body_preview_truncated) =
-        preview_request_body(request, content_type.as_deref()).await;
+        if action.id == FLOW_SCRIPT_DRY_RUN_ACTION_ID {
+            (request, None, false)
+        } else {
+            preview_request_body(request, content_type.as_deref()).await
+        };
 
     let permission = PermissionAction {
         action,
@@ -1670,6 +1681,16 @@ async fn validate_workflow(
     success(json!({ "issues": manager.validate_workflow(id).await? }))
 }
 
+// Pre/post script dry-run (plan Task 18): executes in a throwaway flow VM —
+// no entity is created, nothing is persisted or broadcast, and the request
+// body (which embeds the script) is excluded from the permission audit preview.
+async fn flow_script_dry_run(
+    State(manager): State<ManagerState>,
+    ApiJson(request): ApiJson<FlowScriptDryRunRequest>,
+) -> ApiResult {
+    success(manager.flow_script_dry_run(request).await?)
+}
+
 // Environment variable sets and global variables; reads return masked secret
 // values, writes restore stored plaintext for values left masked.
 
@@ -2549,6 +2570,53 @@ mod tests {
                 body_preview_truncated: false,
             }]
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn script_dry_run_executes_and_keeps_body_out_of_audit_preview() {
+        let app_data = tempdir().unwrap();
+        let runtime = ProxyCrab::open(app_data.path(), Arc::new(LogBuffer::default())).unwrap();
+        let manager = MitmManager::new(runtime);
+        let (permissions, recorded) = recording_permissions(None);
+        let app = router(manager, permissions);
+        let body = json!({
+            "side": "pre",
+            "script": "return { url: input.baseUrl + '/api' }",
+            "sampleInput": { "baseUrl": "https://example.test" },
+        })
+        .to_string();
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/flow/script/dry-run")
+                    .header("content-type", "application/json")
+                    .header("authorization", "Bearer pcrab_example")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let envelope: Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), usize::MAX).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(envelope["ok"], json!(true), "envelope: {envelope}");
+        assert_eq!(envelope["data"]["ok"], json!(true), "envelope: {envelope}");
+        assert_eq!(
+            envelope["data"]["value"]["url"],
+            json!("https://example.test/api"),
+            "envelope: {envelope}"
+        );
+        // 请求体（内嵌脚本内容）不进权限审计预览：body_preview 必须整体缺席
+        let recorded = recorded.lock().unwrap();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].id, "POST /api/flow/script/dry-run");
+        assert_eq!(recorded[0].body_preview, None);
+        assert!(!recorded[0].body_preview_truncated);
     }
 
     #[tokio::test]

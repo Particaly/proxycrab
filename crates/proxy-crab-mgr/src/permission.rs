@@ -254,6 +254,11 @@ pub static API_ACTIONS: &[ApiAction] = &[
     // validator (no mutation), so despite the POST verb it is registered as a
     // read (`allow`) — the POST is the "execute validation" semantics.
     action!("POST", "/api/workflows/{id}/validate", Allow),
+    // Pre/post script dry-run executes user script code in the flow engine
+    // payload (plan Task 18): arbitrary code execution, so it defaults to
+    // `approval`; the request body is excluded from the audit preview so the
+    // script content never reaches logs or the approval window.
+    action!("POST", "/api/flow/script/dry-run", Approval),
 ];
 
 pub const OBSOLETE_API_ACTION_IDS: &[&str] = &[
