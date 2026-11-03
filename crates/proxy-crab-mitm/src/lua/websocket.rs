@@ -13,12 +13,15 @@ pub(crate) struct WsMessageInput {
     pub body: WsBody,
 }
 
+/// 懒读取消息体的一次性结果缓存；`Err` 为读取失败文案。
+pub(crate) type LazyBodyCache = Arc<OnceLock<Result<Option<Arc<[u8]>>, String>>>;
+
 #[derive(Clone)]
 pub(crate) enum WsBody {
     Ready(Arc<[u8]>),
     Lazy {
         read: Arc<dyn Fn() -> anyhow::Result<Option<Vec<u8>>> + Send + Sync>,
-        cached: Arc<OnceLock<Result<Option<Arc<[u8]>>, String>>>,
+        cached: LazyBodyCache,
     },
 }
 

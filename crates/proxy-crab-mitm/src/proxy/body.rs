@@ -125,10 +125,13 @@ impl DeferredBodyReader {
     }
 }
 
+/// 惰性 body 泵的接收端；`Some` 表示读取通道尚未被消费。
+type DeferredReceiver = Mutex<Option<mpsc::Receiver<Result<Frame<Bytes>, BoxError>>>>;
+
 pub(crate) struct DeferredBody {
     reader: DeferredBodyReader,
     sender: mpsc::UnboundedSender<DeferredCommand>,
-    receiver: Mutex<Option<mpsc::Receiver<Result<Frame<Bytes>, BoxError>>>>,
+    receiver: DeferredReceiver,
     size_hint: hyper::body::SizeHint,
     end_stream: bool,
     done: Option<oneshot::Receiver<PumpResult>>,

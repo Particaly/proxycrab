@@ -330,18 +330,13 @@ pub enum BodyPayload {
 /// Where a request/response Body comes from: the original network bytes, an inline replacement
 /// string, or a workspace Asset. Shared by the final Body after interceptors and by the Body
 /// captured in interceptor-entry snapshots.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum BodySourceType {
+    #[default]
     Original,
     String { content: String },
     Asset { asset_id: String },
-}
-
-impl Default for BodySourceType {
-    fn default() -> Self {
-        Self::Original
-    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]

@@ -183,7 +183,7 @@ impl Chain {
                         self.queue.push_back(Pending {
                             side: send.side,
                             kind: send.kind,
-                            body: send.body.into(),
+                            body: send.body,
                             started_at: now_millis(),
                             next: position + 1,
                             root: meta.root.clone(),

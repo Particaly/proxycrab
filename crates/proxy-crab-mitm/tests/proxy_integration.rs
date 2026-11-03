@@ -2855,10 +2855,12 @@ async fn old_ca_url_over_http2_uses_normal_interceptors_and_capture() {
 async fn wait_capture_success(runtime: &ProxyCrab, session_id: u64, id: u64) {
     timeout(Duration::from_secs(5), async {
         loop {
-            if let Some(detail) = runtime.capture(session_id, id).unwrap() {
-                if detail.summary.outcome == CaptureOutcome::Success {
-                    return;
-                }
+            if runtime
+                .capture(session_id, id)
+                .unwrap()
+                .is_some_and(|detail| detail.summary.outcome == CaptureOutcome::Success)
+            {
+                return;
             }
             sleep(Duration::from_millis(10)).await;
         }

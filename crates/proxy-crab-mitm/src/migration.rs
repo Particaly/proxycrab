@@ -304,7 +304,7 @@ fn migrate_final_body(
                 .expect("modified body path has a filename")
                 .to_string_lossy();
             let metadata = import_migration_asset(
-                &assets,
+                assets,
                 &format!("mig/{session_id}/{filename}"),
                 &modified,
                 content_type,

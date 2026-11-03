@@ -182,9 +182,9 @@ impl CaptureStore {
         after_id: u32,
         limit: usize,
     ) -> Result<Option<crate::websocket::WebSocketPage>> {
-        if !self
+        if self
             .websocket_info(id)?
-            .is_some_and(|i| i.websocket_log_id == id)
+            .is_none_or(|i| i.websocket_log_id != id)
         {
             return Ok(None);
         }
@@ -202,9 +202,9 @@ impl CaptureStore {
         side: BodySide,
         message_id: u32,
     ) -> Result<Option<Vec<u8>>> {
-        if !self
+        if self
             .websocket_info(id)?
-            .is_some_and(|i| i.websocket_log_id == id)
+            .is_none_or(|i| i.websocket_log_id != id)
         {
             return Ok(None);
         }
