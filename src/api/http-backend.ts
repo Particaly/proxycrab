@@ -11,8 +11,14 @@ import type {
   ClashConfig,
   CreatedApiKey,
   CreateAgentsPresetRequest,
+  CreateEnvSetRequest,
   CreateSessionRequest,
   DebugFilterScriptRequest,
+  EnvGlobalVariables,
+  EnvSetsPayload,
+  EnvVariableSet,
+  EnvWriteBackRequest,
+  EnvWriteBackResult,
   ExecuteTemporaryScriptRequest,
   ExtendBreakpointRequest,
   HttpApiChange,
@@ -32,7 +38,9 @@ import type {
   ReplaceSessionViewRequest,
   ReplayRequestPayload,
   ReplayResult,
+  ReplaceEnvGlobalsRequest,
   RoutingSelection,
+  SaveEnvSetRequest,
   SessionShareState,
   SessionSharesPayload,
   SessionShareConfig,
@@ -402,6 +410,22 @@ export function createHttpBackend(
       get: () => call<ClashConfig>("/api/clash-config"),
       save: (yaml) => call<ClashConfig>("/api/clash-config", json("PUT", { yaml })),
       reset: () => call<ClashConfig>("/api/clash-config", json("DELETE")),
+    },
+    envSets: {
+      get: () => call<EnvSetsPayload>("/api/env-sets"),
+      create: (request: CreateEnvSetRequest) => call<EnvVariableSet>("/api/env-sets", json("POST", request)),
+      save: (id: string, request: SaveEnvSetRequest) =>
+        call<EnvVariableSet>(`/api/env-sets/${encodeURIComponent(id)}`, json("PUT", request)),
+      remove: (id: string) =>
+        call<void>(`/api/env-sets/${encodeURIComponent(id)}`, json("DELETE")),
+      setActive: (id: string | null) =>
+        call<{ activeSetId: string | null }>("/api/env-sets/active", json("PUT", { setId: id })).then(
+          (payload) => payload.activeSetId,
+        ),
+      saveGlobals: (request: ReplaceEnvGlobalsRequest) =>
+        call<EnvGlobalVariables>("/api/env-globals", json("PUT", request)),
+      writeBack: (request: EnvWriteBackRequest) =>
+        call<EnvWriteBackResult>("/api/env-write-back", json("POST", request)),
     },
     getSystemLogs: (requestValue: SystemLogsQuery) =>
       call(query("/api/system-logs", requestValue as unknown as Record<string, unknown>)),

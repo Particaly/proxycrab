@@ -34,8 +34,9 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::{
-    flow::model::{
-        Project, Workflow, WorkflowNode, WORKFLOW_SCHEMA_VERSION, migrate_workflow,
+    flow::{
+        env_sets::{EnvGlobalVariables, validate_variables_table},
+        model::{Project, Workflow, WorkflowNode, WORKFLOW_SCHEMA_VERSION, migrate_workflow},
     },
     workspace::write_json_atomic,
 };
@@ -45,12 +46,11 @@ pub const FLOW_DIRECTORY: &str = "flow";
 pub(crate) const REQUEST_LIBRARY_DIRECTORY: &str = "request-library";
 const PROJECTS_DIRECTORY: &str = "projects";
 const WORKFLOWS_DIRECTORY: &str = "workflows";
-const ENV_SETS_FILE: &str = "env-sets.json";
 /// Run record database location under `flow/`; the SQLite schema is owned by
 /// the run record storage tasks and the file is created on first use only.
 pub const RUNS_DATABASE_FILE: &str = "runs.db";
 /// Current envelope schema version of `env-sets.json`; bump together with a
-/// migration when the envelope layout evolves.
+/// migration registered in [`crate::flow::env_sets`] when the layout evolves.
 pub const ENV_SETS_SCHEMA_VERSION: u32 = 1;
 
 /// Request library model: lives in [`crate::flow::request_library`] (typed HAR
@@ -88,12 +88,20 @@ pub struct EnvVariableSet {
     pub updated_at: u64,
 }
 
-/// Versioned envelope persisted as `flow/env-sets.json`.
+/// Versioned envelope persisted as `flow/env-sets.json` (file layout is owned
+/// by [`crate::flow::env_sets`]: migration, globals and the activation
+/// preference live there).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct EnvSetsEnvelope {
     pub schema_version: u32,
     pub sets: Vec<EnvVariableSet>,
+    /// Currently activated set id (preference); absent = no active env.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_set_id: Option<String>,
+    /// Global variables table (normal + secret values).
+    #[serde(default)]
+    pub globals: EnvGlobalVariables,
 }
 
 /// A flow entity persisted as one JSON document per id inside a flow directory.
@@ -207,7 +215,7 @@ fn validate_node(node: &WorkflowNode) -> Result<()> {
 }
 
 impl EnvVariableSet {
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         validate_flow_id(&self.id)?;
         if self.name.trim().is_empty() {
             bail!(
@@ -215,6 +223,8 @@ impl EnvVariableSet {
                 self.id
             );
         }
+        validate_variables_table(&self.values)?;
+        validate_variables_table(&self.secret_values)?;
         Ok(())
     }
 }
@@ -342,38 +352,6 @@ pub(crate) fn delete_entity<T: FlowEntity>(flow_root: &Path, id: &str) -> Result
     }
 }
 
-/// Envelope as read from disk: raw set entries so one corrupt entry does not
-/// hide the remaining sets.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RawEnvSetsEnvelope {
-    schema_version: u32,
-    sets: Vec<serde_json::Value>,
-}
-
-/// Read and validate the envelope structure (version check), returning raw set
-/// entries; per-entry sanitization is the caller's policy.
-fn read_env_sets_entries(bytes: &[u8]) -> Result<Vec<serde_json::Value>> {
-    let raw: RawEnvSetsEnvelope = serde_json::from_slice(bytes)
-        .context("flow env-sets.json is corrupt")?;
-    if raw.schema_version != ENV_SETS_SCHEMA_VERSION {
-        bail!(
-            "flow env-sets.json schema version {} is not supported (expected {})",
-            raw.schema_version,
-            ENV_SETS_SCHEMA_VERSION
-        );
-    }
-    Ok(raw.sets)
-}
-
-fn parse_env_set(value: serde_json::Value) -> Result<EnvVariableSet> {
-    serde_json::from_value(value).map_err(|error| anyhow!("corrupt environment variable set: {error}"))
-}
-
-fn env_sets_path(flow_root: &Path) -> PathBuf {
-    flow_root.join(ENV_SETS_FILE)
-}
-
 /// Read/write access to the flow directory family of one workspace.
 pub struct FlowStore {
     pub(crate) flow_root: PathBuf,
@@ -477,101 +455,6 @@ impl FlowStore {
         delete_entity::<Workflow>(&self.flow_root, id)
     }
 
-    /// Read all environment variable sets. A missing file yields an empty
-    /// list; a corrupt or unsupported envelope degrades to empty with a
-    /// warning so environment data never blocks callers.
-    pub fn list_env_sets(&self) -> Result<Vec<EnvVariableSet>> {
-        let bytes = match fs::read(env_sets_path(&self.flow_root)) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => return Err(error).context("failed to read flow env-sets.json"),
-        };
-        let entries = match read_env_sets_entries(&bytes) {
-            Ok(entries) => entries,
-            Err(error) => {
-                tracing::warn!("degrading flow environment variable sets to empty: {error:#}");
-                return Ok(Vec::new());
-            }
-        };
-        let mut sets = Vec::new();
-        for entry in entries {
-            match parse_env_set(entry) {
-                Ok(set) => sets.push(set),
-                Err(error) => {
-                    tracing::warn!("ignoring corrupt environment variable set: {error:#}")
-                }
-            }
-        }
-        Ok(sets)
-    }
-
-    /// Insert or replace one environment variable set, preserving the other
-    /// sets and their order. A corrupt or unsupported envelope refuses the
-    /// save with a readable error (never silently wiped); corrupt individual
-    /// entries are dropped with a warning.
-    pub fn save_env_set(&self, set: &EnvVariableSet) -> Result<()> {
-        set.validate()?;
-        let _guard = WRITE_LOCK.lock().expect("flow write lock poisoned");
-        let path = env_sets_path(&self.flow_root);
-        let mut sets = match fs::read(&path) {
-            Ok(bytes) => {
-                let mut parsed = Vec::new();
-                for entry in read_env_sets_entries(&bytes)? {
-                    match parse_env_set(entry) {
-                        Ok(existing) => parsed.push(existing),
-                        Err(error) => tracing::warn!(
-                            "dropping corrupt environment variable set during save: {error:#}"
-                        ),
-                    }
-                }
-                parsed
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-            Err(error) => return Err(error).context("failed to read flow env-sets.json"),
-        };
-        match sets.iter().position(|existing| existing.id == set.id) {
-            Some(index) => sets[index] = set.clone(),
-            None => sets.push(set.clone()),
-        }
-        write_json_atomic(
-            &path,
-            &EnvSetsEnvelope {
-                schema_version: ENV_SETS_SCHEMA_VERSION,
-                sets,
-            },
-        )
-        .context("failed to save flow env-sets.json")
-    }
-
-    /// Delete one environment variable set by id; a missing id succeeds
-    /// silently. A corrupt or unsupported envelope refuses the deletion with
-    /// a readable error.
-    pub fn delete_env_set(&self, id: &str) -> Result<()> {
-        validate_flow_id(id)?;
-        let _guard = WRITE_LOCK.lock().expect("flow write lock poisoned");
-        let path = env_sets_path(&self.flow_root);
-        let bytes = match fs::read(&path) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(error) => return Err(error).context("failed to read flow env-sets.json"),
-        };
-        let mut sets = Vec::new();
-        for entry in read_env_sets_entries(&bytes)? {
-            match parse_env_set(entry) {
-                Ok(existing) if existing.id != id => sets.push(existing),
-                Ok(_) => {}
-                Err(error) => tracing::warn!(
-                    "dropping corrupt environment variable set during delete: {error:#}"
-                ),
-            }
-        }
-        write_json_atomic(
-            &path,
-            &EnvSetsEnvelope {
-                schema_version: ENV_SETS_SCHEMA_VERSION,
-                sets,
-            },
-        )
-        .context("failed to save flow env-sets.json")
-    }
+    // Environment variable sets, global variables and the script env
+    // write-back queue live in `env_sets.rs` (same `FlowStore` impl).
 }

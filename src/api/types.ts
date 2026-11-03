@@ -228,6 +228,7 @@ export type HttpApiResource =
   | "clash_subscription"
   | "clash_config"
   | "system_logs"
+  | "env_sets"
   | "all";
 
 export interface HttpApiChange {
@@ -591,6 +592,59 @@ export interface ClashSubscriptionState {
 export interface ClashConfig {
   yaml: string;
   default_yaml: string;
+}
+
+// ---------- env sets (flow/env_sets.rs; wire format is camelCase) ----------
+
+/** 一个环境变量集；读取时 secretValues 的值恒为掩码 "******"。 */
+export interface EnvVariableSet {
+  id: string;
+  name: string;
+  values: Record<string, string>;
+  secretValues: Record<string, string>;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** 全局变量表（普通 + secret）；读取时 secretValues 为掩码。 */
+export interface EnvGlobalVariables {
+  values: Record<string, string>;
+  secretValues: Record<string, string>;
+}
+
+export interface EnvSetsPayload {
+  sets: EnvVariableSet[];
+  activeSetId: string | null;
+  globals: EnvGlobalVariables;
+}
+
+export interface CreateEnvSetRequest {
+  name: string;
+  /** 提供时按该集合复制（含 secret 值），新集合使用生成的 id。 */
+  copyFrom?: string | null;
+  values?: Record<string, string>;
+  secretValues?: Record<string, string>;
+}
+
+export interface SaveEnvSetRequest {
+  name: string;
+  values: Record<string, string>;
+  secretValues: Record<string, string>;
+}
+
+export interface ReplaceEnvGlobalsRequest {
+  values: Record<string, string>;
+  secretValues: Record<string, string>;
+}
+
+export interface EnvWriteBackRequest {
+  setId: string;
+  writes: Record<string, unknown>;
+}
+
+export interface EnvWriteBackResult {
+  applied: number;
+  dropped: number;
 }
 
 export interface HttpServiceStatus {

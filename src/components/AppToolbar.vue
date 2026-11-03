@@ -15,6 +15,7 @@ import {
   openApprovals,
   openCertManager,
   openColumnManager,
+  openEnvSets,
   openFilterManager,
   openRedactionManager,
   openJwt,
@@ -43,6 +44,7 @@ import {
   Io5List,
   Io5Moon,
   Io5Newspaper,
+  Io5Options,
   Io5Play,
   Io5RadioButtonOn,
   Io5Settings,
@@ -283,6 +285,14 @@ onBeforeUnmount(() => {
           <button class="tb-menu-item" @click="runMenuAction(openRoutingManager)">
             <Io5RadioButtonOn :size="14" />
             <span>分流规则</span>
+          </button>
+          <button
+            v-if="backend.envSets"
+            class="tb-menu-item"
+            @click="runMenuAction(openEnvSets)"
+          >
+            <Io5Options :size="14" />
+            <span>环境变量</span>
           </button>
           <div class="tb-menu-divider" />
           <button class="tb-menu-item" @click="runMenuAction(openAssetManager)">

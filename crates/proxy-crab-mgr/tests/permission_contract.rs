@@ -20,7 +20,7 @@ fn permission_catalog_contains_every_unique_route_action() {
         .map(|action| action.id)
         .collect::<BTreeSet<_>>();
 
-    assert_eq!(actions.len(), 100);
+    assert_eq!(actions.len(), 107);
     assert_eq!(ids.len(), actions.len());
     assert!(
         actions
@@ -55,6 +55,7 @@ fn permission_catalog_has_the_confirmed_default_matrix() {
         "GET /api/clash-config",
         "PUT /api/clash-config",
         "DELETE /api/clash-config",
+        "GET /api/env-sets",
         "GET /api/filter-scripts",
         "GET /api/filter-scripts/{name}",
         "GET /api/flow-projects",
@@ -94,6 +95,12 @@ fn permission_catalog_has_the_confirmed_default_matrix() {
         "PUT /api/clash-subscription",
         "DELETE /api/clash-subscription",
         "POST /api/archived-sessions/{id}/restore",
+        "POST /api/env-sets",
+        "PUT /api/env-sets/{id}",
+        "DELETE /api/env-sets/{id}",
+        "PUT /api/env-sets/active",
+        "PUT /api/env-globals",
+        "POST /api/env-write-back",
         "POST /api/assets/{*asset_id}",
         "POST /api/breakpoints/{id}/execute",
         "POST /api/breakpoints/{id}/extend",

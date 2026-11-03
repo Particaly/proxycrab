@@ -2,8 +2,12 @@ use std::collections::BTreeMap;
 
 use proxy_crab_mitm::{
     bypass::BypassEntry,
-    flow::model::{Project, Workflow, WorkflowEdge, WorkflowNode},
-    flow::request_library::HarSnapshot,
+    flow::{
+        env_sets::EnvGlobalVariables,
+        model::{Project, Workflow, WorkflowEdge, WorkflowNode},
+        request_library::HarSnapshot,
+        store::EnvVariableSet,
+    },
     model::{
         AppConfig, BodyPayload, BreakpointSummary, CaptureError, Column, InterceptorExecution,
         InterceptorKind, InterceptorLibraryItem, ProxyStatus, Script, SessionFilter,
@@ -494,6 +498,77 @@ pub struct RoutingSelection {
     pub name: Option<String>,
 }
 
+// Environment variable sets and global variables (plan Task 17). Reads hand
+// masked secret values to callers; writes restore stored plaintext for values
+// the caller left masked.
+
+/// Whole env family snapshot: sets (masked), the activation preference and
+/// the global variables table (masked).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnvSetsPayload {
+    pub sets: Vec<EnvVariableSet>,
+    pub active_set_id: Option<String>,
+    pub globals: EnvGlobalVariables,
+}
+
+/// Create one set from scratch or duplicate an existing one (`copy_from`
+/// duplicates values including secrets under a new id).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateEnvSetRequest {
+    pub name: String,
+    #[serde(default)]
+    pub copy_from: Option<String>,
+    #[serde(default)]
+    pub values: BTreeMap<String, String>,
+    #[serde(default)]
+    pub secret_values: BTreeMap<String, String>,
+}
+
+/// Replace one set's editable fields (id and createdAt are bound to the path
+/// and the stored document).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SaveEnvSetRequest {
+    pub name: String,
+    #[serde(default)]
+    pub values: BTreeMap<String, String>,
+    #[serde(default)]
+    pub secret_values: BTreeMap<String, String>,
+}
+
+/// Switch the activated set; `None` clears the preference.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReplaceActiveEnvSetRequest {
+    pub set_id: Option<String>,
+}
+
+/// Replace the global variables table (masked secret values restore).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReplaceEnvGlobalsRequest {
+    #[serde(default)]
+    pub values: BTreeMap<String, String>,
+    #[serde(default)]
+    pub secret_values: BTreeMap<String, String>,
+}
+
+/// One script env write-back batch targeting the dispatch-time active set.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EnvWriteBackRequest {
+    pub set_id: String,
+    pub writes: BTreeMap<String, serde_json::Value>,
+}
+
+/// Flush outcome of the write-back batches persisted for one request.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EnvWriteBackResult {
+    pub applied: usize,
+    pub dropped: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BypassQuery {
     pub before_id: Option<u64>,
@@ -601,6 +676,7 @@ pub enum HttpApiResource {
     ClashConfig,
     SystemLogs,
     RequestLibrary,
+    EnvSets,
     All,
 }
 

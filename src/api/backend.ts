@@ -15,9 +15,15 @@ import type {
   ClashSubscriptionState,
   CreatedApiKey,
   CreateAgentsPresetRequest,
+  CreateEnvSetRequest,
   CreateSessionRequest,
   DebugFilterScriptRequest,
   DeleteCount,
+  EnvGlobalVariables,
+  EnvSetsPayload,
+  EnvVariableSet,
+  EnvWriteBackRequest,
+  EnvWriteBackResult,
   ExecuteTemporaryScriptRequest,
   ExtendBreakpointRequest,
   InterceptorCreateRequest,
@@ -38,12 +44,14 @@ import type {
   PendingApproval,
   PermissionEntry,
   PermissionIdentitySummary,
+  ReplaceEnvGlobalsRequest,
   ReplaceSessionInterceptorsRequest,
   ReplaceSessionViewRequest,
   ReplayRequestPayload,
   ReplayResult,
   ResolveApprovalRequest,
   RoutingSelection,
+  SaveEnvSetRequest,
   SaveFileRequest,
   Script,
   ScriptRequest,
@@ -103,6 +111,19 @@ export interface Backend {
     get(): Promise<ClashConfig>;
     save(yaml: string): Promise<ClashConfig>;
     reset(): Promise<ClashConfig>;
+  };
+  /**
+   * 环境变量集与全局变量；读取返回掩码后的 secret 值，保存时未改动的掩码
+   * 值自动保留原明文。未实现时 UI 不展示「环境变量」入口。
+   */
+  readonly envSets?: {
+    get(): Promise<EnvSetsPayload>;
+    create(request: CreateEnvSetRequest): Promise<EnvVariableSet>;
+    save(id: string, request: SaveEnvSetRequest): Promise<EnvVariableSet>;
+    remove(id: string): Promise<void>;
+    setActive(id: string | null): Promise<string | null>;
+    saveGlobals(request: ReplaceEnvGlobalsRequest): Promise<EnvGlobalVariables>;
+    writeBack(request: EnvWriteBackRequest): Promise<EnvWriteBackResult>;
   };
   readonly host?: HostOperations;
 

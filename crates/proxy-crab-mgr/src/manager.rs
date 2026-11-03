@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeSet, HashMap},
     sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use async_trait::async_trait;
@@ -8,9 +9,12 @@ use proxy_crab_mitm::{
     ProxyCrab, ReplayBody, ReplayError, ReplayRequest,
     asset::{Asset, AssetError, AssetUpload},
     flow::{
+        env_sets::{
+            self, EnvGlobalVariables, mask_env_set, mask_globals, restore_masked_secret_values,
+        },
         model::{Project, Workflow, WORKFLOW_SCHEMA_VERSION},
         request_library::{CapturedRequest, RequestLibraryEntry, RequestSource},
-        store::{FlowStore, generate_flow_id},
+        store::{EnvVariableSet, FlowStore, generate_flow_id},
         validate::{ValidationIssue, validate_workflow_graph},
     },
     lua::{CaptureBodyAccess, ColumnEvaluator, FilterEvaluator},
@@ -34,19 +38,24 @@ use crate::{
     },
     dto::{
         ActiveSession, AgentsPresetState, BreakpointDetailPayload, BreakpointQuery, BypassPage,
-        BypassQuery, CertificateResponse, CreateAgentsPresetRequest, CreateSessionRequest,
-        DebugFilterScriptRequest, DeleteCount, ErrorCode, ExecuteTemporaryScriptRequest,
-        ExtendBreakpointRequest, FlowListQuery, FlowProjectCreateRequest, FlowProjectPage,
-        FlowProjectUpdateRequest, HeaderItem, InterceptorCreateRequest, InterceptorDetail,
-        InterceptorLibraryList, InterceptorUpdateRequest, LogDetail, LogIdsPayload, LogIdsRequest,
-        LogViewException, LogViewRow, LogViewsPayload, LogViewsRequest, ManagerError,
-        ManagerResult, ReplaceSessionInterceptorsRequest, ReplaceSessionViewRequest,
-        ReplayBodyPayload, ReplayRequestPayload, ReplayResult, RequestDetail, ResponseDetail,
-        RoutingSelection, ScriptRequest, SessionInterceptorItem, SessionInterceptorsPayload,
-        SessionViewPayload, SessionsPayload, SystemLogsQuery, UpdateAgentsPresetRequest,
-        UpdateScriptRequest, UpdateSessionRequest, WorkflowCreateRequest, WorkflowListQuery,
-        WorkflowPage, WorkflowUpdateRequest, WorkflowValidationIssue,
-        CreateRequestLibraryRequest, IngestCaptureRequest, RequestLibraryPage, RequestLibraryQuery, UpdateRequestLibraryRequest, REQUEST_LIBRARY_DEFAULT_LIMIT, REQUEST_LIBRARY_MAX_LIMIT
+        BypassQuery, CertificateResponse, CreateAgentsPresetRequest, CreateEnvSetRequest,
+        CreateRequestLibraryRequest, CreateSessionRequest, DebugFilterScriptRequest,
+        DeleteCount, EnvSetsPayload, EnvWriteBackRequest, EnvWriteBackResult, ErrorCode,
+        ExecuteTemporaryScriptRequest, ExtendBreakpointRequest, FlowListQuery,
+        FlowProjectCreateRequest, FlowProjectPage, FlowProjectUpdateRequest, HeaderItem,
+        IngestCaptureRequest, InterceptorCreateRequest, InterceptorDetail,
+        InterceptorLibraryList, InterceptorUpdateRequest, LogDetail, LogIdsPayload,
+        LogIdsRequest, LogViewException, LogViewRow, LogViewsPayload, LogViewsRequest,
+        ManagerError, ManagerResult, ReplaceActiveEnvSetRequest, ReplaceEnvGlobalsRequest,
+        ReplaceSessionInterceptorsRequest, ReplaceSessionViewRequest, ReplayBodyPayload,
+        ReplayRequestPayload, ReplayResult, REQUEST_LIBRARY_DEFAULT_LIMIT,
+        REQUEST_LIBRARY_MAX_LIMIT, RequestDetail, RequestLibraryPage, RequestLibraryQuery,
+        ResponseDetail, RoutingSelection, SaveEnvSetRequest, ScriptRequest,
+        SessionInterceptorItem, SessionInterceptorsPayload, SessionsPayload,
+        SessionViewPayload, SystemLogsQuery, UpdateAgentsPresetRequest,
+        UpdateRequestLibraryRequest, UpdateScriptRequest, UpdateSessionRequest,
+        WorkflowCreateRequest, WorkflowListQuery, WorkflowPage, WorkflowUpdateRequest,
+        WorkflowValidationIssue
     },
 };
 use tokio::sync::{Semaphore, watch};
@@ -319,6 +328,23 @@ pub trait ProxyCrabManager: Send + Sync {
         request: IngestCaptureRequest,
     ) -> ManagerResult<RequestLibraryEntry>;
     async fn request_library_body_source(&self, id: String, max_size: u64) -> ManagerResult<BodySource>;
+    async fn env_sets(&self) -> ManagerResult<EnvSetsPayload>;
+    async fn create_env_set(&self, request: CreateEnvSetRequest) -> ManagerResult<EnvVariableSet>;
+    async fn save_env_set(
+        &self,
+        id: String,
+        request: SaveEnvSetRequest,
+    ) -> ManagerResult<EnvVariableSet>;
+    async fn delete_env_set(&self, id: String) -> ManagerResult<()>;
+    async fn replace_active_env_set(
+        &self,
+        request: ReplaceActiveEnvSetRequest,
+    ) -> ManagerResult<Option<String>>;
+    async fn replace_env_globals(
+        &self,
+        request: ReplaceEnvGlobalsRequest,
+    ) -> ManagerResult<EnvGlobalVariables>;
+    async fn env_write_back(&self, request: EnvWriteBackRequest) -> ManagerResult<EnvWriteBackResult>;
 }
 
 #[derive(Clone)]
@@ -2462,7 +2488,145 @@ impl ProxyCrabManager for MitmManager {
         })
         .await
     }
-}
+
+    async fn env_sets(&self) -> ManagerResult<EnvSetsPayload> {
+        let root = self.runtime.workspace().root().to_path_buf();
+        self.run_blocking("env sets", move || {
+            let store = FlowStore::open(&root).map_err(map_error)?;
+            let sets = store.list_env_sets().map_err(map_error)?;
+            let active_set_id = store.active_env_set_id().map_err(map_error)?;
+            let globals = store.env_globals().map_err(map_error)?;
+            Ok(EnvSetsPayload {
+                sets: sets.iter().map(mask_env_set).collect(),
+                active_set_id,
+                globals: mask_globals(&globals),
+            })
+        })
+        .await
+    }
+
+    async fn create_env_set(&self, request: CreateEnvSetRequest) -> ManagerResult<EnvVariableSet> {
+        let root = self.runtime.workspace().root().to_path_buf();
+        self.run_blocking("create env set", move || {
+            let store = FlowStore::open(&root).map_err(map_error)?;
+            let sets = store.list_env_sets().map_err(map_error)?;
+            let (values, secret_values) = match request.copy_from.as_deref() {
+                Some(source_id) => {
+                    let source = find_env_set(&sets, source_id)?;
+                    (source.values.clone(), source.secret_values.clone())
+                }
+                None => (request.values, request.secret_values),
+            };
+            let now = unix_millis();
+            let set = EnvVariableSet {
+                id: env_sets::next_env_set_id(&sets),
+                name: request.name,
+                values,
+                secret_values,
+                created_at: now,
+                updated_at: now,
+            };
+            store.save_env_set(&set).map_err(map_error)?;
+            Ok(mask_env_set(&set))
+        })
+        .await
+    }
+
+    async fn save_env_set(
+        &self,
+        id: String,
+        request: SaveEnvSetRequest,
+    ) -> ManagerResult<EnvVariableSet> {
+        let root = self.runtime.workspace().root().to_path_buf();
+        self.run_blocking("save env set", move || {
+            let store = FlowStore::open(&root).map_err(map_error)?;
+            let sets = store.list_env_sets().map_err(map_error)?;
+            let existing = find_env_set(&sets, &id)?;
+            // Masked secret values the caller did not overwrite keep their
+            // stored plaintext; explicit values override.
+            let mut secret_values = request.secret_values;
+            restore_masked_secret_values(&mut secret_values, &existing.secret_values);
+            let set = EnvVariableSet {
+                id,
+                name: request.name,
+                values: request.values,
+                secret_values,
+                created_at: existing.created_at,
+                updated_at: unix_millis(),
+            };
+            store.save_env_set(&set).map_err(map_error)?;
+            Ok(mask_env_set(&set))
+        })
+        .await
+    }
+
+    async fn delete_env_set(&self, id: String) -> ManagerResult<()> {
+        let root = self.runtime.workspace().root().to_path_buf();
+        self.run_blocking("delete env set", move || {
+            let store = FlowStore::open(&root).map_err(map_error)?;
+            store.delete_env_set(&id).map_err(map_error)
+        })
+        .await
+    }
+
+    async fn replace_active_env_set(
+        &self,
+        request: ReplaceActiveEnvSetRequest,
+    ) -> ManagerResult<Option<String>> {
+        let root = self.runtime.workspace().root().to_path_buf();
+        self.run_blocking("activate env set", move || {
+            let store = FlowStore::open(&root).map_err(map_error)?;
+            if let Some(id) = request.set_id.as_deref() {
+                let sets = store.list_env_sets().map_err(map_error)?;
+                find_env_set(&sets, id)?;
+            }
+            store
+                .set_active_env_set(request.set_id.as_deref())
+                .map_err(map_error)
+        })
+        .await
+    }
+
+    async fn replace_env_globals(
+        &self,
+        request: ReplaceEnvGlobalsRequest,
+    ) -> ManagerResult<EnvGlobalVariables> {
+        let root = self.runtime.workspace().root().to_path_buf();
+        self.run_blocking("save env globals", move || {
+            let store = FlowStore::open(&root).map_err(map_error)?;
+            let current = store.env_globals().map_err(map_error)?;
+            let mut secret_values = request.secret_values;
+            restore_masked_secret_values(&mut secret_values, &current.secret_values);
+            let globals = EnvGlobalVariables {
+                values: request.values,
+                secret_values,
+            };
+            store.save_env_globals(&globals).map_err(map_error)?;
+            Ok(mask_globals(&globals))
+        })
+        .await
+    }
+
+    async fn env_write_back(
+        &self,
+        request: EnvWriteBackRequest,
+    ) -> ManagerResult<EnvWriteBackResult> {
+        let root = self.runtime.workspace().root().to_path_buf();
+        self.run_blocking("env write-back", move || {
+            let store = FlowStore::open(&root).map_err(map_error)?;
+            // Committed on submit; never withdrawn on later failures or hard
+            // timeouts. The flush persists serially and reports drops.
+            store
+                .submit_env_write_back(request.set_id, request.writes)
+                .map_err(map_error)?;
+            let flush = store.flush_env_write_backs().map_err(map_error)?;
+            Ok(EnvWriteBackResult {
+                applied: flush.applied,
+                dropped: flush.dropped,
+            })
+        })
+        .await
+    }}
 
 /// Helpers shared by the workflow-domain manager methods: resolve the workspace
 /// flow root for use inside blocking tasks.
@@ -2520,6 +2684,23 @@ fn map_flow_error(error: anyhow::Error) -> ManagerError {
     } else {
         ManagerError::internal(message)
     }
+}
+
+/// Look up one set by id, mapping a missing id to the not-found API error.
+fn find_env_set<'a>(
+    sets: &'a [EnvVariableSet],
+    id: &str,
+) -> ManagerResult<&'a EnvVariableSet> {
+    sets.iter()
+        .find(|set| set.id == id)
+        .ok_or_else(|| ManagerError::not_found(format!("environment variable set {id} not found")))
+}
+
+fn unix_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 /// Open the workspace flow store for one blocking management task.

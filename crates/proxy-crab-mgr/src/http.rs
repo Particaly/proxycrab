@@ -40,16 +40,18 @@ use crate::{
     clash_subscription::{EnableClashSubscriptionRequest, SaveClashConfigRequest},
     dto::{
         ActiveSession, AssetQuery, BodyQuery, BreakpointQuery, BypassQuery,
-        CreateRequestLibraryRequest, CreateSessionRequest, DebugFilterScriptRequest,
-        DeleteBypassRequest, ErrorCode, ExecuteTemporaryScriptRequest, ExtendBreakpointRequest,
-        FlowListQuery, FlowProjectCreateRequest, FlowProjectUpdateRequest, HttpApiChange,
-        HttpApiResource, IngestCaptureRequest, InterceptorCreateRequest,
-        InterceptorUpdateRequest, LogIdsRequest, LogViewsRequest, ManagerError, ManagerResult,
+        CreateEnvSetRequest, CreateRequestLibraryRequest, CreateSessionRequest,
+        DebugFilterScriptRequest, DeleteBypassRequest, EnvWriteBackRequest, ErrorCode,
+        ExecuteTemporaryScriptRequest, ExtendBreakpointRequest, FlowListQuery,
+        FlowProjectCreateRequest, FlowProjectUpdateRequest, HttpApiChange, HttpApiResource,
+        IngestCaptureRequest, InterceptorCreateRequest, InterceptorUpdateRequest,
+        LogIdsRequest, LogViewsRequest, ManagerError, ManagerResult,
+        ReplaceActiveEnvSetRequest, ReplaceEnvGlobalsRequest,
         ReplaceSessionInterceptorsRequest, ReplaceSessionViewRequest, ReplayRequestPayload,
-        RequestLibraryBodyQuery, RequestLibraryQuery, RoutingSelection, ScriptRequest,
-        SessionQuery, SystemLogsQuery, UpdateRequestLibraryRequest, UpdateScriptRequest,
-        UpdateSessionRequest, WebSocketQuery, WorkflowCreateRequest, WorkflowListQuery,
-        WorkflowUpdateRequest, default_body_max_size
+        RequestLibraryBodyQuery, RequestLibraryQuery, RoutingSelection, SaveEnvSetRequest,
+        ScriptRequest, SessionQuery, SystemLogsQuery, UpdateRequestLibraryRequest,
+        UpdateScriptRequest, UpdateSessionRequest, WebSocketQuery, WorkflowCreateRequest,
+        WorkflowListQuery, WorkflowUpdateRequest, default_body_max_size
     },
     manager::ProxyCrabManager,
     permission::{
@@ -411,6 +413,14 @@ fn router_with_changes_and_extra(
                 .put(save_clash_config)
                 .delete(reset_clash_config),
         )
+        .route("/api/env-sets", get(env_sets).post(create_env_set))
+        .route("/api/env-sets/active", put(replace_active_env_set))
+        .route(
+            "/api/env-sets/{id}",
+            axum::routing::put(save_env_set).delete(delete_env_set),
+        )
+        .route("/api/env-globals", put(replace_env_globals))
+        .route("/api/env-write-back", post(env_write_back))
         .route(
             "/api/system-logs",
             get(system_logs).delete(clear_system_logs),
@@ -723,6 +733,15 @@ fn change_for_request(method: &Method, path: &str, query: Option<&str>) -> Optio
         }
         (&Method::PUT | &Method::DELETE, "/api/clash-config") => {
             vec![HttpApiResource::ClashConfig]
+        }
+        (&Method::POST | &Method::PUT | &Method::DELETE, value)
+            if value == "/api/env-sets"
+                || value == "/api/env-sets/active"
+                || value.starts_with("/api/env-sets/")
+                || value == "/api/env-globals"
+                || value == "/api/env-write-back" =>
+        {
+            vec![HttpApiResource::EnvSets]
         }
         (&Method::POST, "/api/session-shares") => vec![HttpApiResource::SessionShare],
         (&Method::DELETE, value) if value.starts_with("/api/session-shares/") => {
@@ -1651,6 +1670,55 @@ async fn validate_workflow(
     success(json!({ "issues": manager.validate_workflow(id).await? }))
 }
 
+// Environment variable sets and global variables; reads return masked secret
+// values, writes restore stored plaintext for values left masked.
+
+async fn env_sets(State(manager): State<ManagerState>) -> ApiResult {
+    success(manager.env_sets().await?)
+}
+
+async fn create_env_set(
+    State(manager): State<ManagerState>,
+    ApiJson(request): ApiJson<CreateEnvSetRequest>,
+) -> ApiResult {
+    success(manager.create_env_set(request).await?)
+}
+
+async fn save_env_set(
+    State(manager): State<ManagerState>,
+    ApiPath(id): ApiPath<String>,
+    ApiJson(request): ApiJson<SaveEnvSetRequest>,
+) -> ApiResult {
+    success(manager.save_env_set(id, request).await?)
+}
+
+async fn delete_env_set(State(manager): State<ManagerState>, ApiPath(id): ApiPath<String>) -> ApiResult {
+    manager.delete_env_set(id).await?;
+    success(json!({}))
+}
+
+async fn replace_active_env_set(
+    State(manager): State<ManagerState>,
+    ApiJson(request): ApiJson<ReplaceActiveEnvSetRequest>,
+) -> ApiResult {
+    let active_set_id = manager.replace_active_env_set(request).await?;
+    success(json!({ "activeSetId": active_set_id }))
+}
+
+async fn replace_env_globals(
+    State(manager): State<ManagerState>,
+    ApiJson(request): ApiJson<ReplaceEnvGlobalsRequest>,
+) -> ApiResult {
+    success(manager.replace_env_globals(request).await?)
+}
+
+async fn env_write_back(
+    State(manager): State<ManagerState>,
+    ApiJson(request): ApiJson<EnvWriteBackRequest>,
+) -> ApiResult {
+    success(manager.env_write_back(request).await?)
+}
+
 async fn bypass_entries(
     ReadManager(manager): ReadManager,
     ApiQuery(query): ApiQuery<BypassQuery>,
@@ -2133,6 +2201,7 @@ async fn delete_redaction_script(
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use std::{
         io::{Read, Write},
