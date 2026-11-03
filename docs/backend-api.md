@@ -290,6 +290,11 @@ browser UI.
 | `/api/bypass`, `/api/bypass/{id}`, `/api/bypass/delete` | query/delete transparent forwarding metadata |
 | `/api/clash-subscription` | `GET` current state (default: `allow`); `PUT` enable/update selected IPv4; `DELETE` disable (both default: `approval`) |
 | `/api/clash-config` | `GET` full YAML and default; `PUT` validate/write; `DELETE` reset (all default: `allow`) |
+| `/api/env-sets` | `GET` sets + activation + globals (secrets masked, default: `allow`); `POST` create or duplicate (default: `approval`) |
+| `/api/env-sets/{id}` | `PUT` replace one set (masked secrets restore); `DELETE` remove, clearing the activation preference when the active set is deleted (both default: `approval`) |
+| `/api/env-sets/active` | `PUT` switch the activated set, `null` clears it (default: `approval`) |
+| `/api/env-globals` | `PUT` replace the global variables table (default: `approval`) |
+| `/api/env-write-back` | `POST` script env write-back batches into a set (default: `approval`) |
 | `/api/system-logs` | `GET`, `DELETE` |
 
 System logs accept `after_seq` and are capped at 10,000 entries.
@@ -355,6 +360,45 @@ proxy in Clash. Changing the chosen IP changes the URL host, so update the subsc
 Clash; changing the proxy port only requires refreshing the subscription. Re-enabling with the same
 IP keeps the same URL. Revoking downloads does not remove previously imported configurations or stop
 existing proxy traffic, and does not modify the persistent YAML file.
+
+## Environment variable sets and global variables
+
+The whole env family persists in one versioned envelope at `<workspace>/flow/env-sets.json`:
+named sets (each with a normal `values` table and a `secretValues` table), the activation
+preference `activeSetId`, and the global variables table (`values` + `secretValues`). Reads apply
+the registered envelope migrations; a corrupt or newer envelope degrades reads to empty with a
+warning and refuses writes, so environment data never blocks other features. Desktop commands
+`get_env_sets`, `create_env_set`, `save_env_set`, `delete_env_set`, `replace_active_env_set`,
+`replace_env_globals`, and `env_write_back` share the same manager operations. The frontend exposes
+them as the optional `Backend.envSets` capability; the 环境变量 window appears only when it exists.
+
+Secret values are masked end to end: `GET /api/env-sets` returns every secret value as `******`
+(normal values stay readable), while `PUT` writes restore the stored plaintext for values the
+caller left as `******`, so a masked read/modify/write round trip never corrupts secrets and an
+explicit new value overrides them. Exports exclude secret tables entirely. The activation
+preference holds at most one set; `PUT /api/env-sets/active` with `{"setId":null}` clears it, and
+deleting the active set automatically clears the preference in the same write.
+
+`GET /api/env-sets` returns `{"sets":[{id,name,values,secretValues,createdAt,updatedAt}],"activeSetId":…,"globals":{values,secretValues}}` (secrets masked). `POST /api/env-sets` takes
+`{"name":"…","copyFrom":null,"values":{},"secretValues":{}}`; a `copyFrom` set id duplicates that
+set (including secrets) under a generated `env-…` id, and the response echoes the stored set masked.
+`PUT /api/env-sets/{id}` takes `{"name":"…","values":{},"secretValues":{}}`; `createdAt` is bound
+to the stored document. `DELETE /api/env-sets/{id}` succeeds silently for missing ids.
+`PUT /api/env-globals` takes `{"values":{},"secretValues":{}}`. Successful writes emit the
+`env_sets` change resource.
+
+`POST /api/env-write-back` is the script env write-back entry (plan Task 17; the run chain wires
+it in Task 19). The body `{"setId":"env-…","writes":{}}` commits one batch: it is queued
+process-wide and persisted serially in submission order (last write wins per key, different keys
+merge). Keys already present in the target's secret table keep their secret marking; dynamic new
+keys land in the normal table. Values are stringified like the engine contract (strings as-is,
+numbers/booleans via `String`, `null` as `"null"`, objects/arrays as JSON text). The write target
+is the set id captured at dispatch time, so switching the active set mid-run never redirects
+write-backs. A committed batch is never rolled back: script failure, node failure, run
+cancellation, and hard timeouts do not withdraw submitted batches (a batch that never reaches
+submission — e.g. a destroyed sandbox — was never committed). A batch whose target set was
+deleted before persistence is dropped with a warning instead of resurrecting the set. The response
+reports `{"applied":n,"dropped":m}`; dropped batches never fail the request.
 
 ## Script display metadata
 

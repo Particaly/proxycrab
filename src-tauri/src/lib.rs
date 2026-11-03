@@ -14,15 +14,17 @@ use proxy_crab_mgr::{
     },
     dto::{
         ActiveSession, AgentsPresetState, BreakpointDetailPayload, BreakpointQuery, BypassPage,
-        BypassQuery, CertificateResponse, CreateAgentsPresetRequest, CreateSessionRequest,
-        DebugFilterScriptRequest, DeleteCount, ExecuteTemporaryScriptRequest,
-        ExtendBreakpointRequest, HttpApiChange, HttpApiResource, HttpServiceStatus,
-        InterceptorCreateRequest, InterceptorDetail, InterceptorLibraryList,
+        BypassQuery, CertificateResponse, CreateAgentsPresetRequest, CreateEnvSetRequest,
+        CreateSessionRequest, DebugFilterScriptRequest, DeleteCount,
+        EnvSetsPayload, EnvWriteBackRequest, EnvWriteBackResult,
+        ExecuteTemporaryScriptRequest, ExtendBreakpointRequest, HttpApiChange, HttpApiResource,
+        HttpServiceStatus, InterceptorCreateRequest, InterceptorDetail, InterceptorLibraryList,
         InterceptorUpdateRequest, LogDetail, LogIdsPayload, LogIdsRequest, LogViewsPayload,
-        LogViewsRequest, ManagerError, ReplaceSessionInterceptorsRequest,
-        ReplaceSessionViewRequest, ReplayRequestPayload, ReplayResult, RoutingSelection,
-        ScriptRequest, SessionInterceptorsPayload, SessionViewPayload, SessionsPayload,
-        SystemLogsQuery, UpdateAgentsPresetRequest, UpdateScriptRequest, UpdateSessionRequest,
+        LogViewsRequest, ManagerError, ReplaceActiveEnvSetRequest, ReplaceEnvGlobalsRequest,
+        ReplaceSessionInterceptorsRequest, ReplaceSessionViewRequest, ReplayRequestPayload,
+        ReplayResult, RoutingSelection, SaveEnvSetRequest, ScriptRequest,
+        SessionInterceptorsPayload, SessionViewPayload, SessionsPayload, SystemLogsQuery,
+        UpdateAgentsPresetRequest, UpdateScriptRequest, UpdateSessionRequest,
     },
     http::{HttpServerHandle, start_http_server_with_routes},
     session_share::{
@@ -32,6 +34,7 @@ use proxy_crab_mgr::{
 };
 use proxy_crab_mitm::{
     ProxyCrab,
+    flow::{env_sets::EnvGlobalVariables, store::EnvVariableSet},
     log_buffer::{BufferLayer, LogBuffer},
     model::{
         AppConfig, BreakpointSummary, InterceptorKind, InterceptorScriptContent,
@@ -695,6 +698,57 @@ async fn replace_routing_selection(
 }
 
 #[tauri::command]
+async fn get_env_sets(state: State<'_, BackendState>) -> Result<EnvSetsPayload, ManagerError> {
+    state.manager().env_sets().await
+}
+
+#[tauri::command]
+async fn create_env_set(
+    state: State<'_, BackendState>,
+    request: CreateEnvSetRequest,
+) -> Result<EnvVariableSet, ManagerError> {
+    state.manager().create_env_set(request).await
+}
+
+#[tauri::command]
+async fn save_env_set(
+    state: State<'_, BackendState>,
+    id: String,
+    request: SaveEnvSetRequest,
+) -> Result<EnvVariableSet, ManagerError> {
+    state.manager().save_env_set(id, request).await
+}
+
+#[tauri::command]
+async fn delete_env_set(state: State<'_, BackendState>, id: String) -> Result<(), ManagerError> {
+    state.manager().delete_env_set(id).await
+}
+
+#[tauri::command]
+async fn replace_active_env_set(
+    state: State<'_, BackendState>,
+    request: ReplaceActiveEnvSetRequest,
+) -> Result<Option<String>, ManagerError> {
+    state.manager().replace_active_env_set(request).await
+}
+
+#[tauri::command]
+async fn replace_env_globals(
+    state: State<'_, BackendState>,
+    request: ReplaceEnvGlobalsRequest,
+) -> Result<EnvGlobalVariables, ManagerError> {
+    state.manager().replace_env_globals(request).await
+}
+
+#[tauri::command]
+async fn env_write_back(
+    state: State<'_, BackendState>,
+    request: EnvWriteBackRequest,
+) -> Result<EnvWriteBackResult, ManagerError> {
+    state.manager().env_write_back(request).await
+}
+
+#[tauri::command]
 async fn list_interceptors(
     state: State<'_, BackendState>,
     kind: InterceptorKind,
@@ -1224,6 +1278,13 @@ pub fn run() {
             delete_routing_script,
             get_routing_selection,
             replace_routing_selection,
+            get_env_sets,
+            create_env_set,
+            save_env_set,
+            delete_env_set,
+            replace_active_env_set,
+            replace_env_globals,
+            env_write_back,
             list_interceptors,
             create_interceptor,
             get_interceptor,

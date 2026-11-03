@@ -223,6 +223,13 @@ pub static API_ACTIONS: &[ApiAction] = &[
     action!("GET", "/api/clash-config", Allow),
     action!("PUT", "/api/clash-config", Allow),
     action!("DELETE", "/api/clash-config", Allow),
+    action!("GET", "/api/env-sets", Allow),
+    action!("POST", "/api/env-sets", Approval),
+    action!("PUT", "/api/env-sets/{id}", Approval),
+    action!("DELETE", "/api/env-sets/{id}", Approval),
+    action!("PUT", "/api/env-sets/active", Approval),
+    action!("PUT", "/api/env-globals", Approval),
+    action!("POST", "/api/env-write-back", Approval),
     action!("GET", "/api/system-logs", Allow),
     action!("DELETE", "/api/system-logs", Deny),
 ];
