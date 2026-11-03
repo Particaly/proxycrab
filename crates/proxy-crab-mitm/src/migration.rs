@@ -12,13 +12,14 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     asset::{AssetError, AssetMetadata, AssetStore, create_parent, validate_asset_id},
+    flow::store::flow_directories,
     hex::hex_lower,
     model::{BodySourceType, CaptureModifications, HeaderValues},
     workspace::{read_json, write_json_atomic},
 };
 
 const WORKSPACE_SCHEMA_FILE: &str = "workspace_schema.json";
-pub(crate) const CURRENT_WORKSPACE_SCHEMA_VERSION: u32 = 3;
+pub(crate) const CURRENT_WORKSPACE_SCHEMA_VERSION: u32 = 4;
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct WorkspaceSchema {
@@ -38,6 +39,7 @@ pub(crate) fn migrate_workspace(root: &Path) -> Result<()> {
             0 => migrate_v0_to_v1(root)?,
             1 => migrate_v1_to_v2(root)?,
             2 => migrate_v2_to_v3(root)?,
+            3 => migrate_v3_to_v4(root)?,
             _ => bail!("no migration registered for workspace schema version {version}"),
         }
         version += 1;
@@ -169,6 +171,18 @@ fn migrate_v2_to_v3(root: &Path) -> Result<()> {
                     format!("failed to migrate capture database {}", database.display())
                 })?;
         }
+    }
+    Ok(())
+}
+
+/// Workspace schema v4 adds the flow directory family: workspace-level request
+/// library entries, workflow definitions, environment variable sets and the
+/// run record database location under `flow/`. No existing data is transformed
+/// — older workspaces only gain the directories; `flow/runs.db` itself is
+/// created by the run record storage when first used.
+fn migrate_v3_to_v4(root: &Path) -> Result<()> {
+    for directory in flow_directories(root) {
+        fs::create_dir_all(directory)?;
     }
     Ok(())
 }
@@ -505,6 +519,26 @@ mod tests {
 
         assert!(migrate_workspace(root.path()).is_err());
         assert!(!root.path().join("workspace_schema.json").exists());
+    }
+
+    #[test]
+    fn v4_migration_creates_flow_directories_idempotently() {
+        let root = tempdir().unwrap();
+        write_json_atomic(
+            &root.path().join("workspace_schema.json"),
+            &WorkspaceSchema { version: 3 },
+        )
+        .unwrap();
+
+        migrate_workspace(root.path()).unwrap();
+        migrate_workspace(root.path()).unwrap();
+
+        let schema: WorkspaceSchema =
+            read_json(&root.path().join("workspace_schema.json")).unwrap();
+        assert_eq!(schema.version, CURRENT_WORKSPACE_SCHEMA_VERSION);
+        for directory in crate::flow::store::flow_directories(root.path()) {
+            assert!(directory.is_dir(), "{}", directory.display());
+        }
     }
 
     #[test]

@@ -5,6 +5,7 @@ mod breakpoint;
 pub mod bypass;
 pub mod ca;
 pub mod error;
+pub mod flow;
 mod hex;
 pub mod log_buffer;
 pub mod lua;

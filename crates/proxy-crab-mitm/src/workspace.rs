@@ -11,6 +11,7 @@ use fs2::FileExt;
 use serde::{Serialize, de::DeserializeOwned};
 
 use crate::error::Error;
+use crate::flow::store::flow_directories;
 use crate::model::{
     AppConfig, NewSession, Script, ScriptKind, SessionInterceptors, SessionMetadata, SessionView,
 };
@@ -76,6 +77,9 @@ impl Workspace {
             "redaction",
         ] {
             fs::create_dir_all(root.join("scripts").join(directory))?;
+        }
+        for directory in flow_directories(&root) {
+            fs::create_dir_all(directory)?;
         }
         let lock = OpenOptions::new()
             .create(true)
