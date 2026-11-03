@@ -20,7 +20,7 @@ fn permission_catalog_contains_every_unique_route_action() {
         .map(|action| action.id)
         .collect::<BTreeSet<_>>();
 
-    assert_eq!(actions.len(), 82);
+    assert_eq!(actions.len(), 89);
     assert_eq!(ids.len(), actions.len());
     assert!(
         actions
@@ -66,6 +66,9 @@ fn permission_catalog_has_the_confirmed_default_matrix() {
         "GET /api/logs/{id}/interceptors/{execution_id}/content",
         "GET /api/logs/{id}/interceptors/{execution_id}/snapshot",
         "GET /api/proxy/status",
+        "GET /api/request-library",
+        "GET /api/request-library/{id}",
+        "GET /api/request-library/{id}/body",
         "GET /api/routing-script-selection",
         "GET /api/routing-scripts",
         "GET /api/routing-scripts/{name}",
@@ -97,6 +100,8 @@ fn permission_catalog_has_the_confirmed_default_matrix() {
         "POST /api/interceptors",
         "POST /api/proxy/start",
         "POST /api/proxy/stop",
+        "POST /api/request-library",
+        "POST /api/request-library/from-capture",
         "POST /api/routing-scripts",
         "POST /api/session-shares",
         "POST /api/sessions",
@@ -104,12 +109,14 @@ fn permission_catalog_has_the_confirmed_default_matrix() {
         "PUT /api/column-scripts/{name}",
         "PUT /api/filter-scripts/{name}",
         "PUT /api/interceptors/{kind}/{name}",
+        "PUT /api/request-library/{id}",
         "PUT /api/routing-script-selection",
         "PUT /api/routing-scripts/{name}",
         "PUT /api/session-interceptors",
         "PUT /api/session-view",
         "PUT /api/sessions/{id}",
         "PUT /api/sessions/{id}/filter",
+        "DELETE /api/request-library/{id}",
         "DELETE /api/session-shares/{id}",
     ]);
     let deny = BTreeSet::from([
@@ -177,9 +184,50 @@ fn permission_lookup_uses_both_method_and_route_template() {
     assert!(find_api_action("DELETE", "/api/ca").is_none());
     assert!(find_api_action("GET", "/api/logs/123").is_none());
 
+    // Request library (plan Task 6): reads allow, writes and deletes approval.
+    let request_library_modes = [
+        ("GET", "/api/request-library", PermissionMode::Allow),
+        ("POST", "/api/request-library", PermissionMode::Approval),
+        ("GET", "/api/request-library/{id}", PermissionMode::Allow),
+        ("PUT", "/api/request-library/{id}", PermissionMode::Approval),
+        (
+            "DELETE",
+            "/api/request-library/{id}",
+            PermissionMode::Approval,
+        ),
+        (
+            "POST",
+            "/api/request-library/from-capture",
+            PermissionMode::Approval,
+        ),
+        (
+            "GET",
+            "/api/request-library/{id}/body",
+            PermissionMode::Allow,
+        ),
+    ];
+    for (method, route, mode) in request_library_modes {
+        assert_eq!(
+            find_api_action(method, route).unwrap().default_mode,
+            mode,
+            "{method} {route}"
+        );
+    }
+
     let methods = api_actions_for_path("/api/column-scripts/example")
         .map(|action| action.method)
         .collect::<BTreeSet<_>>();
     assert_eq!(methods, BTreeSet::from(["DELETE", "GET", "PUT"]));
+    let request_library_methods = api_actions_for_path("/api/request-library/entry-1")
+        .map(|action| action.method)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        request_library_methods,
+        BTreeSet::from(["DELETE", "GET", "PUT"])
+    );
+    let body_methods = api_actions_for_path("/api/request-library/entry-1/body")
+        .map(|action| action.method)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(body_methods, BTreeSet::from(["GET"]));
     assert_eq!(api_actions_for_path("/api/not-found").count(), 0);
 }

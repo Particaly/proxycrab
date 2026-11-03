@@ -228,6 +228,7 @@ revision-based proxy-change long poll and then reloads its Session-scoped status
 | Interceptor create/update/delete | Global interceptor library and Session chains | Refreshes the library and current pipeline |
 | `PUT /api/session-interceptors` | Target Session pipeline | Refreshes the pipeline only when that Session is being viewed |
 | `DELETE /api/system-logs` | System-log viewer | Clears and reloads an open log window |
+| Request library create/ingest/update/delete | Request library | Reloads the request library window (reserved for the flow windows; the request library window itself arrives with the flow milestone) |
 
 If HTTP archives the viewed Session, the frontend selects the first remaining Session.
 
@@ -291,6 +292,10 @@ browser UI.
 | `/api/clash-subscription` | `GET` current state (default: `allow`); `PUT` enable/update selected IPv4; `DELETE` disable (both default: `approval`) |
 | `/api/clash-config` | `GET` full YAML and default; `PUT` validate/write; `DELETE` reset (all default: `allow`) |
 | `/api/system-logs` | `GET`, `DELETE` |
+| `/api/request-library` | `GET` filtered page, `POST` manual entry (both default: `allow`/`approval`) |
+| `/api/request-library/{id}` | `GET` (default: `allow`); `PUT` partial update, `DELETE` (both default: `approval`) |
+| `/api/request-library/from-capture` | `POST` ingest one capture (default: `approval`) |
+| `/api/request-library/{id}/body` | `GET` raw stored request body (default: `allow`) |
 
 System logs accept `after_seq` and are capped at 10,000 entries.
 
@@ -675,6 +680,50 @@ exchange. Request body: `method`, absolute `url`, ordered `headers` pairs (sent 
 stored capture blob body), or `{ "type": "asset", "asset_id" }` (reuse a workspace Asset).
 The read-only share surface has no replay route, and the UI only offers replay entries when the
 Backend implements `replay`.
+
+## Request library
+
+The workspace-level request library stores replayable request entries under `<workspace>/flow/`,
+independent of Session archives and cleanup. Entries are `{id, name, tags, source, origin, har,
+bodyRef?, createdAt, updatedAt}`; `source` is `capture`, `import`, or `manual`, and `har` is a
+minimal HAR 1.2 snapshot (`method`/`url`/`headers`/`queryString`/`cookies`/`postData` plus a
+response summary). Request bodies follow the capture convention: UTF-8 text through 64 KiB stays
+inline in `har.log.entries[0].request.postData.text`, binary or larger bodies live in
+`flow/request-library/bodies/{id}.body` and are referenced by `bodyRef`. Entry names default to
+`METHOD host+path` and numeric suffixes (` 2`, ` 3`, …) resolve duplicates.
+
+`GET /api/request-library?query=&tags=&source=&limit=&offset=` returns one page
+`{entries: [...], total}` sorted by `(createdAt, id)`. `query` matches the entry name and the first
+HAR request URL case-insensitively; `tags` is a comma-separated list and an entry must carry every
+requested tag; `source` is one of `capture`, `import`, `manual`. `limit` defaults to 200 and must
+stay between 1 and 1000 (`400 bad_request` otherwise); `total` reflects the filtered count before
+pagination.
+
+`POST /api/request-library` creates a manual entry from `{har, name?, tags?, origin?}`. The HAR
+snapshot must carry at least one entry (`400 bad_request` otherwise); the server assigns `id`,
+timestamps and `source: manual`, defaulting the name to `METHOD host+path`. Unknown request fields
+are rejected.
+
+`POST /api/request-library/from-capture` ingests one capture: `{session_id?, capture_id, name?,
+tags?}`. `session_id` falls back to the active Session (`409 conflict` when none is active) and may
+name an archived Session, so ingestion keeps working after archiving. A missing capture or Session
+is `404 not_found`. The snapshot normalizes the `Cookie` header into structured cookies and records
+the response summary when one exists.
+
+`GET /api/request-library/{id}` returns one entry; `PUT` applies a partial update
+`{name?, tags?, origin?, har?}` — absent fields stay unchanged, `id`/`source`/`createdAt` are never
+editable and `updatedAt` is refreshed. Replacing the snapshot with one that embeds an inline
+request body drops a stale `bodyRef` blob; otherwise the blob reference survives snapshot
+round-trips. `DELETE` removes the entry together with its blob. Missing ids return `404 not_found`.
+
+`GET /api/request-library/{id}/body?max_size=` streams the raw stored request body (blob bytes, or
+the inline text with `encoding: "base64"` decoded) with the HAR `mimeType` as `Content-Type`,
+negotiating `Accept-Encoding` exactly like the log body endpoint. `max_size` defaults to 16 MiB and
+is checked before reading; entries without a stored body return `404 body_not_found`.
+
+Successful `POST`/`PUT`/`DELETE` requests emit the `request_library` change resource. The read-only
+share surface has no request-library routes: `share-backend.ts` does not implement the capability,
+so share-view entries are hidden automatically by the capability-driven UI rule.
 
 ## Session table views
 

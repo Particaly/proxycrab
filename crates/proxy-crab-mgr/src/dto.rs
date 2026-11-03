@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use proxy_crab_mitm::{
     bypass::BypassEntry,
+    flow::request_library::HarSnapshot,
     model::{
         AppConfig, BodyPayload, BreakpointSummary, CaptureError, Column, InterceptorExecution,
         InterceptorKind, InterceptorLibraryItem, ProxyStatus, Script, SessionFilter,
@@ -242,6 +243,73 @@ pub struct AssetQuery {
 
 pub const fn default_body_max_size() -> u64 {
     16 * 1024 * 1024
+}
+
+/// Default page size of the request library list; the page (plus the total)
+/// keeps one response bounded even though entries may carry inline bodies.
+pub const REQUEST_LIBRARY_DEFAULT_LIMIT: usize = 200;
+/// Hard upper bound for the request library list page size.
+pub const REQUEST_LIBRARY_MAX_LIMIT: usize = 1000;
+
+/// List filter of the workspace request library. `tags` is a comma-separated
+/// list and an entry must carry every requested tag; `query` matches the entry
+/// name and the first HAR request URL case-insensitively.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RequestLibraryQuery {
+    pub query: Option<String>,
+    pub tags: Option<String>,
+    pub source: Option<String>,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
+}
+
+/// One bounded page of the request library, sorted by (createdAt, id).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RequestLibraryPage {
+    pub entries: Vec<proxy_crab_mitm::flow::store::RequestLibraryEntry>,
+    pub total: usize,
+}
+
+/// Manual creation of one request library entry; the HAR snapshot must carry at
+/// least one entry (validated by the flow store). The server assigns the id,
+/// timestamps and `source: manual`, and defaults the name to `METHOD host+path`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateRequestLibraryRequest {
+    pub har: HarSnapshot,
+    pub name: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub origin: String,
+}
+
+/// Partial update of one request library entry: absent fields stay unchanged.
+/// `id`, `source` and `createdAt` are never editable; `updatedAt` is bumped.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateRequestLibraryRequest {
+    pub name: Option<String>,
+    pub tags: Option<Vec<String>>,
+    pub origin: Option<String>,
+    pub har: Option<HarSnapshot>,
+}
+
+/// Ingest one capture (live or archived Session) into the request library.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IngestCaptureRequest {
+    pub capture_id: u64,
+    pub session_id: Option<u64>,
+    pub name: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+/// Raw request body of one request library entry.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RequestLibraryBodyQuery {
+    pub max_size: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -531,6 +599,7 @@ pub enum HttpApiResource {
     ClashSubscription,
     ClashConfig,
     SystemLogs,
+    RequestLibrary,
     All,
 }
 
