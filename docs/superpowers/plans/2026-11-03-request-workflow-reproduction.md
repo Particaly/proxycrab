@@ -104,11 +104,11 @@
 - Modify: `package.json`（`flow:build` 脚本）、`vitest.config.ts`（include 增加 `flow-engine/**/*.test.mts`）、`tsconfig.json`（include 增加 `flow-engine/**`）、`pnpm format` 的 glob
 - Create: `crates/proxy-crab-mitm/src/flow/bundle/engine.js`（构建产物，提交入库）
 
-- [ ] **Step 1: 移植纯逻辑模块**：`executor` / `logic-nodes` / `dependency-inference` / `template` / `run-variables` / `condition-builder` / `assert-nodes` / `transform-nodes` / `json-path` / `json-schema-lite` / `csv` / `error-class` / `run-record` / `run-graph-snapshot` / `ref-id` / `har-cookies` / `json-equal`。
-- [ ] **Step 2: 剥离平台触点**：把 `script.ts` / `replay.ts` / `header-fidelity.ts` 中依赖扩展/浏览器的部分改为宿主接口注入（`ScriptPort` / `ReplayPort` / 头注入策略），保留纯函数部分；`AbortSignal`/`setTimeout` 由宿主桥提供等价物。
-- [ ] **Step 3: 搬测试**：以 ReqFlow 的既有测试作为验收基线逐条跑通（这是本任务的主要验收口径，不允许「先跳过」）。
-- [ ] **Step 4: 打包与嵌入**：`pnpm flow:build` 产出单文件；Rust 侧 `include_str!` 嵌入并加 smoke 测试（加载载荷 → 跑通 start→httpReplay（桩宿主）→ 断言节点 → 结束）。
-- [ ] **Step 5: 登记来源与差异**：`flow-engine/README.md` 写明基线 `485fa00`、被剥离/替换的模块、以及后续如何再取上游。
+- [x] **Step 1: 移植纯逻辑模块**：`executor` / `logic-nodes` / `dependency-inference` / `template` / `run-variables` / `condition-builder` / `assert-nodes` / `transform-nodes` / `json-path` / `json-schema-lite` / `csv` / `error-class` / `run-record` / `run-graph-snapshot` / `ref-id` / `har-cookies` / `json-equal`。
+- [x] **Step 2: 剥离平台触点**：把 `script.ts` / `replay.ts` / `header-fidelity.ts` 中依赖扩展/浏览器的部分改为宿主接口注入（`ScriptPort` / `ReplayPort` / 头注入策略），保留纯函数部分；`AbortSignal`/`setTimeout` 由宿主桥提供等价物。
+- [x] **Step 3: 搬测试**：以 ReqFlow 的既有测试作为验收基线逐条跑通（这是本任务的主要验收口径，不允许「先跳过」）。
+- [x] **Step 4: 打包与嵌入**：`pnpm flow:build` 产出单文件；Rust 侧 `include_str!` 嵌入并加 smoke 测试（加载载荷 → 跑通 start→httpReplay（桩宿主）→ 断言节点 → 结束）。
+- [x] **Step 5: 登记来源与差异**：`flow-engine/README.md` 写明基线 `485fa00`、被剥离/替换的模块、以及后续如何再取上游。
 
 ### Task 3: 同步重放与结果回传（W3）
 
