@@ -19,9 +19,10 @@ This reference documents the complete local HTTP surface used by ProxyCrab agent
 13. [Bypass traffic](#bypass-traffic)
 14. [Certificate authority](#certificate-authority)
 15. [System logs](#system-logs)
-16. [Errors and lifecycle notes](#errors-and-lifecycle-notes)
-17. [Clash subscription](#clash-subscription)
-18. [Redaction library and bindings](#redaction-library-and-bindings)
+16. [Workflow projects and definitions](#workflow-projects-and-definitions)
+17. [Errors and lifecycle notes](#errors-and-lifecycle-notes)
+18. [Clash subscription](#clash-subscription)
+19. [Redaction library and bindings](#redaction-library-and-bindings)
 
 ## Script relative paths
 
@@ -1298,6 +1299,72 @@ The in-memory ring retains at most the newest 10,000 entries. Entries are not pe
 ### `DELETE /api/system-logs`
 
 Clears the in-memory ring and returns `{}`.
+
+## Workflow projects and definitions
+
+Workflow definitions group into projects. Wire shapes are camelCase and identical to the stored
+documents. Reads default to `allow`, writes and deletes to `approval`.
+
+### `GET /api/flow-projects?limit=100&offset=0`
+
+Both parameters are optional; omitting `limit` returns every project in (createdAt, id) order.
+Returns `{projects:[Project],total}` where one `Project` looks like:
+
+```json
+{
+  "id": "proj-A1b2C3d4E5f6G7h8",
+  "name": "demo",
+  "description": "",
+  "color": "#4f46e5",
+  "variables": {},
+  "secretVariables": {},
+  "createdAt": 1793860000000,
+  "updatedAt": 1793860000000
+}
+```
+
+### `POST /api/flow-projects`
+
+Body `{"name":"demo","description":"","color":"#4f46e5","variables":{},"secretVariables":{}}` —
+only `name` is required. Ids and timestamps are server-generated (`proj-…`). Returns the created
+`Project`.
+
+### `GET /api/flow-projects/{id}` / `PUT` / `DELETE`
+
+`GET` returns one `Project` or `404 not_found`. `PUT` accepts the same fields as create, all
+optional; present fields replace their values (an empty string or object clears). `DELETE` removes
+the project; workflows referencing it are kept.
+
+### `GET /api/workflows?projectId={id}&limit=100&offset=0`
+
+`projectId` filters by owning project; `limit`/`offset` paginate after the filter. Returns
+`{workflows:[Workflow],total}` where one `Workflow` carries `id`, `projectId`, `name`,
+`description`, `nodes`, `edges`, `variables`, `secretVariables`, `schemaVersion`, `createdAt`,
+`updatedAt`. Nodes are `{"id","type","position","config",…}` with `type` one of `start`,
+`httpReplay`, `condition`, `loop`, `delay`, `setVariable`, `assert`, `transform`, `stickyNote`;
+edges are `{"id","source","target","sourceHandle"?}`.
+
+### `POST /api/workflows`
+
+Body `{"projectId":"proj-…","name":"flow","nodes":[…],"edges":[…]}` — `projectId` and `name` are
+required; the graph arrays and variable maps default to empty. `projectId` must be non-empty but is
+not checked for existence. Ids are server-generated (`wf-…`). Returns the created `Workflow`.
+
+### `GET /api/workflows/{id}` / `PUT` / `DELETE`
+
+`GET` returns one `Workflow` or `404 not_found` (stored documents below the current
+`schemaVersion` migrate on read). `PUT` accepts optional `projectId`, `name`, `description`,
+`variables`, `secretVariables`, and the graph pair `nodes`+`edges`: the graph is replaced as a
+whole and both arrays must be sent together — sending only one returns `400 bad_request`.
+`DELETE` removes the definition.
+
+### `POST /api/workflows/{id}/validate`
+
+Runs the structural graph validator on the stored definition and returns
+`{"issues":[{"code":"missing-start","message":"…","nodeIds":[]}]}`. Known codes: `missing-start`,
+`multiple-start`, `dangling-edge`, `sticky-note-edge`, `refid-invalid`, `refid-conflict`. An empty
+`issues` array means the graph is valid. The endpoint is read-only and defaults to `allow` despite
+the POST verb. Validation never blocks saving; only workflow runs use it as a gate.
 
 ## Errors and lifecycle notes
 

@@ -291,6 +291,9 @@ browser UI.
 | `/api/clash-subscription` | `GET` current state (default: `allow`); `PUT` enable/update selected IPv4; `DELETE` disable (both default: `approval`) |
 | `/api/clash-config` | `GET` full YAML and default; `PUT` validate/write; `DELETE` reset (all default: `allow`) |
 | `/api/system-logs` | `GET`, `DELETE` |
+| `/api/flow-projects`, `/api/flow-projects/{id}` | workflow project CRUD (`GET` default: `allow`; `POST`/`PUT`/`DELETE` default: `approval`) |
+| `/api/workflows`, `/api/workflows/{id}` | workflow definition CRUD with whole-graph save (`GET` default: `allow`; `POST`/`PUT`/`DELETE` default: `approval`) |
+| `/api/workflows/{id}/validate` | `POST` run the structural graph validator (default: `allow`; read-only despite the POST verb) |
 
 System logs accept `after_seq` and are capped at 10,000 entries.
 
@@ -969,6 +972,34 @@ The unified in-memory ring stores only:
 - `message`
 
 Entries are not persisted and are consumed through incremental polling.
+
+## Workflow projects and definitions
+
+Workflow domain entities live in the workspace `flow/` family (`flow/projects/`, `flow/workflows/`,
+one JSON document per id) and reuse the flow domain model of the workflow editor. Wire shapes are
+camelCase and identical to the stored documents (`Project` / `Workflow` with `nodes`, `edges`,
+`variables`, `secretVariables`, `schemaVersion`).
+
+| Endpoint | Default | Contract |
+| --- | --- | --- |
+| `GET /api/flow-projects` | `allow` | `{projects:[Project],total}`; `limit`/`offset` paginate the (createdAt,id) order |
+| `POST /api/flow-projects` | `approval` | body `{name,description?,color?,variables?,secretVariables?}`; id and timestamps are server-generated (`proj-…`) |
+| `GET /api/flow-projects/{id}` | `allow` | one `Project`; `404 not_found` when absent |
+| `PUT /api/flow-projects/{id}` | `approval` | partial update: present fields replace their values (empty string/object clears) |
+| `DELETE /api/flow-projects/{id}` | `approval` | deletes the project; referencing workflows are not cascaded |
+| `GET /api/workflows` | `allow` | `{workflows:[Workflow],total}`; `projectId` filters, `limit`/`offset` paginate |
+| `POST /api/workflows` | `approval` | body `{projectId,name,description?,nodes?,edges?,variables?,secretVariables?}`; id (`wf-…`) and timestamps are server-generated; `projectId` must be non-empty but is not checked for existence (deletions never cascade, so orphan definitions are legal) |
+| `GET /api/workflows/{id}` | `allow` | one `Workflow` (read-time schema migration applies) |
+| `PUT /api/workflows/{id}` | `approval` | partial update; `nodes`+`edges` form one graph unit and must be sent together (whole replacement) — sending only one returns `400 bad_request` |
+| `DELETE /api/workflows/{id}` | `approval` | deletes the definition |
+| `POST /api/workflows/{id}/validate` | `allow` | runs `validate_workflow_graph` on the stored definition and returns `{issues:[{code,message,nodeIds}]}`; an empty list means the graph is valid. Registered as a read (`allow`) because the operation is read-only despite the POST verb (POST = "execute validation") |
+
+Writes persist documents at the current `schemaVersion`; lower-version documents migrate on read.
+Shape violations (empty name, empty `projectId`, unsupported schema version, missing node ids,
+non-finite positions) return `400 bad_request`; the structural graph validator intentionally does
+not gate saves — only runs use it. These endpoints are not registered on the read-only
+`/share-api/*` surface, and they do not yet publish UI change events (the workflow editor windows
+land in a later task and will pick those up).
 
 ## Redaction library and bindings
 
