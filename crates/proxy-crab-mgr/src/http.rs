@@ -39,15 +39,17 @@ use tokio_util::{
 use crate::{
     clash_subscription::{EnableClashSubscriptionRequest, SaveClashConfigRequest},
     dto::{
-        ActiveSession, AssetQuery, BodyQuery, BreakpointQuery, BypassQuery, CreateSessionRequest,
-        DebugFilterScriptRequest, DeleteBypassRequest, ErrorCode, ExecuteTemporaryScriptRequest,
-        ExtendBreakpointRequest, FlowListQuery, FlowProjectCreateRequest, FlowProjectUpdateRequest,
-        HttpApiChange, HttpApiResource, InterceptorCreateRequest, InterceptorUpdateRequest,
-        LogIdsRequest, LogViewsRequest, ManagerError, ManagerResult,
+        ActiveSession, AssetQuery, BodyQuery, BreakpointQuery, BypassQuery,
+        CreateRequestLibraryRequest, CreateSessionRequest, DebugFilterScriptRequest,
+        DeleteBypassRequest, ErrorCode, ExecuteTemporaryScriptRequest, ExtendBreakpointRequest,
+        FlowListQuery, FlowProjectCreateRequest, FlowProjectUpdateRequest, HttpApiChange,
+        HttpApiResource, IngestCaptureRequest, InterceptorCreateRequest,
+        InterceptorUpdateRequest, LogIdsRequest, LogViewsRequest, ManagerError, ManagerResult,
         ReplaceSessionInterceptorsRequest, ReplaceSessionViewRequest, ReplayRequestPayload,
-        RoutingSelection, ScriptRequest, SessionQuery, SystemLogsQuery, UpdateScriptRequest,
+        RequestLibraryBodyQuery, RequestLibraryQuery, RoutingSelection, ScriptRequest,
+        SessionQuery, SystemLogsQuery, UpdateRequestLibraryRequest, UpdateScriptRequest,
         UpdateSessionRequest, WebSocketQuery, WorkflowCreateRequest, WorkflowListQuery,
-        WorkflowUpdateRequest, default_body_max_size,
+        WorkflowUpdateRequest, default_body_max_size
     },
     manager::ProxyCrabManager,
     permission::{
@@ -430,6 +432,21 @@ fn router_with_changes_and_extra(
         )
         .route("/api/workflows/{id}/validate", post(validate_workflow))
         .route(
+            "/api/request-library",
+            get(request_library_list).post(request_library_create),
+        )
+        .route(
+            "/api/request-library/from-capture",
+            post(request_library_from_capture),
+        )
+        .route(
+            "/api/request-library/{id}",
+            get(request_library_get)
+                .put(request_library_update)
+                .delete(request_library_delete),
+        )
+        .route("/api/request-library/{id}/body", get(request_library_body))
+        .route(
             "/api/bypass",
             get(bypass_entries).delete(clear_bypass_entries),
         )
@@ -748,6 +765,13 @@ fn change_for_request(method: &Method, path: &str, query: Option<&str>) -> Optio
             vec![HttpApiResource::SessionInterceptors]
         }
         (&Method::DELETE, "/api/system-logs") => vec![HttpApiResource::SystemLogs],
+        (&Method::POST, "/api/request-library")
+        | (&Method::POST, "/api/request-library/from-capture") => {
+            vec![HttpApiResource::RequestLibrary]
+        }
+        (&Method::PUT | &Method::DELETE, value) if value.starts_with("/api/request-library/") => {
+            vec![HttpApiResource::RequestLibrary]
+        }
         (&Method::DELETE, "/api/bypass") | (&Method::POST, "/api/bypass/delete") => {
             vec![HttpApiResource::Bypass]
         }
@@ -1651,6 +1675,70 @@ async fn delete_bypass_entries(
 
 async fn clear_bypass_entries(State(manager): State<ManagerState>) -> ApiResult {
     success(manager.clear_bypass_entries().await?)
+}
+
+async fn request_library_list(
+    State(manager): State<ManagerState>,
+    ApiQuery(query): ApiQuery<RequestLibraryQuery>,
+) -> ApiResult {
+    success(manager.request_library_page(query).await?)
+}
+
+async fn request_library_create(
+    State(manager): State<ManagerState>,
+    ApiJson(request): ApiJson<CreateRequestLibraryRequest>,
+) -> ApiResult {
+    success(manager.create_request_library_entry(request).await?)
+}
+
+async fn request_library_from_capture(
+    State(manager): State<ManagerState>,
+    ApiJson(request): ApiJson<IngestCaptureRequest>,
+) -> ApiResult {
+    success(manager.ingest_request_from_capture(request).await?)
+}
+
+async fn request_library_get(
+    State(manager): State<ManagerState>,
+    ApiPath(id): ApiPath<String>,
+) -> ApiResult {
+    success(manager.request_library_entry(id).await?)
+}
+
+async fn request_library_update(
+    State(manager): State<ManagerState>,
+    ApiPath(id): ApiPath<String>,
+    ApiJson(request): ApiJson<UpdateRequestLibraryRequest>,
+) -> ApiResult {
+    success(manager.update_request_library_entry(id, request).await?)
+}
+
+async fn request_library_delete(
+    State(manager): State<ManagerState>,
+    ApiPath(id): ApiPath<String>,
+) -> ApiResult {
+    manager.delete_request_library_entry(id).await?;
+    success(json!({}))
+}
+
+async fn request_library_body(
+    State(manager): State<ManagerState>,
+    ApiPath(id): ApiPath<String>,
+    ApiQuery(query): ApiQuery<RequestLibraryBodyQuery>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    if query.max_size == Some(0) {
+        return Err(ApiError(ManagerError::bad_request(
+            "max_size must be greater than zero",
+        )));
+    }
+    let source = manager
+        .request_library_body_source(
+            id,
+            query.max_size.unwrap_or_else(default_body_max_size),
+        )
+        .await?;
+    body_response(source, &headers, query.max_size).await.map_err(ApiError)
 }
 
 async fn not_found() -> ApiResult {
@@ -3323,6 +3411,34 @@ mod tests {
                 "/api/system-logs",
                 None,
                 vec![HttpApiResource::SystemLogs],
+                None,
+            ),
+            (
+                "POST",
+                "/api/request-library",
+                None,
+                vec![HttpApiResource::RequestLibrary],
+                None,
+            ),
+            (
+                "POST",
+                "/api/request-library/from-capture",
+                None,
+                vec![HttpApiResource::RequestLibrary],
+                None,
+            ),
+            (
+                "PUT",
+                "/api/request-library/req-abc",
+                None,
+                vec![HttpApiResource::RequestLibrary],
+                None,
+            ),
+            (
+                "DELETE",
+                "/api/request-library/req-abc",
+                None,
+                vec![HttpApiResource::RequestLibrary],
                 None,
             ),
         ];
@@ -5184,5 +5300,598 @@ mod tests {
         let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(body["data"][0]["id"], "fixtures/a.json");
         assert_eq!(body["data"][0]["content_type"], "application/json");
+    }
+
+    /// Parse an `{ok: true, data: ...}` envelope, failing on error envelopes.
+    async fn ok_data(response: axum::response::Response) -> Value {
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let value: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value["ok"], true, "{value}");
+        value["data"].clone()
+    }
+
+    async fn error_of(response: axum::response::Response) -> (StatusCode, String, Value) {
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let value: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value["ok"], false, "{value}");
+        (status, value["error"]["code"].as_str().unwrap().to_owned(), value)
+    }
+
+    fn har_json(method: &str, url: &str) -> Value {
+        json!({"log": {"entries": [{"request": {"method": method, "url": url}}]}})
+    }
+
+    async fn request_library_json(
+        app: &axum::Router,
+        method: &str,
+        uri: &str,
+        body: Option<Value>,
+    ) -> axum::response::Response {
+        let mut builder = Request::builder().method(method).uri(uri);
+        if body.is_some() {
+            builder = builder.header("content-type", "application/json");
+        }
+        app.clone()
+            .oneshot(
+                builder
+                    .body(Body::from(
+                        body.map(|value| value.to_string()).unwrap_or_default(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn request_library_crud_shapes_filters_and_conflicts() {
+        let directory = tempdir().unwrap();
+        let runtime = ProxyCrab::open(directory.path(), Arc::new(LogBuffer::default())).unwrap();
+        let app = router(MitmManager::new(runtime), allow_all());
+
+        // Manual create: default naming, camelCase DTO, server-assigned fields.
+        let har = json!({
+            "log": {"entries": [{
+                "request": {
+                    "method": "POST",
+                    "url": "https://api.example.com/v1/login?debug=1",
+                    "headers": [{"name": "content-type", "value": "application/json"}],
+                    "queryString": [{"name": "debug", "value": "1"}],
+                    "postData": {"mimeType": "application/json", "text": "{\"user\":\"u\"}"}
+                }
+            }]}
+        });
+        let created = ok_data(
+            request_library_json(&app, "POST", "/api/request-library", Some(json!({"har": har})))
+                .await,
+        )
+        .await;
+        assert!(created["id"].as_str().unwrap().starts_with("req-"));
+        assert_eq!(created["name"], "POST api.example.com/v1/login");
+        assert_eq!(created["source"], "manual");
+        assert_eq!(created["tags"], json!([]));
+        assert_eq!(created["origin"], "");
+        assert!(created["createdAt"].as_u64().unwrap() > 0);
+        assert_eq!(created["createdAt"], created["updatedAt"]);
+        assert_eq!(created.get("created_at"), None);
+        assert_eq!(
+            created["har"]["log"]["entries"][0]["request"]["url"],
+            "https://api.example.com/v1/login?debug=1"
+        );
+        assert_eq!(
+            created["har"]["log"]["entries"][0]["request"]["queryString"][0]["name"],
+            "debug"
+        );
+        assert_eq!(
+            created["har"]["log"]["entries"][0]["request"]["postData"]["text"],
+            "{\"user\":\"u\"}"
+        );
+        let id = created["id"].as_str().unwrap().to_owned();
+
+        // Explicit name, tags and origin; the same default name dedups with a suffix.
+        let tagged = ok_data(
+            request_library_json(
+                &app,
+                "POST",
+                "/api/request-library",
+                Some(json!({
+                    "har": har_json("GET", "https://api.example.com/v1/ping"),
+                    "name": "checkout call",
+                    "tags": ["auth", "slow"],
+                    "origin": "https://app.example.com"
+                })),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(tagged["name"], "checkout call");
+        assert_eq!(tagged["tags"], json!(["auth", "slow"]));
+        assert_eq!(tagged["origin"], "https://app.example.com");
+        let duplicate = ok_data(
+            request_library_json(
+                &app,
+                "POST",
+                "/api/request-library",
+                Some(json!({"har": har})),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(duplicate["name"], "POST api.example.com/v1/login 2");
+
+        // Invalid input: unknown fields and empty snapshots are bad requests.
+        let (status, code, _) = error_of(
+            request_library_json(
+                &app,
+                "POST",
+                "/api/request-library",
+                Some(json!({"har": har, "source": "manual"})),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!((status, code.as_str()), (StatusCode::BAD_REQUEST, "bad_request"));
+        let (status, code, _) = error_of(
+            request_library_json(
+                &app,
+                "POST",
+                "/api/request-library",
+                Some(json!({"har": {"log": {"entries": []}}})),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!((status, code.as_str()), (StatusCode::BAD_REQUEST, "bad_request"));
+
+        // List: total, keyword (case-insensitive over name and URL), tag AND
+        // semantics, source filter.
+        let listed = ok_data(request_library_json(&app, "GET", "/api/request-library", None).await)
+            .await;
+        assert_eq!(listed["total"], 3);
+        assert_eq!(listed["entries"].as_array().unwrap().len(), 3);
+        let listed = ok_data(
+            request_library_json(&app, "GET", "/api/request-library?query=CHECKOUT", None).await,
+        )
+        .await;
+        assert_eq!(listed["total"], 1);
+        assert_eq!(listed["entries"][0]["name"], "checkout call");
+        let listed = ok_data(
+            request_library_json(&app, "GET", "/api/request-library?query=api.example.com", None)
+                .await,
+        )
+        .await;
+        assert_eq!(listed["total"], 3);
+        let listed = ok_data(
+            request_library_json(&app, "GET", "/api/request-library?tags=auth,missing", None).await,
+        )
+        .await;
+        assert_eq!(listed["total"], 0);
+        let listed = ok_data(
+            request_library_json(&app, "GET", "/api/request-library?tags=auth", None).await,
+        )
+        .await;
+        assert_eq!(listed["total"], 1);
+        let listed = ok_data(
+            request_library_json(&app, "GET", "/api/request-library?source=manual", None).await,
+        )
+        .await;
+        assert_eq!(listed["total"], 3);
+        let (status, code, _) = error_of(
+            request_library_json(&app, "GET", "/api/request-library?source=bogus", None).await,
+        )
+        .await;
+        assert_eq!((status, code.as_str()), (StatusCode::BAD_REQUEST, "bad_request"));
+
+        // Pagination bounds: the hard caps reject, offset/limit slice.
+        for limit in ["limit=0", "limit=1001"] {
+            let (status, code, _) = error_of(
+                request_library_json(&app, "GET", &format!("/api/request-library?{limit}"), None)
+                    .await,
+            )
+            .await;
+            assert_eq!(
+                (status, code.as_str()),
+                (StatusCode::BAD_REQUEST, "bad_request"),
+                "{limit}"
+            );
+        }
+        let listed = ok_data(
+            request_library_json(&app, "GET", "/api/request-library?limit=2&offset=1", None).await,
+        )
+        .await;
+        assert_eq!(listed["total"], 3);
+        assert_eq!(listed["entries"].as_array().unwrap().len(), 2);
+
+        // Read one; a missing id is a plain 404.
+        let fetched =
+            ok_data(request_library_json(&app, "GET", &format!("/api/request-library/{id}"), None)
+                .await)
+            .await;
+        assert_eq!(fetched, created);
+        let (status, code, _) = error_of(
+            request_library_json(&app, "GET", "/api/request-library/req-missing", None).await,
+        )
+        .await;
+        assert_eq!((status, code.as_str()), (StatusCode::NOT_FOUND, "not_found"));
+
+        // Partial update: name/tags change, identity fields never do.
+        let created_at = created["createdAt"].as_u64().unwrap();
+        let updated = ok_data(
+            request_library_json(
+                &app,
+                "PUT",
+                &format!("/api/request-library/{id}"),
+                Some(json!({"name": "renamed entry", "tags": ["x"]})),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(updated["name"], "renamed entry");
+        assert_eq!(updated["tags"], json!(["x"]));
+        assert_eq!(updated["origin"], "");
+        assert_eq!(updated["id"], created["id"]);
+        assert_eq!(updated["source"], "manual");
+        assert_eq!(updated["createdAt"], created_at);
+        assert!(updated["updatedAt"].as_u64().unwrap() >= created_at);
+
+        // Snapshot replacement, and a 404 for missing ids.
+        let replaced = ok_data(
+            request_library_json(
+                &app,
+                "PUT",
+                &format!("/api/request-library/{id}"),
+                Some(json!({"har": har_json("GET", "https://api.example.com/v2/other")})),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(
+            replaced["har"]["log"]["entries"][0]["request"]["url"],
+            "https://api.example.com/v2/other"
+        );
+        let (status, code, _) = error_of(
+            request_library_json(
+                &app,
+                "PUT",
+                "/api/request-library/req-missing",
+                Some(json!({"name": "ghost"})),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!((status, code.as_str()), (StatusCode::NOT_FOUND, "not_found"));
+
+        // Delete removes the entry; deleting again is a typed 404.
+        let deleted =
+            ok_data(request_library_json(&app, "DELETE", &format!("/api/request-library/{id}"), None)
+                .await)
+            .await;
+        assert_eq!(deleted, json!({}));
+        let (status, code, _) = error_of(
+            request_library_json(&app, "GET", &format!("/api/request-library/{id}"), None).await,
+        )
+        .await;
+        assert_eq!((status, code.as_str()), (StatusCode::NOT_FOUND, "not_found"));
+        let (status, code, _) = error_of(
+            request_library_json(&app, "DELETE", &format!("/api/request-library/{id}"), None).await,
+        )
+        .await;
+        assert_eq!((status, code.as_str()), (StatusCode::NOT_FOUND, "not_found"));
+    }
+
+    #[tokio::test]
+    async fn request_library_list_pages_with_default_limit_and_caps() {
+        let directory = tempdir().unwrap();
+        let runtime = ProxyCrab::open(directory.path(), Arc::new(LogBuffer::default())).unwrap();
+        let store = proxy_crab_mitm::flow::store::FlowStore::open(runtime.workspace().root())
+            .unwrap();
+        for index in 0..205 {
+            let snapshot: proxy_crab_mitm::flow::request_library::HarSnapshot =
+                serde_json::from_value(har_json(
+                    "GET",
+                    &format!("https://p.example.com/{index}"),
+                ))
+                .unwrap();
+            store
+                .add_request(
+                    snapshot,
+                    proxy_crab_mitm::flow::request_library::RequestSource::Manual,
+                    None,
+                    &[],
+                    String::new(),
+                )
+                .unwrap();
+        }
+        let app = router(MitmManager::new(runtime), allow_all());
+
+        // The default page size keeps one response bounded; total is unfiltered.
+        let listed = ok_data(request_library_json(&app, "GET", "/api/request-library", None).await)
+            .await;
+        assert_eq!(listed["total"], 205);
+        assert_eq!(listed["entries"].as_array().unwrap().len(), 200);
+
+        // Offset pages are disjoint slices of the same sorted set.
+        let first = ok_data(
+            request_library_json(&app, "GET", "/api/request-library?limit=3", None).await,
+        )
+        .await;
+        let second = ok_data(
+            request_library_json(&app, "GET", "/api/request-library?limit=3&offset=3", None).await,
+        )
+        .await;
+        let first_ids: Vec<&str> = first["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["id"].as_str().unwrap())
+            .collect();
+        let second_ids: Vec<&str> = second["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(first_ids.len(), 3);
+        assert_eq!(second_ids.len(), 3);
+        for id in &first_ids {
+            assert!(!second_ids.contains(id), "offset page overlaps");
+        }
+    }
+
+    #[tokio::test]
+    async fn request_library_ingests_captures_and_serves_bodies() {
+        let directory = tempdir().unwrap();
+        let runtime = ProxyCrab::open(directory.path(), Arc::new(LogBuffer::default())).unwrap();
+        let session = runtime.create_session(NewSession::default()).unwrap();
+        let captures =
+            CaptureStore::open(session.id, runtime.workspace().root()).unwrap();
+        let mut headers = HeaderValues::new();
+        headers.insert("content-type".into(), vec!["application/json".into()]);
+        headers.insert(
+            "referer".into(),
+            vec!["https://app.example.com/checkout".into()],
+        );
+        let id = captures
+            .begin(
+                "127.0.0.1",
+                &RequestData {
+                    method: "POST".into(),
+                    uri: "https://api.example.com/v1/login?debug=1".into(),
+                    version: "HTTP/1.1".into(),
+                    headers,
+                    tags: Default::default(),
+                },
+                "request",
+            )
+            .unwrap();
+        captures
+            .save_body(id, BodySide::Request, br#"{"user":"u"}"#)
+            .unwrap();
+        captures
+            .complete(
+                id,
+                &proxy_crab_mitm::model::ResponseData {
+                    status: 200,
+                    version: "HTTP/1.1".into(),
+                    headers: HeaderValues::new(),
+                },
+                &BodySourceType::Original,
+            )
+            .unwrap();
+        captures.save_body(id, BodySide::Response, b"{}").unwrap();
+
+        // A large binary request body goes to a blob (over the 64 KiB inline limit).
+        let large_id = captures
+            .begin(
+                "127.0.0.1",
+                &RequestData {
+                    method: "PUT".into(),
+                    uri: "https://files.example.com/upload".into(),
+                    version: "HTTP/1.1".into(),
+                    headers: HeaderValues::new(),
+                    tags: Default::default(),
+                },
+                "request",
+            )
+            .unwrap();
+        let large_bytes = vec![7_u8; 64 * 1024 + 1];
+        captures
+            .save_body(large_id, BodySide::Request, &large_bytes)
+            .unwrap();
+        captures
+            .complete(
+                large_id,
+                &proxy_crab_mitm::model::ResponseData {
+                    status: 200,
+                    version: "HTTP/1.1".into(),
+                    headers: HeaderValues::new(),
+                },
+                &BodySourceType::Original,
+            )
+            .unwrap();
+        let app = router(MitmManager::new(runtime.clone()), allow_all());
+
+        // Ingest from the live session: HAR snapshot, origin and naming.
+        let entry = ok_data(
+            request_library_json(
+                &app,
+                "POST",
+                "/api/request-library/from-capture",
+                Some(json!({
+                    "session_id": session.id,
+                    "capture_id": id,
+                    "tags": ["auth"]
+                })),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(entry["source"], "capture");
+        assert_eq!(entry["name"], "POST api.example.com/v1/login");
+        assert_eq!(entry["origin"], "https://app.example.com");
+        assert_eq!(entry["tags"], json!(["auth"]));
+        assert_eq!(
+            entry["har"]["log"]["entries"][0]["request"]["postData"]["text"],
+            "{\"user\":\"u\"}"
+        );
+        assert_eq!(
+            entry["har"]["log"]["entries"][0]["response"]["status"],
+            200
+        );
+        assert_eq!(
+            entry["har"]["log"]["entries"][0]["response"]["content"]["size"],
+            2
+        );
+        let entry_id = entry["id"].as_str().unwrap().to_owned();
+
+        // Explicit names dedup like ingestion defaults.
+        for expected in ["login", "login 2"] {
+            let named = ok_data(
+                request_library_json(
+                    &app,
+                    "POST",
+                    "/api/request-library/from-capture",
+                    Some(json!({
+                        "session_id": session.id,
+                        "capture_id": id,
+                        "name": "login"
+                    })),
+                )
+                .await,
+            )
+            .await;
+            assert_eq!(named["name"], expected);
+        }
+
+        // Missing capture and missing session produce typed errors.
+        let (status, code, _) = error_of(
+            request_library_json(
+                &app,
+                "POST",
+                "/api/request-library/from-capture",
+                Some(json!({"session_id": session.id, "capture_id": 999})),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!((status, code.as_str()), (StatusCode::NOT_FOUND, "not_found"));
+        let (status, code, _) = error_of(
+            request_library_json(
+                &app,
+                "POST",
+                "/api/request-library/from-capture",
+                Some(json!({"session_id": 424242, "capture_id": id})),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!((status, code.as_str()), (StatusCode::NOT_FOUND, "not_found"));
+        let (status, code, _) = error_of(
+            request_library_json(
+                &app,
+                "POST",
+                "/api/request-library/from-capture",
+                Some(json!({"capture_id": id})),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!((status, code.as_str()), (StatusCode::CONFLICT, "conflict"));
+
+        // Inline body: raw bytes with the HAR mimeType.
+        let response = request_library_json(
+            &app,
+            "GET",
+            &format!("/api/request-library/{entry_id}/body"),
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get("content-type")
+                .and_then(|value| value.to_str().ok()),
+            Some("application/json")
+        );
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&bytes[..], br#"{"user":"u"}"#);
+
+        // A bodyless manual entry reports body_not_found.
+        let bare = ok_data(
+            request_library_json(
+                &app,
+                "POST",
+                "/api/request-library",
+                Some(json!({"har": har_json("GET", "https://a.example.com/none")})),
+            )
+            .await,
+        )
+        .await;
+        let (status, code, _) = error_of(
+            request_library_json(
+                &app,
+                "GET",
+                &format!("/api/request-library/{}/body", bare["id"].as_str().unwrap()),
+                None,
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(
+            (status, code.as_str()),
+            (StatusCode::NOT_FOUND, "body_not_found")
+        );
+
+        // Blob body: full read and max_size enforcement.
+        let large = ok_data(
+            request_library_json(
+                &app,
+                "POST",
+                "/api/request-library/from-capture",
+                Some(json!({"session_id": session.id, "capture_id": large_id})),
+            )
+            .await,
+        )
+        .await;
+        assert!(
+            large.get("bodyRef").is_some(),
+            "over-limit bodies are blob-referenced"
+        );
+        let large_id_path = format!("/api/request-library/{}/body", large["id"].as_str().unwrap());
+        let response = request_library_json(&app, "GET", &large_id_path, None).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&bytes[..], &large_bytes[..]);
+        let (status, code, payload) = error_of(
+            request_library_json(&app, "GET", &format!("{large_id_path}?max_size=1024"), None).await,
+        )
+        .await;
+        assert_eq!((status, code.as_str()), (StatusCode::PAYLOAD_TOO_LARGE, "body_too_large"));
+        assert_eq!(payload["error"]["max_size"], 1024);
+        let (status, code, _) = error_of(
+            request_library_json(&app, "GET", &format!("{large_id_path}?max_size=0"), None).await,
+        )
+        .await;
+        assert_eq!((status, code.as_str()), (StatusCode::BAD_REQUEST, "bad_request"));
+
+        // Archiving the Session keeps both ingestion and the library intact.
+        drop(captures);
+        runtime.archive_session(session.id).await.unwrap();
+        let archived = ok_data(
+            request_library_json(
+                &app,
+                "POST",
+                "/api/request-library/from-capture",
+                Some(json!({"session_id": session.id, "capture_id": id})),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(archived["name"], "POST api.example.com/v1/login 2");
+        let response = request_library_json(&app, "GET", &large_id_path, None).await;
+        assert_eq!(response.status(), StatusCode::OK);
     }
 }

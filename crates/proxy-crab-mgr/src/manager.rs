@@ -9,6 +9,7 @@ use proxy_crab_mitm::{
     asset::{Asset, AssetError, AssetUpload},
     flow::{
         model::{Project, Workflow, WORKFLOW_SCHEMA_VERSION},
+        request_library::{CapturedRequest, RequestLibraryEntry, RequestSource},
         store::{FlowStore, generate_flow_id},
         validate::{ValidationIssue, validate_workflow_graph},
     },
@@ -45,6 +46,7 @@ use crate::{
         SessionViewPayload, SessionsPayload, SystemLogsQuery, UpdateAgentsPresetRequest,
         UpdateScriptRequest, UpdateSessionRequest, WorkflowCreateRequest, WorkflowListQuery,
         WorkflowPage, WorkflowUpdateRequest, WorkflowValidationIssue,
+        CreateRequestLibraryRequest, IngestCaptureRequest, RequestLibraryPage, RequestLibraryQuery, UpdateRequestLibraryRequest, REQUEST_LIBRARY_DEFAULT_LIMIT, REQUEST_LIBRARY_MAX_LIMIT
     },
 };
 use tokio::sync::{Semaphore, watch};
@@ -297,6 +299,26 @@ pub trait ProxyCrabManager: Send + Sync {
     ) -> ManagerResult<Workflow>;
     async fn delete_workflow(&self, id: String) -> ManagerResult<()>;
     async fn validate_workflow(&self, id: String) -> ManagerResult<Vec<WorkflowValidationIssue>>;
+    async fn request_library_page(
+        &self,
+        query: RequestLibraryQuery,
+    ) -> ManagerResult<RequestLibraryPage>;
+    async fn request_library_entry(&self, id: String) -> ManagerResult<RequestLibraryEntry>;
+    async fn create_request_library_entry(
+        &self,
+        request: CreateRequestLibraryRequest,
+    ) -> ManagerResult<RequestLibraryEntry>;
+    async fn update_request_library_entry(
+        &self,
+        id: String,
+        request: UpdateRequestLibraryRequest,
+    ) -> ManagerResult<RequestLibraryEntry>;
+    async fn delete_request_library_entry(&self, id: String) -> ManagerResult<()>;
+    async fn ingest_request_from_capture(
+        &self,
+        request: IngestCaptureRequest,
+    ) -> ManagerResult<RequestLibraryEntry>;
+    async fn request_library_body_source(&self, id: String, max_size: u64) -> ManagerResult<BodySource>;
 }
 
 #[derive(Clone)]
@@ -2283,6 +2305,163 @@ impl ProxyCrabManager for MitmManager {
         })
         .await
     }
+
+    async fn request_library_page(
+        &self,
+        query: RequestLibraryQuery,
+    ) -> ManagerResult<RequestLibraryPage> {
+        let limit = query.limit.unwrap_or(REQUEST_LIBRARY_DEFAULT_LIMIT);
+        if limit == 0 || limit > REQUEST_LIBRARY_MAX_LIMIT {
+            return Err(ManagerError::bad_request(format!(
+                "limit must be between 1 and {REQUEST_LIBRARY_MAX_LIMIT}"
+            )));
+        }
+        let runtime = self.runtime.clone();
+        self.run_blocking("request library list", move || {
+            let store = flow_store(&runtime)?;
+            let source = match query.source.as_deref() {
+                None | Some("") => None,
+                Some(value) => Some(parse_request_source(value)?),
+            };
+            let tags: Vec<String> = match query.tags.as_deref() {
+                None | Some("") => Vec::new(),
+                Some(value) => value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|tag| !tag.is_empty())
+                    .map(str::to_owned)
+                    .collect(),
+            };
+            let needle = query
+                .query
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_ascii_lowercase);
+            let matched: Vec<RequestLibraryEntry> = store
+                .list_requests()
+                .map_err(map_error)?
+                .into_iter()
+                .filter(|entry| {
+                    source.is_none_or(|source| entry.source == source)
+                        && tags.iter().all(|tag| entry.tags.contains(tag))
+                        && needle.as_deref().is_none_or(|needle| {
+                            entry.name.to_ascii_lowercase().contains(needle)
+                                || entry
+                                    .har
+                                    .log
+                                    .entries
+                                    .first()
+                                    .is_some_and(|har_entry| {
+                                        har_entry.request.url.to_ascii_lowercase().contains(needle)
+                                    })
+                        })
+                })
+                .collect();
+            let total = matched.len();
+            let entries = matched
+                .into_iter()
+                .skip(query.offset.unwrap_or(0))
+                .take(limit)
+                .collect();
+            Ok(RequestLibraryPage { entries, total })
+        })
+        .await
+    }
+
+    async fn request_library_entry(&self, id: String) -> ManagerResult<RequestLibraryEntry> {
+        let runtime = self.runtime.clone();
+        self.run_blocking("request library read", move || {
+            flow_store(&runtime)?
+                .get_request(&id)
+                .map_err(map_error)?
+                .ok_or_else(|| {
+                    ManagerError::not_found(format!("request library entry {id} not found"))
+                })
+        })
+        .await
+    }
+
+    async fn create_request_library_entry(
+        &self,
+        request: CreateRequestLibraryRequest,
+    ) -> ManagerResult<RequestLibraryEntry> {
+        let runtime = self.runtime.clone();
+        self.run_blocking("request library create", move || {
+            flow_store(&runtime)?
+                .add_request(
+                    request.har,
+                    RequestSource::Manual,
+                    request.name.as_deref(),
+                    &request.tags,
+                    request.origin,
+                )
+                .map_err(map_error)
+        })
+        .await
+    }
+
+    async fn update_request_library_entry(
+        &self,
+        id: String,
+        request: UpdateRequestLibraryRequest,
+    ) -> ManagerResult<RequestLibraryEntry> {
+        let runtime = self.runtime.clone();
+        self.run_blocking("request library update", move || {
+            flow_store(&runtime)?
+                .update_request(
+                    &id,
+                    request.name.as_deref(),
+                    request.tags.as_deref(),
+                    request.origin.as_deref(),
+                    request.har,
+                )
+                .map_err(map_error)
+        })
+        .await
+    }
+
+    async fn delete_request_library_entry(&self, id: String) -> ManagerResult<()> {
+        let runtime = self.runtime.clone();
+        self.run_blocking("request library delete", move || {
+            flow_store(&runtime)?.delete_request(&id).map_err(map_error)
+        })
+        .await
+    }
+
+    async fn ingest_request_from_capture(
+        &self,
+        request: IngestCaptureRequest,
+    ) -> ManagerResult<RequestLibraryEntry> {
+        let runtime = self.runtime.clone();
+        self.run_blocking("request library ingest", move || {
+            let store = flow_store(&runtime)?;
+            let session_id = match request.session_id {
+                Some(session_id) => session_id,
+                None => runtime
+                    .active_session_id()
+                    .ok_or_else(|| ManagerError::conflict("no active Session"))?,
+            };
+            let captured = load_captured_request(&runtime, session_id, request.capture_id)?;
+            store
+                .ingest_capture(&captured, request.name.as_deref(), &request.tags)
+                .map_err(map_error)
+        })
+        .await
+    }
+
+    async fn request_library_body_source(&self, id: String, max_size: u64) -> ManagerResult<BodySource> {
+        if max_size == 0 {
+            return Err(ManagerError::bad_request(
+                "max_size must be greater than zero",
+            ));
+        }
+        let runtime = self.runtime.clone();
+        self.run_blocking("request library body", move || {
+            request_library_body_source(&flow_store(&runtime)?, &id, max_size)
+        })
+        .await
+    }
 }
 
 /// Helpers shared by the workflow-domain manager methods: resolve the workspace
@@ -2341,6 +2520,141 @@ fn map_flow_error(error: anyhow::Error) -> ManagerError {
     } else {
         ManagerError::internal(message)
     }
+}
+
+/// Open the workspace flow store for one blocking management task.
+fn flow_store(
+    runtime: &ProxyCrab,
+) -> ManagerResult<proxy_crab_mitm::flow::store::FlowStore> {
+    proxy_crab_mitm::flow::store::FlowStore::open(runtime.workspace().root()).map_err(map_error)
+}
+
+fn parse_request_source(value: &str) -> ManagerResult<RequestSource> {
+    match value.to_ascii_lowercase().as_str() {
+        "capture" => Ok(RequestSource::Capture),
+        "import" => Ok(RequestSource::Import),
+        "manual" => Ok(RequestSource::Manual),
+        _ => Err(ManagerError::bad_request(
+            "source must be one of capture, import, manual",
+        )),
+    }
+}
+
+/// Materialize one capture for request library ingestion: the live session is
+/// consulted first and the archive second, so a session id stays usable after
+/// archiving. A missing capture inside a known session is a plain 404.
+fn load_captured_request(
+    runtime: &Arc<ProxyCrab>,
+    session_id: u64,
+    capture_id: u64,
+) -> ManagerResult<CapturedRequest> {
+    let mut archived = false;
+    let detail = match runtime.capture(session_id, capture_id) {
+        Ok(detail) => detail,
+        Err(error) => {
+            let live = error;
+            let is_live_session_missing = live
+                .downcast_ref::<proxy_crab_mitm::error::Error>()
+                .is_some_and(|mitm| matches!(mitm, proxy_crab_mitm::error::Error::SessionNotFound(_)));
+            if !is_live_session_missing {
+                return Err(map_error(live));
+            }
+            archived = true;
+            runtime
+                .archived_capture(session_id, capture_id)
+                .map_err(|_| map_error(live))?
+        }
+    }
+    .ok_or_else(|| ManagerError::not_found(format!("log {capture_id} not found")))?;
+    let body = |side| {
+        let source = if archived {
+            runtime.archived_capture_body_source(session_id, capture_id, side)
+        } else {
+            runtime.capture_body_source(session_id, capture_id, side)
+        };
+        source.map_err(map_error)
+    };
+    Ok(CapturedRequest {
+        capture: detail.summary,
+        request_body: body(BodySide::Request)?,
+        response_body: body(BodySide::Response)?,
+    })
+}
+
+/// Raw request body bytes of one entry as a [`BodySource`]: blob bytes via
+/// `bodyRef`, otherwise the inline snapshot text (base64-decoded when the
+/// snapshot says so). The content type follows the HAR `mimeType`.
+fn request_library_body_source(
+    store: &proxy_crab_mitm::flow::store::FlowStore,
+    id: &str,
+    max_size: u64,
+) -> ManagerResult<BodySource> {
+    let entry = store
+        .get_request(id)
+        .map_err(map_error)?
+        .ok_or_else(|| ManagerError::not_found(format!("request library entry {id} not found")))?;
+    let post_data = entry.har.log.entries[0].request.post_data.clone();
+    let content_type = post_data
+        .as_ref()
+        .map(|post_data| post_data.mime_type.clone())
+        .filter(|mime_type| !mime_type.is_empty());
+    let bytes = match &entry.body_ref {
+        Some(body_ref) => {
+            if body_ref.size > max_size {
+                return Err(ManagerError::body_too_large(body_ref.size, max_size));
+            }
+            store
+                .read_request_body(&entry)
+                .map_err(map_error)?
+                .ok_or_else(|| {
+                    ManagerError::internal(format!(
+                        "request library body {} is missing",
+                        body_ref.path
+                    ))
+                })?
+        }
+        None => {
+            let text = post_data
+                .as_ref()
+                .and_then(|post_data| post_data.text.as_ref())
+                .ok_or_else(|| {
+                    ManagerError::new(
+                        ErrorCode::BodyNotFound,
+                        format!("request library entry {id} has no stored request body"),
+                    )
+                })?;
+            let bytes = match post_data.as_ref().and_then(|post_data| post_data.encoding.as_deref())
+            {
+                None | Some("") => text.clone().into_bytes(),
+                Some("base64") => {
+                    use base64::Engine as _;
+                    base64::engine::general_purpose::STANDARD
+                        .decode(text)
+                        .map_err(|error| {
+                            ManagerError::bad_request(format!(
+                                "invalid base64 request body: {error}"
+                            ))
+                        })?
+                }
+                Some(other) => {
+                    return Err(ManagerError::bad_request(format!(
+                        "unsupported request body encoding {other:?}"
+                    )));
+                }
+            };
+            if bytes.len() as u64 > max_size {
+                return Err(ManagerError::body_too_large(bytes.len() as u64, max_size));
+            }
+            bytes
+        }
+    };
+    Ok(BodySource {
+        stored_size: bytes.len() as u64,
+        data: proxy_crab_mitm::storage::BodySourceData::Bytes(bytes),
+        path: None,
+        content_type,
+        content_encodings: Vec::new(),
+    })
 }
 
 fn flatten_headers(headers: &HeaderValues) -> Vec<HeaderItem> {
@@ -2425,7 +2739,8 @@ fn map_error(error: anyhow::Error) -> ManagerError {
         | MitmError::ScriptNotFound(_)
         | MitmError::CaptureNotFound(_)
         | MitmError::BreakpointNotFound(_)
-        | MitmError::BypassEntryNotFound(_) => ManagerError::not_found(message),
+        | MitmError::BypassEntryNotFound(_)
+        | MitmError::FlowEntityNotFound(_, _) => ManagerError::not_found(message),
         MitmError::SessionAlreadyExists(_)
         | MitmError::ArchivedSessionAlreadyExists(_)
         | MitmError::ScriptAlreadyExists(_)

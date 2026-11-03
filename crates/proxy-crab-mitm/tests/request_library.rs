@@ -2,7 +2,7 @@
 //! HAR snapshot with cookie normalization, the inline/blob body policy at the
 //! 64 KiB threshold, naming defaults with dedup, tags, and delete semantics.
 
-use std::fs;
+use std::{fs, sync::Arc};
 
 use proxy_crab_mitm::flow::request_library::{
     CapturedRequest, HarCookie, HarQueryString, RequestSource,
@@ -358,4 +358,69 @@ fn failed_capture_ingests_without_response_summary() {
         .unwrap();
     assert_eq!(entry.name, "GET down.example.com/x");
     assert!(entry.har.log.entries[0].response.is_none());
+}
+
+/// The manager layer (plan Task 6) ingests captures through `ProxyCrab`; the
+/// archived-session read path must keep that working after a Session moves to
+/// `sessions_archived/`.
+#[tokio::test]
+async fn archived_session_captures_stay_ingestible_through_the_runtime() {
+    use proxy_crab_mitm::{ProxyCrab, log_buffer::LogBuffer, model::NewSession};
+
+    let root = tempdir().unwrap();
+    let runtime = ProxyCrab::open(root.path(), Arc::new(LogBuffer::default())).unwrap();
+    let session = runtime.create_session(NewSession::default()).unwrap();
+    let captures = CaptureStore::open(session.id, runtime.workspace().root()).unwrap();
+    let id = begin(
+        &captures,
+        "POST",
+        "https://api.example.com/v1/login",
+        "HTTP/1.1",
+        HeaderValues::new(),
+    );
+    captures.save_body(id, BodySide::Request, br#"{"user":"u"}"#).unwrap();
+    complete_ok(&captures, id, HeaderValues::new());
+    drop(captures);
+
+    runtime.archive_session(session.id).await.unwrap();
+    assert!(
+        runtime.workspace().root().join("sessions_archived").join(session.id.to_string()).exists()
+    );
+
+    // The live path refuses archived sessions, the archived path serves them.
+    assert!(runtime.capture(session.id, id).is_err());
+    let detail = runtime
+        .archived_capture(session.id, id)
+        .unwrap()
+        .expect("archived capture exists");
+    let request_body = runtime
+        .archived_capture_body_source(session.id, id, BodySide::Request)
+        .unwrap()
+        .expect("archived request body exists");
+    let response_body = runtime
+        .archived_capture_body_source(session.id, id, BodySide::Response)
+        .unwrap()
+        .expect("archived response body exists");
+
+    let store = FlowStore::open(runtime.workspace().root()).unwrap();
+    let entry = store
+        .ingest_capture(
+            &CapturedRequest {
+                capture: detail.summary,
+                request_body: Some(request_body),
+                response_body: Some(response_body),
+            },
+            None,
+            &[],
+        )
+        .unwrap();
+    assert_eq!(entry.name, "POST api.example.com/v1/login");
+    assert_eq!(
+        entry.har.log.entries[0].request.post_data.as_ref().unwrap().text.as_deref(),
+        Some(r#"{"user":"u"}"#)
+    );
+
+    // Unknown archived sessions surface the typed error.
+    let error = runtime.archived_capture(999, id).unwrap_err().to_string();
+    assert!(error.contains("archived session 999 not found"), "{error}");
 }

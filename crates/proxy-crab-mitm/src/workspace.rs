@@ -18,7 +18,7 @@ use crate::model::{
 
 const WORKSPACE_CONFIG_FILE: &str = "app_config.json";
 pub(crate) const SESSIONS_DIRECTORY: &str = "sessions";
-const ARCHIVED_SESSIONS_DIRECTORY: &str = "sessions_archived";
+pub(crate) const ARCHIVED_SESSIONS_DIRECTORY: &str = "sessions_archived";
 
 pub fn now_millis() -> u64 {
     SystemTime::now()
