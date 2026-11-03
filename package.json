@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
-    "format": "prettier --write \"src/**/*.{ts,mts,vue,css,html}\" vite.config.ts vitest.config.ts && cargo fmt --all",
+    "flow:build": "node scripts/build-flow-engine.mjs",
+    "format": "prettier --write \"src/**/*.{ts,mts,vue,css,html}\" \"flow-engine/**/*.{ts,mts}\" scripts/build-flow-engine.mjs vite.config.ts vitest.config.ts && cargo fmt --all",
     "test:unit": "vitest run",
     "preview": "vite preview",
     "tauri": "tauri"
@@ -23,8 +24,11 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.12.3",
+    "@types/jmespath": "^0.15.2",
     "@types/qrcode": "^1.5.6",
     "@vitejs/plugin-vue": "^6.0.10",
+    "esbuild": "^0.25.0",
+    "jmespath": "^0.16.0",
     "prettier": "^3.9.10",
     "typescript": "~6.0.3",
     "vite": "^8.3.5",
