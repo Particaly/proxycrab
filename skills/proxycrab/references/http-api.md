@@ -1366,6 +1366,21 @@ Runs the structural graph validator on the stored definition and returns
 `issues` array means the graph is valid. The endpoint is read-only and defaults to `allow` despite
 the POST verb. Validation never blocks saving; only workflow runs use it as a gate.
 
+### `POST /api/flow/script/dry-run`
+
+Dry-runs one pre/post workflow script against a sample payload (defaults to `approval`).
+Body `{"side":"pre"|"post","script":"…","sampleInput":…,"sampleResponse":…}` — `script` is a
+function body (use `return`); `pre` scripts receive `input` (upstream aggregate) and return a
+request-override object (`url`/`headers`/`body`/`timeoutMs`); `post` scripts receive `response`
+(`status`/`headers`/`body`/`json`?/`durationMs`) and return the node output (default
+`response.body`); both also receive an `env` snapshot parameter (empty during dry-run, writes are
+not persisted). The side picks which sample field is used (missing → `null`). The script executes
+in a throwaway flow VM with a 5s timeout plus instruction/memory limits; nothing is created,
+persisted, broadcast, or replayed (`host.replay` is refused), and the request body is excluded
+from the permission audit preview. Returns `{"ok":true,"value":…,"warnings":[…]}` or
+`{"ok":false,"error":{"kind":"syntax"|"blocked"|"runtime"|"timeout"|"invalid-return","message":"…"}}`
+(`message` is user-readable Chinese; VM budget exhaustion reports as `timeout`).
+
 ## Errors and lifecycle notes
 
 HTTP status mapping:

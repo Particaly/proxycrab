@@ -9,6 +9,7 @@ use proxy_crab_mitm::{
     ProxyCrab, ReplayBody, ReplayError, ReplayRequest,
     asset::{Asset, AssetError, AssetUpload},
     flow::{
+        dry_run::{self, ScriptDryRunOutput, ScriptSide},
         env_sets::{
             self, EnvGlobalVariables, mask_env_set, mask_globals, restore_masked_secret_values,
         },
@@ -29,6 +30,7 @@ use proxy_crab_mitm::{
     workspace::now_millis,
 };
 use regex::Regex;
+use serde_json::Value as JsonValue;
 
 use crate::{
     agents::AgentsStore,
@@ -42,7 +44,8 @@ use crate::{
         CreateRequestLibraryRequest, CreateSessionRequest, DebugFilterScriptRequest,
         DeleteCount, EnvSetsPayload, EnvWriteBackRequest, EnvWriteBackResult, ErrorCode,
         ExecuteTemporaryScriptRequest, ExtendBreakpointRequest, FlowListQuery,
-        FlowProjectCreateRequest, FlowProjectPage, FlowProjectUpdateRequest, HeaderItem,
+        FlowProjectCreateRequest, FlowProjectPage, FlowProjectUpdateRequest,
+        FlowScriptDryRunRequest, HeaderItem,
         IngestCaptureRequest, InterceptorCreateRequest, InterceptorDetail,
         InterceptorLibraryList, InterceptorUpdateRequest, LogDetail, LogIdsPayload,
         LogIdsRequest, LogViewException, LogViewRow, LogViewsPayload, LogViewsRequest,
@@ -308,6 +311,10 @@ pub trait ProxyCrabManager: Send + Sync {
     ) -> ManagerResult<Workflow>;
     async fn delete_workflow(&self, id: String) -> ManagerResult<()>;
     async fn validate_workflow(&self, id: String) -> ManagerResult<Vec<WorkflowValidationIssue>>;
+    async fn flow_script_dry_run(
+        &self,
+        request: FlowScriptDryRunRequest,
+    ) -> ManagerResult<ScriptDryRunOutput>;
     async fn request_library_page(
         &self,
         query: RequestLibraryQuery,
@@ -2330,6 +2337,24 @@ impl ProxyCrabManager for MitmManager {
             Ok(issues.into_iter().map(validation_issue).collect())
         })
         .await
+    }
+
+    /// 试跑一次 pre/post 脚本（计划 Task 18）：一次性装配 flow VM + 引擎载荷
+    /// 执行，不建档、不落库、不广播；请求体（含脚本内容）也不进权限审计预览。
+    /// 脚本自身失败（语法/运行时/超时/返回值非法等）以分类错误结果返回，
+    /// 只有基础设施失败（VM 初始化/载荷加载）才按 500 报错。
+    async fn flow_script_dry_run(
+        &self,
+        request: FlowScriptDryRunRequest,
+    ) -> ManagerResult<ScriptDryRunOutput> {
+        let sample = match request.side {
+            ScriptSide::Pre => request.sample_input,
+            ScriptSide::Post => request.sample_response,
+        }
+        .unwrap_or(JsonValue::Null);
+        dry_run::dry_run_script(request.side, &request.script, sample)
+            .await
+            .map_err(|error| ManagerError::internal(error.to_string()))
     }
 
     async fn request_library_page(

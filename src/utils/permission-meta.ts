@@ -138,6 +138,7 @@ export const ACTION_META: Readonly<Record<string, PermissionActionMeta>> = {
   "PUT /api/workflows/{id}": { label: "保存工作流图（整体替换）", impact: "write" },
   "DELETE /api/workflows/{id}": { label: "删除工作流定义", impact: "write" },
   "POST /api/workflows/{id}/validate": { label: "运行工作流图校验", impact: "read" },
+  "POST /api/flow/script/dry-run": { label: "试跑流程脚本", impact: "write" },
 };
 
 /** 「功能」维度分组定义（顺序即展示顺序；prefixes 按 route_template 前缀匹配）。 */
@@ -189,7 +190,7 @@ export const FUNCTION_GROUPS: FunctionGroupDef[] = [
   {
     key: "flow",
     label: "工作流",
-    prefixes: ["/api/flow-projects", "/api/workflows"],
+    prefixes: ["/api/flow-projects", "/api/workflows", "/api/flow/script"],
   },
   { key: "system_logs", label: "系统日志", prefixes: ["/api/system-logs"] },
 ];

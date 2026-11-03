@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use proxy_crab_mitm::{
     bypass::BypassEntry,
     flow::{
+        dry_run::ScriptSide,
         env_sets::EnvGlobalVariables,
         model::{Project, Workflow, WorkflowEdge, WorkflowNode},
         request_library::HarSnapshot,
@@ -843,4 +844,21 @@ pub struct WorkflowValidationIssue {
     pub message: String,
     /// Node ids for locating the problem; empty for workflow-level issues.
     pub node_ids: Vec<String>,
+}
+
+/// Dry-run one pre/post script against a sample payload (plan Task 18): the
+/// script executes in the flow engine payload inside a throwaway VM — never
+/// persisted, never broadcast, and the request body is kept out of the
+/// permission audit preview (`side` picks which sample field is used).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FlowScriptDryRunRequest {
+    pub side: ScriptSide,
+    pub script: String,
+    /// Sample for `pre` scripts: the aggregated upstream input (any JSON).
+    #[serde(default)]
+    pub sample_input: Option<serde_json::Value>,
+    /// Sample for `post` scripts: the raw response envelope (any JSON).
+    #[serde(default)]
+    pub sample_response: Option<serde_json::Value>,
 }
