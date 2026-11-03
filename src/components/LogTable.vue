@@ -23,6 +23,7 @@ import {
   reconcileUnseenIds,
 } from "../utils/log-canvas";
 import {
+  Io5ArchiveOutline,
   Io5Checkmark,
   Io5Close,
   Io5CodeSlash,
@@ -287,12 +288,34 @@ function showCellMenu(
       },
     });
   }
+  if (backend.requestLibrary && logsStore.sessionId !== null) {
+    items.push({
+      label: "存入请求库",
+      icon: Io5ArchiveOutline,
+      title: "把这条抓包请求存入工作区请求库",
+      dividerBefore: true,
+      action: () => void saveRowToLibrary(rowId),
+    });
+  }
   items.push({
     label: "复制聚焦到此行的分享链接",
     icon: Io5Link,
     action: () => void copyFocusedShareLink(rowId),
   });
   openContextMenu(event, items);
+}
+
+/** 行级「存入请求库」：后端做名称去重（数字后缀），提示入库结果名称。 */
+async function saveRowToLibrary(id: number): Promise<void> {
+  const library = backend.requestLibrary;
+  const sessionId = logsStore.sessionId;
+  if (!library || sessionId === null) return;
+  try {
+    const entry = await library.ingestFromCapture({ capture_id: id, session_id: sessionId });
+    appStore.toast(`已存入请求库：${entry.name}`, "success");
+  } catch (error) {
+    reportError(error, "存入请求库失败");
+  }
 }
 
 /** 复制带 `id` 定位参数的分享链接；未分享时先弹窗确认开启分享。 */

@@ -16,7 +16,13 @@ import { isInactiveInProgress } from "../utils/capture-outcome";
 import MonacoEditor from "../components/MonacoEditor.vue";
 import BodyViewer from "../components/BodyViewer.vue";
 import WebSocketDetail from "../components/WebSocketDetail.vue";
-import { Io5Checkmark, Io5ChevronDown, Io5Copy, Io5Warning } from "vue-icons-plus/io5";
+import {
+  Io5ArchiveOutline,
+  Io5Checkmark,
+  Io5ChevronDown,
+  Io5Copy,
+  Io5Warning,
+} from "vue-icons-plus/io5";
 import {
   openInterceptorSnapshot,
   openModificationValue,
@@ -384,6 +390,21 @@ function replayCurrent(): void {
   if (detail.value) openReplay(prefillFromLog(detail.value));
 }
 
+/** 存入请求库：后端做名称去重（数字后缀），这里提示入库结果名称。 */
+async function saveToLibrary(): Promise<void> {
+  const library = backend.requestLibrary;
+  if (!library || !detail.value || props.breakpointId !== undefined) return;
+  try {
+    const entry = await library.ingestFromCapture({
+      capture_id: detail.value.id,
+      session_id: detail.value.session_id,
+    });
+    appStore.toast(`已存入请求库：${entry.name}`, "success");
+  } catch (error) {
+    reportError(error, "存入请求库失败");
+  }
+}
+
 const copiedKey = ref<string | null>(null);
 let copiedTimer: number | undefined;
 
@@ -573,6 +594,14 @@ function headerCount(headers: HeaderItem[]): string {
             @click="replayCurrent"
           >
             <BsFillSendFill :size="14" />
+          </button>
+          <button
+            v-if="backend.requestLibrary && !isWebSocket && breakpoint === null"
+            class="btn icon"
+            title="存入请求库"
+            @click="saveToLibrary"
+          >
+            <Io5ArchiveOutline :size="14" />
           </button>
           <button
             v-if="!isWebSocket"
