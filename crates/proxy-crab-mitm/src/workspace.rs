@@ -667,7 +667,7 @@ fn write_import_file(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn write_bytes_atomic(path: &Path, content: &[u8]) -> Result<()> {
+pub(crate) fn write_bytes_atomic(path: &Path, content: &[u8]) -> Result<()> {
     let temporary = path.with_extension("tmp");
     let mut file = File::create(&temporary)?;
     file.write_all(content)?;

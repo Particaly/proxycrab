@@ -4,12 +4,36 @@
 
 use std::{collections::BTreeMap, fs, path::Path, thread};
 
+use proxy_crab_mitm::flow::request_library::{HarEntry, HarLog, HarRequest, HarSnapshot};
 use proxy_crab_mitm::flow::store::{
     ENV_SETS_SCHEMA_VERSION, EnvVariableSet, FlowStore, Position, RequestLibraryEntry,
     RequestSource, WorkflowDefinition, WorkflowEdge, WorkflowNode, WorkflowNodeType,
 };
 use proxy_crab_mitm::workspace::Workspace;
 use tempfile::tempdir;
+
+fn sample_har() -> HarSnapshot {
+    HarSnapshot {
+        log: HarLog {
+            version: "1.2".into(),
+            creator: Default::default(),
+            entries: vec![HarEntry {
+                started_date_time: String::new(),
+                time: 0,
+                request: HarRequest {
+                    method: "GET".into(),
+                    url: "https://example.com/".into(),
+                    http_version: "HTTP/1.1".into(),
+                    headers: vec![],
+                    query_string: vec![],
+                    cookies: vec![],
+                    post_data: None,
+                },
+                response: None,
+            }],
+        },
+    }
+}
 
 fn sample_entry(id: &str) -> RequestLibraryEntry {
     RequestLibraryEntry {
@@ -18,7 +42,8 @@ fn sample_entry(id: &str) -> RequestLibraryEntry {
         tags: vec!["auth".into()],
         source: RequestSource::Capture,
         origin: "https://example.com".into(),
-        har: serde_json::json!({ "log": { "entries": [] } }),
+        har: sample_har(),
+        body_ref: None,
         created_at: 100,
         updated_at: 100,
     }
@@ -306,7 +331,8 @@ fn invalid_shapes_and_ids_are_rejected_on_write() {
     let mut entry = sample_entry("../escape");
     assert!(store.put_request(&entry).is_err());
     entry.id = "req-1".into();
-    entry.har = serde_json::json!({ "entries": [] });
+    // A HAR snapshot without entries cannot serve the replay path.
+    entry.har.log.entries.clear();
     assert!(store.put_request(&entry).is_err());
 
     let mut workflow = sample_workflow("wf-1");

@@ -2,6 +2,8 @@
 //!
 //! Layout:
 //! - `flow/request-library/{id}.json` — request library entries, one file per entry
+//! - `flow/request-library/bodies/{id}.body` — request body blobs referenced by
+//!   `bodyRef` (created lazily; owned by [`super::request_library`])
 //! - `flow/workflows/{id}.json` — workflow definitions, one file per workflow
 //! - `flow/env-sets.json` — versioned envelope of environment variable sets
 //! - `flow/runs.db` — run record database; created by the run record storage on
@@ -27,7 +29,7 @@ use crate::workspace::write_json_atomic;
 
 /// Workspace flow directory root.
 pub const FLOW_DIRECTORY: &str = "flow";
-const REQUEST_LIBRARY_DIRECTORY: &str = "request-library";
+pub(crate) const REQUEST_LIBRARY_DIRECTORY: &str = "request-library";
 const WORKFLOWS_DIRECTORY: &str = "workflows";
 const ENV_SETS_FILE: &str = "env-sets.json";
 /// Run record database location under `flow/`; the SQLite schema is owned by
@@ -36,6 +38,11 @@ pub const RUNS_DATABASE_FILE: &str = "runs.db";
 /// Current envelope schema version of `env-sets.json`; bump together with a
 /// migration when the envelope layout evolves.
 pub const ENV_SETS_SCHEMA_VERSION: u32 = 1;
+
+/// Request library model: lives in [`crate::flow::request_library`] (typed HAR
+/// snapshot, body blobs, capture ingestion); re-exported here so existing
+/// `flow::store` import paths keep working.
+pub use crate::flow::request_library::{RequestLibraryEntry, RequestSource};
 
 /// Directories of the flow family under a workspace root. Shared by workspace
 /// initialization and the v3 to v4 migration; creation is idempotent.
@@ -50,34 +57,7 @@ pub(crate) fn flow_directories(workspace_root: &Path) -> [PathBuf; 3] {
 
 /// Serializes every flow write in this process, independent of how many
 /// `FlowStore` handles exist, so read-modify-write sequences cannot interleave.
-static WRITE_LOCK: Mutex<()> = Mutex::new(());
-
-/// One entry of the workspace-level request library. The HAR snapshot is kept
-/// as raw JSON at this skeleton stage; the request library task narrows it to
-/// the fields the replay pipeline consumes.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct RequestLibraryEntry {
-    pub id: String,
-    pub name: String,
-    #[serde(default)]
-    pub tags: Vec<String>,
-    pub source: RequestSource,
-    #[serde(default)]
-    pub origin: String,
-    pub har: serde_json::Value,
-    pub created_at: u64,
-    pub updated_at: u64,
-}
-
-/// Where a request library entry came from.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum RequestSource {
-    Capture,
-    Import,
-    Manual,
-}
+pub(crate) static WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 /// A workflow definition (canvas orchestration). Node configs stay as raw JSON
 /// at this skeleton stage; the workflow model task aligns them field by field
@@ -169,7 +149,7 @@ pub struct EnvSetsEnvelope {
 }
 
 /// A flow entity persisted as one JSON document per id inside a flow directory.
-trait FlowEntity: Serialize + DeserializeOwned {
+pub(crate) trait FlowEntity: Serialize + DeserializeOwned {
     /// Directory name under `flow/`.
     const DIRECTORY: &'static str;
     /// Human-readable label used in error messages.
@@ -197,14 +177,7 @@ impl FlowEntity for RequestLibraryEntry {
     }
 
     fn validate(&self) -> Result<()> {
-        validate_flow_id(&self.id)?;
-        if !self.har.get("log").is_some_and(|log| log.is_object()) {
-            bail!(
-                "request library entry {} requires a HAR snapshot with a log object",
-                self.id
-            );
-        }
-        Ok(())
+        super::request_library::validate_entry(self)
     }
 }
 
@@ -263,7 +236,7 @@ impl EnvVariableSet {
 
 /// Flow entity ids double as file names and later API path segments: restrict
 /// them to a single safe component (same character policy as script names).
-fn validate_flow_id(id: &str) -> Result<()> {
+pub(crate) fn validate_flow_id(id: &str) -> Result<()> {
     if id.is_empty()
         || id.len() > 128
         || matches!(id, "." | "..")
@@ -281,8 +254,15 @@ fn entity_path(flow_root: &Path, directory: &str, id: &str) -> PathBuf {
 }
 
 fn put_entity<T: FlowEntity>(flow_root: &Path, value: &T) -> Result<()> {
-    value.validate()?;
     let _guard = WRITE_LOCK.lock().expect("flow write lock poisoned");
+    put_entity_locked(flow_root, value)
+}
+
+/// Write one entity while the flow write lock is already held, so callers can
+/// extend the critical section around a read-modify-write sequence (capture
+/// ingestion holds it across name dedup, blob write and entry write).
+pub(crate) fn put_entity_locked<T: FlowEntity>(flow_root: &Path, value: &T) -> Result<()> {
+    value.validate()?;
     write_json_atomic(&entity_path(flow_root, T::DIRECTORY, value.flow_id()), value)
         .with_context(|| format!("failed to save {} {}", T::LABEL, value.flow_id()))
 }
@@ -318,7 +298,7 @@ fn parse_entity<T: FlowEntity>(bytes: &[u8], id: &str) -> Result<T> {
     Ok(value)
 }
 
-fn list_entities<T: FlowEntity>(flow_root: &Path) -> Result<Vec<T>> {
+pub(crate) fn list_entities<T: FlowEntity>(flow_root: &Path) -> Result<Vec<T>> {
     let directory = flow_root.join(T::DIRECTORY);
     let mut values: Vec<T> = Vec::new();
     for entry in fs::read_dir(&directory)
@@ -353,7 +333,7 @@ fn list_entities<T: FlowEntity>(flow_root: &Path) -> Result<Vec<T>> {
     Ok(values)
 }
 
-fn delete_entity<T: FlowEntity>(flow_root: &Path, id: &str) -> Result<()> {
+pub(crate) fn delete_entity<T: FlowEntity>(flow_root: &Path, id: &str) -> Result<()> {
     validate_flow_id(id)?;
     let _guard = WRITE_LOCK.lock().expect("flow write lock poisoned");
     let path = entity_path(flow_root, T::DIRECTORY, id);
@@ -400,7 +380,7 @@ fn env_sets_path(flow_root: &Path) -> PathBuf {
 
 /// Read/write access to the flow directory family of one workspace.
 pub struct FlowStore {
-    flow_root: PathBuf,
+    pub(crate) flow_root: PathBuf,
 }
 
 impl FlowStore {
@@ -432,10 +412,8 @@ impl FlowStore {
         list_entities(&self.flow_root)
     }
 
-    /// Delete one request library entry.
-    pub fn delete_request(&self, id: &str) -> Result<()> {
-        delete_entity::<RequestLibraryEntry>(&self.flow_root, id)
-    }
+    // `delete_request` lives in `request_library.rs` together with the body
+    // blob cleanup it now owns.
 
     /// Atomically insert or replace a workflow definition.
     pub fn put_workflow(&self, workflow: &WorkflowDefinition) -> Result<()> {
