@@ -290,10 +290,10 @@
 - Create: `src/components/flow/config/ScriptEditor.vue`、`src/components/flow/dry-run.ts`
 - Modify: `crates/proxy-crab-mgr/src/{http.rs,permission.rs}`（试跑端点）
 
-- [ ] **Step 1: 编辑器**：Monaco（复用 `MonacoEditor.vue`）+ 前置/后置脚本骨架与上下文提示（pre：`input` → 覆盖对象；post：`response` → 返回出参）。
-- [ ] **Step 2: 试跑**：与执行链路同走宿主 JS 运行时（不建档、不落库、不广播），返回结果与错误分类。
-- [ ] **Step 3: 安全**：脚本超时（默认 5s）与指令/内存上限；错误分类 `syntax|blocked|runtime|timeout|invalid-return` 完整映射到 UI 文案。
-- [ ] **Step 4: 权限**：试跑 action 登记（`approval`），脚本内容不写入日志。
+- [x] **Step 1: 编辑器**：Monaco（复用 `MonacoEditor.vue`）+ 前置/后置脚本骨架与上下文提示（pre：`input` → 覆盖对象；post：`response` → 返回出参）。
+- [x] **Step 2: 试跑**：与执行链路同走宿主 JS 运行时（不建档、不落库、不广播），返回结果与错误分类。
+- [x] **Step 3: 安全**：脚本超时（默认 5s）与指令/内存上限；错误分类 `syntax|blocked|runtime|timeout|invalid-return` 完整映射到 UI 文案。
+- [x] **Step 4: 权限**：试跑 action 登记（`approval`），脚本内容不写入日志。
 
 ---
 
