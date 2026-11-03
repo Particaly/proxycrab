@@ -12,7 +12,9 @@ import type {
   CreatedApiKey,
   CreateAgentsPresetRequest,
   CreateEnvSetRequest,
+  CreateFlowProjectRequest,
   CreateSessionRequest,
+  CreateWorkflowRequest,
   DebugFilterScriptRequest,
   EnvGlobalVariables,
   EnvSetsPayload,
@@ -21,6 +23,8 @@ import type {
   EnvWriteBackResult,
   ExecuteTemporaryScriptRequest,
   ExtendBreakpointRequest,
+  FlowProject,
+  FlowProjectsPage,
   HttpApiChange,
   HttpServiceStatus,
   IdentityPermissions,
@@ -41,6 +45,7 @@ import type {
   ReplaceEnvGlobalsRequest,
   RoutingSelection,
   SaveEnvSetRequest,
+  SaveWorkflowGraphRequest,
   SessionShareState,
   SessionSharesPayload,
   SessionShareConfig,
@@ -49,6 +54,9 @@ import type {
   UpdateAgentsPresetRequest,
   UpdateScriptRequest,
   UpdateSessionRequest,
+  Workflow,
+  WorkflowValidationResult,
+  WorkflowsPage,
   WorkspacePaths,
 } from "./types";
 
@@ -413,19 +421,41 @@ export function createHttpBackend(
     },
     envSets: {
       get: () => call<EnvSetsPayload>("/api/env-sets"),
-      create: (request: CreateEnvSetRequest) => call<EnvVariableSet>("/api/env-sets", json("POST", request)),
+      create: (request: CreateEnvSetRequest) =>
+        call<EnvVariableSet>("/api/env-sets", json("POST", request)),
       save: (id: string, request: SaveEnvSetRequest) =>
         call<EnvVariableSet>(`/api/env-sets/${encodeURIComponent(id)}`, json("PUT", request)),
-      remove: (id: string) =>
-        call<void>(`/api/env-sets/${encodeURIComponent(id)}`, json("DELETE")),
+      remove: (id: string) => call<void>(`/api/env-sets/${encodeURIComponent(id)}`, json("DELETE")),
       setActive: (id: string | null) =>
-        call<{ activeSetId: string | null }>("/api/env-sets/active", json("PUT", { setId: id })).then(
-          (payload) => payload.activeSetId,
-        ),
+        call<{ activeSetId: string | null }>(
+          "/api/env-sets/active",
+          json("PUT", { setId: id }),
+        ).then((payload) => payload.activeSetId),
       saveGlobals: (request: ReplaceEnvGlobalsRequest) =>
         call<EnvGlobalVariables>("/api/env-globals", json("PUT", request)),
       writeBack: (request: EnvWriteBackRequest) =>
         call<EnvWriteBackResult>("/api/env-write-back", json("POST", request)),
+    },
+    workflows: {
+      listProjects: () => call<FlowProjectsPage>("/api/flow-projects"),
+      createProject: (request: CreateFlowProjectRequest) =>
+        call<FlowProject>("/api/flow-projects", json("POST", request)),
+      deleteProject: (id: string) =>
+        call<void>(`/api/flow-projects/${encodeURIComponent(id)}`, json("DELETE")),
+      listWorkflows: (projectId: string) =>
+        call<WorkflowsPage>(query("/api/workflows", { projectId })),
+      getWorkflow: (id: string) => call<Workflow>(`/api/workflows/${encodeURIComponent(id)}`),
+      createWorkflow: (request: CreateWorkflowRequest) =>
+        call<Workflow>("/api/workflows", json("POST", request)),
+      saveWorkflowGraph: (id: string, request: SaveWorkflowGraphRequest) =>
+        call<Workflow>(`/api/workflows/${encodeURIComponent(id)}`, json("PUT", request)),
+      deleteWorkflow: (id: string) =>
+        call<void>(`/api/workflows/${encodeURIComponent(id)}`, json("DELETE")),
+      validateWorkflow: (id: string) =>
+        call<WorkflowValidationResult>(
+          `/api/workflows/${encodeURIComponent(id)}/validate`,
+          json("POST"),
+        ),
     },
     getSystemLogs: (requestValue: SystemLogsQuery) =>
       call(query("/api/system-logs", requestValue as unknown as Record<string, unknown>)),

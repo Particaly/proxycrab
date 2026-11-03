@@ -647,6 +647,123 @@ export interface EnvWriteBackResult {
   dropped: number;
 }
 
+// ---------- flow workflows (flow/model.rs; wire format is camelCase) ----------
+
+/** 9 类工作流节点类型（Rust `WorkflowNodeType` 的 camelCase 字面量）。 */
+export type WorkflowNodeType =
+  | "start"
+  | "httpReplay"
+  | "condition"
+  | "loop"
+  | "delay"
+  | "setVariable"
+  | "assert"
+  | "transform"
+  | "stickyNote";
+
+/** 节点配置载荷：字段级语义由 flow-engine 定义，编辑器按类型按需读取。 */
+export type WorkflowNodeConfig = Record<string, unknown>;
+
+export interface WorkflowNodePosition {
+  x: number;
+  y: number;
+}
+
+export interface WorkflowNode {
+  id: string;
+  type: WorkflowNodeType;
+  position: WorkflowNodePosition;
+  config: WorkflowNodeConfig;
+  /** 展示名；缺省用节点注册表的默认标签。 */
+  label?: string;
+  /** 节点引用短码（5 位纯字母），模板 `{{ node.<refId>.path }}` 的解析键。 */
+  refId?: string;
+}
+
+/** 条件分支出边手柄：真 / 假出口。 */
+export type WorkflowEdgeHandle = "true" | "false";
+
+export interface WorkflowEdge {
+  id: string;
+  source: string;
+  target: string;
+  /** 分支手柄，仅 source 为 condition 节点时落值。 */
+  sourceHandle?: WorkflowEdgeHandle | null;
+}
+
+/** 工作流项目：流程的顶层分组容器。 */
+export interface FlowProject {
+  id: string;
+  name: string;
+  description: string;
+  /** 展示用颜色（HEX，如 `#4f46e5`）。 */
+  color: string;
+  variables: Record<string, string>;
+  secretVariables: Record<string, string>;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface Workflow {
+  id: string;
+  projectId: string;
+  name: string;
+  description: string;
+  nodes: WorkflowNode[];
+  edges: WorkflowEdge[];
+  variables: Record<string, string>;
+  secretVariables: Record<string, string>;
+  schemaVersion: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface FlowProjectsPage {
+  projects: FlowProject[];
+  total: number;
+}
+
+export interface WorkflowsPage {
+  workflows: Workflow[];
+  total: number;
+}
+
+export interface CreateFlowProjectRequest {
+  name: string;
+  description?: string;
+  color?: string;
+  variables?: Record<string, string>;
+  secretVariables?: Record<string, string>;
+}
+
+export interface CreateWorkflowRequest {
+  projectId: string;
+  name: string;
+  description?: string;
+  nodes?: WorkflowNode[];
+  edges?: WorkflowEdge[];
+  variables?: Record<string, string>;
+  secretVariables?: Record<string, string>;
+}
+
+/** 图保存：nodes+edges 是一个整体替换单元，必须同时发送。 */
+export interface SaveWorkflowGraphRequest {
+  nodes: WorkflowNode[];
+  edges: WorkflowEdge[];
+}
+
+export interface WorkflowValidationIssue {
+  /** 稳定的 kebab-case 代码（`missing-start`、`dangling-edge`、…）。 */
+  code: string;
+  message: string;
+  /** 定位问题涉及的节点 id；流程级问题为空数组。 */
+  nodeIds: string[];
+}
+
+export interface WorkflowValidationResult {
+  issues: WorkflowValidationIssue[];
+}
+
 export interface HttpServiceStatus {
   running: boolean;
   host: string;

@@ -16,7 +16,9 @@ import type {
   CreatedApiKey,
   CreateAgentsPresetRequest,
   CreateEnvSetRequest,
+  CreateFlowProjectRequest,
   CreateSessionRequest,
+  CreateWorkflowRequest,
   DebugFilterScriptRequest,
   DeleteCount,
   EnvGlobalVariables,
@@ -26,6 +28,8 @@ import type {
   EnvWriteBackResult,
   ExecuteTemporaryScriptRequest,
   ExtendBreakpointRequest,
+  FlowProject,
+  FlowProjectsPage,
   InterceptorCreateRequest,
   InterceptorContent,
   InterceptorKind,
@@ -53,6 +57,7 @@ import type {
   RoutingSelection,
   SaveEnvSetRequest,
   SaveFileRequest,
+  SaveWorkflowGraphRequest,
   Script,
   ScriptRequest,
   SessionFilter,
@@ -68,6 +73,9 @@ import type {
   SkillManagerState,
   SkillSaveResult,
   UpdateScriptRequest,
+  Workflow,
+  WorkflowValidationResult,
+  WorkflowsPage,
   UpdateAgentsPresetRequest,
   UpdateSessionRequest,
   TemporaryExecutionResult,
@@ -124,6 +132,21 @@ export interface Backend {
     setActive(id: string | null): Promise<string | null>;
     saveGlobals(request: ReplaceEnvGlobalsRequest): Promise<EnvGlobalVariables>;
     writeBack(request: EnvWriteBackRequest): Promise<EnvWriteBackResult>;
+  };
+  /**
+   * 请求工作流域：项目 / 流程定义 CRUD、图整体保存与结构校验。未实现时
+   * UI 不展示「工作流」入口（Tauri 命令尚未提供，桌面端暂无该入口）。
+   */
+  readonly workflows?: {
+    listProjects(): Promise<FlowProjectsPage>;
+    createProject(request: CreateFlowProjectRequest): Promise<FlowProject>;
+    deleteProject(id: string): Promise<void>;
+    listWorkflows(projectId: string): Promise<WorkflowsPage>;
+    getWorkflow(id: string): Promise<Workflow>;
+    createWorkflow(request: CreateWorkflowRequest): Promise<Workflow>;
+    saveWorkflowGraph(id: string, request: SaveWorkflowGraphRequest): Promise<Workflow>;
+    deleteWorkflow(id: string): Promise<void>;
+    validateWorkflow(id: string): Promise<WorkflowValidationResult>;
   };
   readonly host?: HostOperations;
 
