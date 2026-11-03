@@ -523,6 +523,7 @@ where
     A: AsyncRead + AsyncWrite + Unpin,
     B: AsyncRead + AsyncWrite + Unpin,
 {
+    #[allow(clippy::too_many_arguments)]
     async fn pump<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
         mut reader: R,
         mut writer: W,

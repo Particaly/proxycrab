@@ -395,6 +395,7 @@ pub(crate) fn execute_request_with_ws(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn execute_request_inner(
     source: &str,
     request: &RequestData,

@@ -13,12 +13,14 @@ pub(crate) struct WsMessageInput {
     pub body: WsBody,
 }
 
+type CachedLazyBody = Arc<OnceLock<Result<Option<Arc<[u8]>>, String>>>;
+
 #[derive(Clone)]
 pub(crate) enum WsBody {
     Ready(Arc<[u8]>),
     Lazy {
         read: Arc<dyn Fn() -> anyhow::Result<Option<Vec<u8>>> + Send + Sync>,
-        cached: Arc<OnceLock<Result<Option<Arc<[u8]>>, String>>>,
+        cached: CachedLazyBody,
     },
 }
 

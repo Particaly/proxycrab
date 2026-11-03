@@ -125,10 +125,12 @@ impl DeferredBodyReader {
     }
 }
 
+type DeferredFrameReceiver = Mutex<Option<mpsc::Receiver<Result<Frame<Bytes>, BoxError>>>>;
+
 pub(crate) struct DeferredBody {
     reader: DeferredBodyReader,
     sender: mpsc::UnboundedSender<DeferredCommand>,
-    receiver: Mutex<Option<mpsc::Receiver<Result<Frame<Bytes>, BoxError>>>>,
+    receiver: DeferredFrameReceiver,
     size_hint: hyper::body::SizeHint,
     end_stream: bool,
     done: Option<oneshot::Receiver<PumpResult>>,
