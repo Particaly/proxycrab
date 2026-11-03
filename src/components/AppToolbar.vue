@@ -21,6 +21,7 @@ import {
   openJwt,
   openQrCode,
   openReplay,
+  openRequestLibrary,
   openTextDiff,
   openRequestInterceptorManager,
   openResponseInterceptorManager,
@@ -327,6 +328,14 @@ onBeforeUnmount(() => {
           >
             <BsFillSendFill :size="14" />
             <span>发送请求</span>
+          </button>
+          <button
+            v-if="backend.requestLibrary"
+            class="tb-menu-item"
+            @click="runMenuAction(openRequestLibrary)"
+          >
+            <Io5LibraryOutline :size="14" />
+            <span>请求库</span>
           </button>
           <button class="tb-menu-item" @click="runMenuAction(openQrCode)">
             <Io5QrCode :size="14" />

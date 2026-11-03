@@ -25,6 +25,7 @@ import ReadonlyViewerWindow from "./ReadonlyViewerWindow.vue";
 import SkillManagerWindow from "./SkillManagerWindow.vue";
 import RoutingManagerWindow from "./RoutingManagerWindow.vue";
 import EnvSetsWindow from "./EnvSetsWindow.vue";
+import RequestLibraryWindow from "./RequestLibraryWindow.vue";
 import BypassWindow from "./BypassWindow.vue";
 import BreakpointListWindow from "./BreakpointListWindow.vue";
 import AgentsPresetsWindow from "./AgentsPresetsWindow.vue";
@@ -355,6 +356,17 @@ export function openEnvSets(): void {
     component: EnvSetsWindow,
     width: 880,
     height: 580,
+  });
+}
+
+/** 请求库；后端未提供 requestLibrary 能力时不打开入口。 */
+export function openRequestLibrary(): void {
+  if (!getBackend().requestLibrary) return;
+  windowsStore.open("request-library", {
+    title: "请求库",
+    component: RequestLibraryWindow,
+    width: 1000,
+    height: 640,
   });
 }
 
