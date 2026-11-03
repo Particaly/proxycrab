@@ -2853,7 +2853,9 @@ async fn old_ca_url_over_http2_uses_normal_interceptors_and_capture() {
 // ---------- replay ----------
 
 async fn wait_capture_success(runtime: &ProxyCrab, session_id: u64, id: u64) {
-    timeout(Duration::from_secs(5), async {
+    // 本地代理的回环重放通常毫秒级完成；窗口放宽到 30s 只是为了在整机高负载
+    // （并行编译/测试）下给轮询留出余量，不改变断言语义。
+    timeout(Duration::from_secs(30), async {
         loop {
             if let Some(detail) = runtime.capture(session_id, id).unwrap()
                 && detail.summary.outcome == CaptureOutcome::Success
