@@ -224,9 +224,9 @@
 - Create: `src/windows/WorkflowEditorWindow.vue`、`src/components/flow/{Canvas.vue,NodeShell.vue}`、`src/styles/flow.css`
 - Modify: `package.json`（新增 `@vue-flow/core`）、`src/windows/launcher.ts`、`src/components/AppToolbar.vue`
 
-- [ ] **Step 1: 依赖接入**：`@vue-flow/core` + 自定义节点组件（不引入其默认主题，全部套 `base.css` token 与 13px 基准）。
-- [ ] **Step 2: 三栏骨架**：左侧流程列表 / 中间画布 / 右侧配置抽屉（抽屉形态复用既有浮窗内嵌面板约定）。
-- [ ] **Step 3: 保存与脏标记**：显式保存 + 离开守卫（对齐仓库「无自动保存」惯例）。
+- [x] **Step 1: 依赖接入**：`@vue-flow/core` + 自定义节点组件（不引入其默认主题，全部套 `base.css` token 与 13px 基准）。
+- [x] **Step 2: 三栏骨架**：左侧流程列表 / 中间画布 / 右侧配置抽屉（抽屉形态复用既有浮窗内嵌面板约定）。
+- [x] **Step 3: 保存与脏标记**：显式保存 + 离开守卫（对齐仓库「无自动保存」惯例）。
 
 ### Task 13: 画布交互
 
