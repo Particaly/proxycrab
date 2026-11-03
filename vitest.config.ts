@@ -5,6 +5,6 @@ export default defineConfig({
   plugins: [vue()],
   test: {
     environment: "node",
-    include: ["src/**/*.test.mts"],
+    include: ["src/**/*.test.mts", "flow-engine/**/*.test.mts"],
   },
 });

@@ -1,3 +1,4 @@
+pub mod bundle;
 pub mod host;
 pub mod model;
 pub mod request_library;
