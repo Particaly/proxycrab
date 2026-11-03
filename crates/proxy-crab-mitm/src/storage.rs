@@ -182,9 +182,9 @@ impl CaptureStore {
         after_id: u32,
         limit: usize,
     ) -> Result<Option<crate::websocket::WebSocketPage>> {
-        if !self
+        if self
             .websocket_info(id)?
-            .is_some_and(|i| i.websocket_log_id == id)
+            .is_none_or(|i| i.websocket_log_id != id)
         {
             return Ok(None);
         }
@@ -202,9 +202,9 @@ impl CaptureStore {
         side: BodySide,
         message_id: u32,
     ) -> Result<Option<Vec<u8>>> {
-        if !self
+        if self
             .websocket_info(id)?
-            .is_some_and(|i| i.websocket_log_id == id)
+            .is_none_or(|i| i.websocket_log_id != id)
         {
             return Ok(None);
         }
@@ -1056,7 +1056,14 @@ impl CaptureStore {
                 &source.content_encodings.join(","),
                 BODY_DETAIL_LIMIT,
             ) {
-                Ok(bytes) => bytes,
+                Ok((bytes, truncated)) => {
+                    if truncated {
+                        return Ok(BodyPayload::Large {
+                            size: source.stored_size,
+                        });
+                    }
+                    bytes
+                }
                 Err(DecodeBodyError::TooLarge) => {
                     return Ok(BodyPayload::Large {
                         size: source.stored_size,
@@ -1095,7 +1102,14 @@ pub fn read_body_payload(source: BodySource) -> Result<BodyPayload> {
             &source.content_encodings.join(","),
             BODY_DETAIL_LIMIT,
         ) {
-            Ok(bytes) => bytes,
+            Ok((bytes, truncated)) => {
+                if truncated {
+                    return Ok(BodyPayload::Large {
+                        size: source.stored_size,
+                    });
+                }
+                bytes
+            }
             Err(DecodeBodyError::TooLarge) => {
                 return Ok(BodyPayload::Large {
                     size: source.stored_size,
@@ -1150,7 +1164,7 @@ fn first_header<'a>(headers: &'a HeaderValues, name: &str) -> Option<&'a str> {
         .map(String::as_str)
 }
 
-fn is_textual(content_type: &str) -> bool {
+pub(crate) fn is_textual(content_type: &str) -> bool {
     content_type.starts_with("text/")
         || ["json", "xml", "javascript", "x-www-form-urlencoded"]
             .iter()
@@ -1169,23 +1183,26 @@ fn content_encodings(headers: &HeaderValues) -> Vec<String> {
 }
 
 #[derive(Debug)]
-enum DecodeBodyError {
+pub(crate) enum DecodeBodyError {
     TooLarge,
     Failed,
 }
 
-fn decode_body(
+/// 按 content-encoding 链逆序解码，解码结果按 `limit` 截断；返回
+/// `(bytes, truncated)`。仅当中间阶段超限（无法继续有意义地解码）时返回
+/// `TooLarge`；末段超限以截断结果与标记返回（重放信封需要部分数据）。
+pub(crate) fn decode_body(
     bytes: &[u8],
     encoding: &str,
     limit: u64,
-) -> std::result::Result<Vec<u8>, DecodeBodyError> {
+) -> std::result::Result<(Vec<u8>, bool), DecodeBodyError> {
     let mut current = bytes.to_vec();
     let encodings = encoding
         .split(',')
         .map(|value| value.trim().to_ascii_lowercase())
         .filter(|value| !value.is_empty() && value != "identity")
         .collect::<Vec<_>>();
-    for encoding in encodings.iter().rev() {
+    for (position, encoding) in encodings.iter().rev().enumerate() {
         let mut decoded = Vec::new();
         let result = match encoding.as_str() {
             "gzip" => GzDecoder::new(current.as_slice())
@@ -1216,11 +1233,15 @@ fn decode_body(
         };
         result.map_err(|_| DecodeBodyError::Failed)?;
         if decoded.len() as u64 > limit {
-            return Err(DecodeBodyError::TooLarge);
+            if position + 1 < encodings.len() {
+                return Err(DecodeBodyError::TooLarge);
+            }
+            decoded.truncate(limit as usize);
+            return Ok((decoded, true));
         }
         current = decoded;
     }
-    Ok(current)
+    Ok((current, false))
 }
 
 fn error_stage_name(stage: ErrorStage) -> &'static str {
@@ -1425,7 +1446,9 @@ mod tests {
         let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
         encoder.write_all(&vec![b'a'; 4096]).unwrap();
         let compressed = encoder.finish().unwrap();
-        assert!(decode_body(&compressed, "gzip", 128).is_err());
+        let (decoded, truncated) = decode_body(&compressed, "gzip", 128).unwrap();
+        assert!(truncated);
+        assert_eq!(decoded.len(), 128);
     }
 
     #[test]

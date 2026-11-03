@@ -17,5 +17,8 @@ pub mod storage;
 pub mod websocket;
 pub mod workspace;
 
-pub use proxy::replay::{ReplayBody, ReplayError, ReplayRequest};
+pub use proxy::replay::{
+    REPLAY_DEFAULT_TIMEOUT, ReplayAwaitError, ReplayBody, ReplayBodyType, ReplayError,
+    ReplayRequest, ReplayResponse,
+};
 pub use runtime::ProxyCrab;

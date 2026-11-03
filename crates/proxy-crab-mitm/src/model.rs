@@ -332,16 +332,16 @@ pub enum BodyPayload {
 /// captured in interceptor-entry snapshots.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[derive(Default)]
 pub enum BodySourceType {
+    #[default]
     Original,
-    String { content: String },
-    Asset { asset_id: String },
-}
-
-impl Default for BodySourceType {
-    fn default() -> Self {
-        Self::Original
-    }
+    String {
+        content: String,
+    },
+    Asset {
+        asset_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
