@@ -4,10 +4,13 @@
 
 use std::{collections::BTreeMap, fs, path::Path, thread};
 
+use proxy_crab_mitm::flow::model::{
+    WORKFLOW_SCHEMA_VERSION, ConditionBranchHandle, NodeConfig, Position, Workflow, WorkflowEdge,
+    WorkflowNode, WorkflowNodeType,
+};
 use proxy_crab_mitm::flow::request_library::{HarEntry, HarLog, HarRequest, HarSnapshot};
 use proxy_crab_mitm::flow::store::{
-    ENV_SETS_SCHEMA_VERSION, EnvVariableSet, FlowStore, Position, RequestLibraryEntry,
-    RequestSource, WorkflowDefinition, WorkflowEdge, WorkflowNode, WorkflowNodeType,
+    ENV_SETS_SCHEMA_VERSION, EnvVariableSet, FlowStore, RequestLibraryEntry, RequestSource,
 };
 use proxy_crab_mitm::workspace::Workspace;
 use tempfile::tempdir;
@@ -49,22 +52,24 @@ fn sample_entry(id: &str) -> RequestLibraryEntry {
     }
 }
 
-fn sample_workflow(id: &str) -> WorkflowDefinition {
-    WorkflowDefinition {
+fn sample_workflow(id: &str) -> Workflow {
+    Workflow {
         id: id.into(),
+        project_id: "proj-1".into(),
         name: "checkout".into(),
         description: String::new(),
         nodes: vec![WorkflowNode {
             id: "start".into(),
             node_type: WorkflowNodeType::Start,
             position: Position { x: 0.0, y: 0.0 },
-            config: serde_json::json!({}),
+            config: NodeConfig::default(),
             label: None,
             ref_id: None,
         }],
         edges: vec![],
         variables: BTreeMap::new(),
         secret_variables: BTreeMap::new(),
+        schema_version: WORKFLOW_SCHEMA_VERSION,
         created_at: 100,
         updated_at: 100,
     }
@@ -92,7 +97,12 @@ fn schema_version(root: &Path) -> u32 {
 fn workspace_open_initializes_flow_directories_and_schema_v4() {
     let root = tempdir().unwrap();
     Workspace::open(root.path()).unwrap();
-    for directory in ["flow", "flow/request-library", "flow/workflows"] {
+    for directory in [
+        "flow",
+        "flow/projects",
+        "flow/request-library",
+        "flow/workflows",
+    ] {
         assert!(root.path().join(directory).is_dir(), "{directory}");
     }
     assert_eq!(schema_version(root.path()), 4);
@@ -121,6 +131,52 @@ fn v3_workspace_advances_to_v4_on_open_without_touching_existing_data() {
     Workspace::open(root.path()).unwrap();
     assert_eq!(schema_version(root.path()), 4);
     assert!(root.path().join("flow/workflows").is_dir());
+}
+
+#[test]
+fn project_crud_round_trip() {
+    let root = tempdir().unwrap();
+    let store = FlowStore::open(root.path()).unwrap();
+    assert!(store.list_projects().unwrap().is_empty());
+    assert_eq!(store.get_project("proj-1").unwrap(), None);
+
+    let project = proxy_crab_mitm::flow::model::Project {
+        id: "proj-1".into(),
+        name: "结算链路".into(),
+        description: "checkout flows".into(),
+        color: "#4f46e5".into(),
+        variables: BTreeMap::from([("baseUrl".into(), "https://example.com".into())]),
+        secret_variables: BTreeMap::new(),
+        created_at: 100,
+        updated_at: 100,
+    };
+    store.put_project(&project).unwrap();
+    assert_eq!(store.get_project("proj-1").unwrap(), Some(project.clone()));
+    let mut earlier = project.clone();
+    earlier.id = "proj-0".into();
+    earlier.created_at = 50;
+    earlier.updated_at = 50;
+    store.put_project(&earlier).unwrap();
+    assert_eq!(
+        store
+            .list_projects()
+            .unwrap()
+            .iter()
+            .map(|project| project.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["proj-0", "proj-1"]
+    );
+    store.delete_project("proj-0").unwrap();
+    assert_eq!(store.list_projects().unwrap().len(), 1);
+    assert!(store.delete_project("proj-0").is_err());
+
+    // Projects persist as camelCase JSON.
+    let raw: serde_json::Value = serde_json::from_slice(
+        &fs::read(root.path().join("flow/projects/proj-1.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(raw["id"], "proj-1");
+    assert!(raw.get("secretVariables").is_some());
 }
 
 #[test]
@@ -181,7 +237,7 @@ fn flow_definitions_persist_as_camel_case_json() {
         id: "e1".into(),
         source: "a".into(),
         target: "b".into(),
-        source_handle: Some("true".into()),
+        source_handle: Some(ConditionBranchHandle::True),
     });
     store.put_workflow(&workflow).unwrap();
 
@@ -190,8 +246,11 @@ fn flow_definitions_persist_as_camel_case_json() {
     )
     .unwrap();
     assert_eq!(raw["id"], "wf-1");
+    assert_eq!(raw["projectId"], "proj-1");
+    assert_eq!(raw["schemaVersion"], WORKFLOW_SCHEMA_VERSION);
     assert!(raw.get("secretVariables").is_some());
     assert_eq!(raw["nodes"][0]["type"], "start");
+    assert_eq!(raw["nodes"][0]["config"], serde_json::json!({}));
     assert_eq!(raw["edges"][0]["sourceHandle"], "true");
 
     let mut set = sample_env_set("env-dev", "dev");
@@ -335,10 +394,14 @@ fn invalid_shapes_and_ids_are_rejected_on_write() {
     entry.har.log.entries.clear();
     assert!(store.put_request(&entry).is_err());
 
+    // A workflow requires a non-empty projectId and sane node shapes.
     let mut workflow = sample_workflow("wf-1");
-    workflow.nodes[0].config = serde_json::json!(null);
+    workflow.project_id = "  ".into();
     assert!(store.put_workflow(&workflow).is_err());
-    workflow.nodes[0].config = serde_json::json!({});
+    workflow.project_id = "proj-1".into();
+    workflow.nodes[0].id = String::new();
+    assert!(store.put_workflow(&workflow).is_err());
+    workflow.nodes[0].id = "start".into();
     workflow.nodes[0].position = Position { x: f64::NAN, y: 0.0 };
     assert!(store.put_workflow(&workflow).is_err());
 
@@ -346,10 +409,26 @@ fn invalid_shapes_and_ids_are_rejected_on_write() {
     set.name = "   ".into();
     assert!(store.save_env_set(&set).is_err());
 
+    let mut project = proxy_crab_mitm::flow::model::Project {
+        id: "proj-1".into(),
+        name: "  ".into(),
+        description: String::new(),
+        color: String::new(),
+        variables: BTreeMap::new(),
+        secret_variables: BTreeMap::new(),
+        created_at: 1,
+        updated_at: 1,
+    };
+    assert!(store.put_project(&project).is_err());
+    project.name = "结算".into();
+    assert!(store.put_project(&project).is_ok());
+
     // Invalid ids also fail fast on the read and delete paths.
     assert!(store.get_request("../escape").is_err());
     assert!(store.delete_request("../escape").is_err());
     assert!(store.delete_env_set("../escape").is_err());
+    assert!(store.get_workflow("../escape").is_err());
+    assert!(store.delete_project("../escape").is_err());
 }
 
 #[test]

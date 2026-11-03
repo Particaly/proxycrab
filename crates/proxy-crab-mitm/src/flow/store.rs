@@ -1,6 +1,7 @@
 //! Flow domain persistence under `<workspace>/flow/` (workspace schema v4).
 //!
 //! Layout:
+//! - `flow/projects/{id}.json` — projects, one file per project
 //! - `flow/request-library/{id}.json` — request library entries, one file per entry
 //! - `flow/request-library/bodies/{id}.body` — request body blobs referenced by
 //!   `bodyRef` (created lazily; owned by [`super::request_library`])
@@ -14,6 +15,12 @@
 //! warning, single-record reads surface readable errors. Writes reuse the
 //! workspace atomic file replacement and are serialized process-wide so
 //! read-modify-write sequences (env sets) cannot interleave.
+//!
+//! Workflow documents carry `schemaVersion` (see
+//! [`crate::flow::model::WORKFLOW_SCHEMA_VERSION`]): writes always persist the
+//! current version, reads of older documents migrate in place first (refId
+//! backfill, mirroring the archived ReqFlow `WorkflowRepo.get` semantics) and
+//! write the migrated document back without touching timestamps.
 
 use std::{
     collections::BTreeMap,
@@ -25,11 +32,17 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use crate::workspace::write_json_atomic;
+use crate::{
+    flow::model::{
+        Project, Workflow, WorkflowNode, WORKFLOW_SCHEMA_VERSION, migrate_workflow,
+    },
+    workspace::write_json_atomic,
+};
 
 /// Workspace flow directory root.
 pub const FLOW_DIRECTORY: &str = "flow";
 pub(crate) const REQUEST_LIBRARY_DIRECTORY: &str = "request-library";
+const PROJECTS_DIRECTORY: &str = "projects";
 const WORKFLOWS_DIRECTORY: &str = "workflows";
 const ENV_SETS_FILE: &str = "env-sets.json";
 /// Run record database location under `flow/`; the SQLite schema is owned by
@@ -46,10 +59,11 @@ pub use crate::flow::request_library::{RequestLibraryEntry, RequestSource};
 
 /// Directories of the flow family under a workspace root. Shared by workspace
 /// initialization and the v3 to v4 migration; creation is idempotent.
-pub(crate) fn flow_directories(workspace_root: &Path) -> [PathBuf; 3] {
+pub(crate) fn flow_directories(workspace_root: &Path) -> [PathBuf; 4] {
     let flow = workspace_root.join(FLOW_DIRECTORY);
     [
         flow.clone(),
+        flow.join(PROJECTS_DIRECTORY),
         flow.join(REQUEST_LIBRARY_DIRECTORY),
         flow.join(WORKFLOWS_DIRECTORY),
     ]
@@ -58,73 +72,6 @@ pub(crate) fn flow_directories(workspace_root: &Path) -> [PathBuf; 3] {
 /// Serializes every flow write in this process, independent of how many
 /// `FlowStore` handles exist, so read-modify-write sequences cannot interleave.
 pub(crate) static WRITE_LOCK: Mutex<()> = Mutex::new(());
-
-/// A workflow definition (canvas orchestration). Node configs stay as raw JSON
-/// at this skeleton stage; the workflow model task aligns them field by field
-/// with the ReqFlow engine payload.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkflowDefinition {
-    pub id: String,
-    pub name: String,
-    #[serde(default)]
-    pub description: String,
-    pub nodes: Vec<WorkflowNode>,
-    pub edges: Vec<WorkflowEdge>,
-    #[serde(default)]
-    pub variables: BTreeMap<String, String>,
-    #[serde(default)]
-    pub secret_variables: BTreeMap<String, String>,
-    pub created_at: u64,
-    pub updated_at: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkflowNode {
-    pub id: String,
-    #[serde(rename = "type")]
-    pub node_type: WorkflowNodeType,
-    pub position: Position,
-    pub config: serde_json::Value,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub label: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ref_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
-pub struct Position {
-    pub x: f64,
-    pub y: f64,
-}
-
-/// Node types mirrored from the ReqFlow engine payload.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum WorkflowNodeType {
-    Start,
-    HttpReplay,
-    Condition,
-    Loop,
-    Delay,
-    SetVariable,
-    Assert,
-    Transform,
-    StickyNote,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkflowEdge {
-    pub id: String,
-    pub source: String,
-    pub target: String,
-    /// Branch handle of a condition node out-edge (`true` / `false`); kept as a
-    /// plain string until the workflow model task tightens it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_handle: Option<String>,
-}
 
 /// One named environment variable set (dev / staging / prod style).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -160,8 +107,30 @@ pub(crate) trait FlowEntity: Serialize + DeserializeOwned {
     fn sort_key(&self) -> (u64, &str);
     /// Minimal shape validation aligned with the archived ReqFlow
     /// `storage/validate.ts` intent: field presence, types and enums only, no
-    /// business rules.
+    /// business rules (graph validation lives in `flow::validate` and gates
+    /// runs, not saves).
     fn validate(&self) -> Result<()>;
+}
+
+impl FlowEntity for Project {
+    const DIRECTORY: &'static str = PROJECTS_DIRECTORY;
+    const LABEL: &'static str = "project";
+
+    fn flow_id(&self) -> &str {
+        &self.id
+    }
+
+    fn sort_key(&self) -> (u64, &str) {
+        (self.created_at, &self.id)
+    }
+
+    fn validate(&self) -> Result<()> {
+        validate_flow_id(&self.id)?;
+        if self.name.trim().is_empty() {
+            bail!("project {} requires a non-empty name", self.id);
+        }
+        Ok(())
+    }
 }
 
 impl FlowEntity for RequestLibraryEntry {
@@ -181,7 +150,7 @@ impl FlowEntity for RequestLibraryEntry {
     }
 }
 
-impl FlowEntity for WorkflowDefinition {
+impl FlowEntity for Workflow {
     const DIRECTORY: &'static str = WORKFLOWS_DIRECTORY;
     const LABEL: &'static str = "workflow";
 
@@ -195,19 +164,22 @@ impl FlowEntity for WorkflowDefinition {
 
     fn validate(&self) -> Result<()> {
         validate_flow_id(&self.id)?;
+        if self.project_id.trim().is_empty() {
+            bail!("workflow {} requires a non-empty projectId", self.id);
+        }
+        // Newer schema versions are refused (forward incompatibility, mirroring
+        // the env-sets envelope and the archived import semantics): silently
+        // dropping unknown future fields would corrupt definitions.
+        if self.schema_version > WORKFLOW_SCHEMA_VERSION {
+            bail!(
+                "workflow {} schema version {} is not supported (expected <= {})",
+                self.id,
+                self.schema_version,
+                WORKFLOW_SCHEMA_VERSION
+            );
+        }
         for node in &self.nodes {
-            if node.id.is_empty() {
-                bail!("workflow {} contains a node without an id", self.id);
-            }
-            if !node.position.x.is_finite() || !node.position.y.is_finite() {
-                bail!(
-                    "workflow {} node {} has a non-finite position",
-                    self.id, node.id
-                );
-            }
-            if !node.config.is_object() {
-                bail!("workflow {} node {} config must be an object", self.id, node.id);
-            }
+            validate_node(node)?;
         }
         for edge in &self.edges {
             if edge.id.is_empty() || edge.source.is_empty() || edge.target.is_empty() {
@@ -219,6 +191,18 @@ impl FlowEntity for WorkflowDefinition {
         }
         Ok(())
     }
+}
+
+/// Minimal per-node shape check: id presence, finite position. The typed
+/// [`WorkflowNode`] already guarantees node type / config shape via serde.
+fn validate_node(node: &WorkflowNode) -> Result<()> {
+    if node.id.is_empty() {
+        bail!("workflow contains a node without an id");
+    }
+    if !node.position.x.is_finite() || !node.position.y.is_finite() {
+        bail!("workflow node {} has a non-finite position", node.id);
+    }
+    Ok(())
 }
 
 impl EnvVariableSet {
@@ -395,6 +379,29 @@ impl FlowStore {
         })
     }
 
+    /// Atomically insert or replace a project.
+    pub fn put_project(&self, project: &Project) -> Result<()> {
+        put_entity(&self.flow_root, project)
+    }
+
+    /// Read one project: `None` when absent, a readable error when the file
+    /// exists but is corrupt.
+    pub fn get_project(&self, id: &str) -> Result<Option<Project>> {
+        get_entity(&self.flow_root, id)
+    }
+
+    /// List projects sorted by (createdAt, id); corrupt files are skipped with
+    /// a warning.
+    pub fn list_projects(&self) -> Result<Vec<Project>> {
+        list_entities(&self.flow_root)
+    }
+
+    /// Delete one project (workflows referencing it are not cascaded; the
+    /// caller decides the policy).
+    pub fn delete_project(&self, id: &str) -> Result<()> {
+        delete_entity::<Project>(&self.flow_root, id)
+    }
+
     /// Atomically insert or replace a request library entry.
     pub fn put_request(&self, entry: &RequestLibraryEntry) -> Result<()> {
         put_entity(&self.flow_root, entry)
@@ -415,26 +422,47 @@ impl FlowStore {
     // `delete_request` lives in `request_library.rs` together with the body
     // blob cleanup it now owns.
 
-    /// Atomically insert or replace a workflow definition.
-    pub fn put_workflow(&self, workflow: &WorkflowDefinition) -> Result<()> {
-        put_entity(&self.flow_root, workflow)
+    /// Atomically insert or replace a workflow definition. The document is
+    /// always persisted at the current [`WORKFLOW_SCHEMA_VERSION`].
+    pub fn put_workflow(&self, workflow: &Workflow) -> Result<()> {
+        let mut workflow = workflow.clone();
+        workflow.schema_version = WORKFLOW_SCHEMA_VERSION;
+        put_entity(&self.flow_root, &workflow)
     }
 
     /// Read one workflow definition: `None` when absent, a readable error when
     /// the file exists but is corrupt.
-    pub fn get_workflow(&self, id: &str) -> Result<Option<WorkflowDefinition>> {
-        get_entity(&self.flow_root, id)
+    ///
+    /// Mirrors the archived ReqFlow `WorkflowRepo.get`: documents below the
+    /// current schema version migrate first (refId backfill, idempotent) and
+    /// the migrated document is written back with unchanged timestamps, so
+    /// later reads and runs observe the same short codes.
+    pub fn get_workflow(&self, id: &str) -> Result<Option<Workflow>> {
+        let Some(mut workflow) = get_entity::<Workflow>(&self.flow_root, id)? else {
+            return Ok(None);
+        };
+        if migrate_workflow(&mut workflow) {
+            let _guard = WRITE_LOCK.lock().expect("flow write lock poisoned");
+            write_json_atomic(
+                &entity_path(&self.flow_root, Workflow::DIRECTORY, id),
+                &workflow,
+            )
+            .with_context(|| format!("failed to save migrated workflow {id}"))?;
+        }
+        Ok(Some(workflow))
     }
 
     /// List workflow definitions sorted by (createdAt, id); corrupt files are
-    /// skipped with a warning.
-    pub fn list_workflows(&self) -> Result<Vec<WorkflowDefinition>> {
+    /// skipped with a warning. Documents are returned as stored — migration to
+    /// the current schema version happens on [`FlowStore::get_workflow`],
+    /// mirroring the archived repository (list never mutates).
+    pub fn list_workflows(&self) -> Result<Vec<Workflow>> {
         list_entities(&self.flow_root)
     }
 
     /// Delete one workflow definition.
     pub fn delete_workflow(&self, id: &str) -> Result<()> {
-        delete_entity::<WorkflowDefinition>(&self.flow_root, id)
+        delete_entity::<Workflow>(&self.flow_root, id)
     }
 
     /// Read all environment variable sets. A missing file yields an empty
