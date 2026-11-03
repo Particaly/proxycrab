@@ -30,6 +30,12 @@ import type {
   ExtendBreakpointRequest,
   FlowProject,
   FlowProjectsPage,
+  CreateRequestLibraryRequest,
+  IngestCaptureRequest,
+  RequestLibraryEntry,
+  RequestLibraryPage,
+  RequestLibraryQuery,
+  UpdateRequestLibraryRequest,
   InterceptorCreateRequest,
   InterceptorContent,
   InterceptorKind,
@@ -149,6 +155,20 @@ export interface Backend {
     validateWorkflow(id: string): Promise<WorkflowValidationResult>;
   };
   readonly host?: HostOperations;
+  /**
+   * 工作区级请求库（请求重放工作流的请求来源）。未实现时 UI 不展示
+   * 「请求库」入口与「存入请求库」动作。
+   */
+  readonly requestLibrary?: {
+    page(query: RequestLibraryQuery): Promise<RequestLibraryPage>;
+    get(id: string): Promise<RequestLibraryEntry>;
+    create(request: CreateRequestLibraryRequest): Promise<RequestLibraryEntry>;
+    update(id: string, request: UpdateRequestLibraryRequest): Promise<RequestLibraryEntry>;
+    remove(id: string): Promise<void>;
+    ingestFromCapture(request: IngestCaptureRequest): Promise<RequestLibraryEntry>;
+    /** 读取条目请求体原始字节（blob 或内联文本），无存储请求体时报 body_not_found。 */
+    getBody(id: string, maxSize?: number): Promise<LoadedBody>;
+  };
 
   fetchBody(target: BodyTarget, side: BodySide, maxSize?: number): Promise<LoadedBody>;
   downloadBody?(target: BodyTarget, side: BodySide, filename: string): Promise<boolean>;

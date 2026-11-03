@@ -26,6 +26,7 @@ import SkillManagerWindow from "./SkillManagerWindow.vue";
 import RoutingManagerWindow from "./RoutingManagerWindow.vue";
 import EnvSetsWindow from "./EnvSetsWindow.vue";
 import WorkflowEditorWindow from "./WorkflowEditorWindow.vue";
+import RequestLibraryWindow from "./RequestLibraryWindow.vue";
 import BypassWindow from "./BypassWindow.vue";
 import BreakpointListWindow from "./BreakpointListWindow.vue";
 import AgentsPresetsWindow from "./AgentsPresetsWindow.vue";
@@ -367,6 +368,16 @@ export function openWorkflowEditor(): void {
     component: WorkflowEditorWindow,
     width: 1180,
     height: 720,
+  });
+}
+/** 请求库；后端未提供 requestLibrary 能力时不打开入口。 */
+export function openRequestLibrary(): void {
+  if (!getBackend().requestLibrary) return;
+  windowsStore.open("request-library", {
+    title: "请求库",
+    component: RequestLibraryWindow,
+    width: 1000,
+    height: 640,
   });
 }
 

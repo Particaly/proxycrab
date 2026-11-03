@@ -66,7 +66,12 @@ export function bodyFilename(target: BodyTarget, side: BodySide, headers: Header
   const extension =
     extensions[media] ??
     (media.endsWith("+json") ? "json" : media.endsWith("+xml") ? "xml" : "bin");
-  const prefix = target.kind === "breakpoint" ? "breakpoint" : "log";
+  const prefix =
+    target.kind === "breakpoint"
+      ? "breakpoint"
+      : target.kind === "request-library"
+        ? "request-library"
+        : "log";
   const execution = target.kind === "interceptor" ? `-execution-${target.executionId}` : "";
   return `${prefix}-${target.id}${execution}-${side}.${extension}`;
 }

@@ -15,16 +15,17 @@ use proxy_crab_mgr::{
     dto::{
         ActiveSession, AgentsPresetState, BreakpointDetailPayload, BreakpointQuery, BypassPage,
         BypassQuery, CertificateResponse, CreateAgentsPresetRequest, CreateEnvSetRequest,
-        CreateSessionRequest, DebugFilterScriptRequest, DeleteCount,
-        EnvSetsPayload, EnvWriteBackRequest, EnvWriteBackResult,
-        ExecuteTemporaryScriptRequest, ExtendBreakpointRequest, HttpApiChange, HttpApiResource,
-        HttpServiceStatus, InterceptorCreateRequest, InterceptorDetail, InterceptorLibraryList,
+        CreateRequestLibraryRequest, CreateSessionRequest, DebugFilterScriptRequest, DeleteCount,
+        EnvSetsPayload, EnvWriteBackRequest, EnvWriteBackResult, ExecuteTemporaryScriptRequest,
+        ExtendBreakpointRequest, HttpApiChange, HttpApiResource, HttpServiceStatus,
+        IngestCaptureRequest, InterceptorCreateRequest, InterceptorDetail, InterceptorLibraryList,
         InterceptorUpdateRequest, LogDetail, LogIdsPayload, LogIdsRequest, LogViewsPayload,
         LogViewsRequest, ManagerError, ReplaceActiveEnvSetRequest, ReplaceEnvGlobalsRequest,
         ReplaceSessionInterceptorsRequest, ReplaceSessionViewRequest, ReplayRequestPayload,
-        ReplayResult, RoutingSelection, SaveEnvSetRequest, ScriptRequest,
-        SessionInterceptorsPayload, SessionViewPayload, SessionsPayload, SystemLogsQuery,
-        UpdateAgentsPresetRequest, UpdateScriptRequest, UpdateSessionRequest,
+        ReplayResult, RequestLibraryPage, RequestLibraryQuery, RoutingSelection, SaveEnvSetRequest,
+        ScriptRequest, SessionInterceptorsPayload, SessionViewPayload, SessionsPayload,
+        SystemLogsQuery, UpdateAgentsPresetRequest, UpdateRequestLibraryRequest,
+        UpdateScriptRequest, UpdateSessionRequest,
     },
     http::{HttpServerHandle, start_http_server_with_routes},
     session_share::{
@@ -34,7 +35,10 @@ use proxy_crab_mgr::{
 };
 use proxy_crab_mitm::{
     ProxyCrab,
-    flow::{env_sets::EnvGlobalVariables, store::EnvVariableSet},
+    flow::{
+        env_sets::EnvGlobalVariables,
+        store::{EnvVariableSet, RequestLibraryEntry},
+    },
     log_buffer::{BufferLayer, LogBuffer},
     model::{
         AppConfig, BreakpointSummary, InterceptorKind, InterceptorScriptContent,
@@ -749,6 +753,58 @@ async fn env_write_back(
 }
 
 #[tauri::command]
+async fn get_request_library_page(
+    state: State<'_, BackendState>,
+    query: RequestLibraryQuery,
+) -> Result<RequestLibraryPage, ManagerError> {
+    state.manager().request_library_page(query).await
+}
+
+#[tauri::command]
+async fn get_request_library_entry(
+    state: State<'_, BackendState>,
+    id: String,
+) -> Result<RequestLibraryEntry, ManagerError> {
+    state.manager().request_library_entry(id).await
+}
+
+#[tauri::command]
+async fn create_request_library_entry(
+    state: State<'_, BackendState>,
+    request: CreateRequestLibraryRequest,
+) -> Result<RequestLibraryEntry, ManagerError> {
+    state.manager().create_request_library_entry(request).await
+}
+
+#[tauri::command]
+async fn update_request_library_entry(
+    state: State<'_, BackendState>,
+    id: String,
+    request: UpdateRequestLibraryRequest,
+) -> Result<RequestLibraryEntry, ManagerError> {
+    state
+        .manager()
+        .update_request_library_entry(id, request)
+        .await
+}
+
+#[tauri::command]
+async fn delete_request_library_entry(
+    state: State<'_, BackendState>,
+    id: String,
+) -> Result<(), ManagerError> {
+    state.manager().delete_request_library_entry(id).await
+}
+
+#[tauri::command]
+async fn ingest_request_from_capture(
+    state: State<'_, BackendState>,
+    request: IngestCaptureRequest,
+) -> Result<RequestLibraryEntry, ManagerError> {
+    state.manager().ingest_request_from_capture(request).await
+}
+
+#[tauri::command]
 async fn list_interceptors(
     state: State<'_, BackendState>,
     kind: InterceptorKind,
@@ -1285,6 +1341,13 @@ pub fn run() {
             replace_active_env_set,
             replace_env_globals,
             env_write_back,
+            get_request_library_page,
+            get_request_library_entry,
+            create_request_library_entry,
+            update_request_library_entry,
+            delete_request_library_entry,
+            ingest_request_from_capture,
+            body_download::fetch_request_library_body,
             list_interceptors,
             create_interceptor,
             get_interceptor,

@@ -31,6 +31,11 @@ pub(crate) enum BodyTarget {
     Breakpoint {
         id: u64,
     },
+    /// 请求库条目的请求体（无 side 维度）。
+    #[serde(rename = "request-library")]
+    RequestLibrary {
+        id: String,
+    },
 }
 
 #[derive(Serialize)]
@@ -51,7 +56,25 @@ pub(crate) async fn fetch_body(
     if max_size == 0 || max_size > 1024 * 1024 * 1024 {
         return Err(ManagerError::bad_request("无效的 Body 大小限制"));
     }
-    let source = body_source(&state, target, &side).await?;
+    let source = body_source(&state, target, &side, max_size).await?;
+    load_body(&source, max_size).await
+}
+
+/// 请求库条目请求体预览：blob 字节或内联快照文本（按 HAR mimeType 返回）。
+#[tauri::command]
+pub(crate) async fn fetch_request_library_body(
+    state: State<'_, BackendState>,
+    id: String,
+    max_size: Option<u64>,
+) -> Result<LoadedBody, ManagerError> {
+    let max_size = max_size.unwrap_or(16 * 1024 * 1024);
+    if max_size == 0 || max_size > 1024 * 1024 * 1024 {
+        return Err(ManagerError::bad_request("无效的 Body 大小限制"));
+    }
+    let source = state
+        .manager()
+        .request_library_body_source(id, max_size)
+        .await?;
     load_body(&source, max_size).await
 }
 
@@ -132,6 +155,7 @@ async fn body_source(
     state: &BackendState,
     target: BodyTarget,
     side: &str,
+    max_size: u64,
 ) -> Result<BodySource, ManagerError> {
     let side = match side {
         "request" => BodySide::Request,
@@ -157,6 +181,9 @@ async fn body_source(
                 .await?
         }
         BodyTarget::Breakpoint { id } => manager.breakpoint_body_source(id, side).await?,
+        BodyTarget::RequestLibrary { id } => {
+            manager.request_library_body_source(id, max_size).await?
+        }
     })
 }
 
@@ -168,7 +195,7 @@ pub(crate) async fn download_body(
     side: String,
     filename: String,
 ) -> Result<bool, ManagerError> {
-    let source = body_source(&state, target, &side).await?;
+    let source = body_source(&state, target, &side, u64::MAX).await?;
     let selected = tauri::async_runtime::spawn_blocking(move || {
         window
             .dialog()

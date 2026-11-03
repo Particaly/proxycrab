@@ -1,6 +1,6 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { windowsStore } from "../stores/windows";
-import { openReplay } from "./launcher";
+import { openReplay, openRequestLibrary } from "./launcher";
 
 const { backend } = vi.hoisted(() => ({ backend: { replay: vi.fn() as unknown } }));
 vi.mock("../api/runtime-backend", () => ({
@@ -12,7 +12,20 @@ vi.mock("../stores/app", () => ({ appStore: {}, reportError: vi.fn() }));
 afterEach(() => {
   windowsStore.windows = [];
   backend.replay = vi.fn();
+  delete (backend as Record<string, unknown>).requestLibrary;
   vi.unstubAllGlobals();
+});
+
+test("request library window opens once and requires the requestLibrary capability", () => {
+  (backend as Record<string, unknown>).requestLibrary = { page: vi.fn() };
+  openRequestLibrary();
+  openRequestLibrary();
+  expect(windowsStore.windows).toHaveLength(1);
+  expect(windowsStore.windows[0]!.title).toBe("请求库");
+  windowsStore.windows = [];
+  (backend as Record<string, unknown>).requestLibrary = undefined;
+  openRequestLibrary();
+  expect(windowsStore.windows).toHaveLength(0);
 });
 
 test("replay windows open independently without secure-context crypto", async () => {
