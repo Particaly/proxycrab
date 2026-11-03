@@ -143,10 +143,10 @@
 - Create: `crates/proxy-crab-mitm/src/flow/request_library.rs`
 - Create: `crates/proxy-crab-mitm/tests/request_library.rs`
 
-- [ ] **Step 1: 条目模型**：`{id, name, tags[], source('capture'|'import'|'manual'), origin, har: HarSnapshot, bodyRef?, createdAt, updatedAt}`；HAR 快照字段对齐 `engine/replay.ts` 的消费口径（method/url/headers/queryString/cookies/postData + response 摘要）。
-- [ ] **Step 2: body 存 blob**（二进制/大体积走文件，沿用既有 `CaptureBodyWriter` 形态），JSON 索引与 body 分离。
-- [ ] **Step 3: 从抓包入库**：`capture_id → 条目`，做形状归一（`engine/har-cookies.ts` 的 cookie 归一逻辑移植），默认命名 `method host+path`。
-- [ ] **Step 4: 测试**：入库/删除/标签/命名去重/大 body 截断策略。
+- [x] **Step 1: 条目模型**：`{id, name, tags[], source('capture'|'import'|'manual'), origin, har: HarSnapshot, bodyRef?, createdAt, updatedAt}`；HAR 快照字段对齐 `engine/replay.ts` 的消费口径（method/url/headers/queryString/cookies/postData + response 摘要）。
+- [x] **Step 2: body 存 blob**（二进制/大体积走文件，沿用既有 `CaptureBodyWriter` 形态），JSON 索引与 body 分离。
+- [x] **Step 3: 从抓包入库**：`capture_id → 条目`，做形状归一（`engine/har-cookies.ts` 的 cookie 归一逻辑移植），默认命名 `method host+path`。
+- [x] **Step 4: 测试**：入库/删除/标签/命名去重/大 body 截断策略。
 
 ### Task 6: 请求库 API 与权限登记（W7）
 
