@@ -87,6 +87,51 @@ other management calls. A supplied log filter can be kept stateless with
 
 The Tauri command surface also reports the management HTTP service's `running`, `host`, `port`, and startup error state through `get_http_service_status`.
 
+## Flow JS runtime
+
+ReqFlow workflow execution embeds QuickJS through `rquickjs` in `crates/proxy-crab-mitm/src/flow/`:
+`flow/host.rs` defines the host bridge contract and `flow/runtime.rs` the VM;
+`tests/flow_runtime.rs` covers the failure faces.
+
+- Threading model: one VM context per run — a dedicated `AsyncRuntime` + `AsyncContext`
+  created for a single run and dropped afterwards; runs never share a VM. The runtime is
+  tokio-native (rquickjs `futures` + `parallel` features); host calls are awaited as
+  promises and never block Tokio worker threads.
+- Sandbox surface: only QuickJS standard builtins (Math/JSON/Date/RegExp/…). No rquickjs
+  loader/std modules are enabled, so io/os-like host objects cannot enter the sandbox; the
+  only injected global is `host`.
+- Host bridge: `host.replay(payload)` (async replay envelope), `host.now()` (epoch millis),
+  `host.log(payload)`, `host.sleep(ms)` (interruptible), `host.emit(payload)` (run events),
+  and `host.cancelled()` (poll). Every call exchanges explicit JSON payloads; host errors
+  are normalized to `{kind, message}` and thrown into JS as Error objects carrying `kind`,
+  so classification survives script handling and returns to Rust unchanged.
+- Limits (`FlowLimits`, all configurable): 64 MiB QuickJS heap, an instruction quota of
+  100,000 interrupt-handler ticks (QuickJS polls the handler roughly every few thousand
+  bytecode instructions), and a 30-second wall-clock budget measured as accumulated active
+  JS execution time — time spent awaiting host calls does not count. Exceeding any limit
+  classifies as `timeout`; the failure message names which limit fired.
+- Cancellation: `FlowRuntime::cancel` (shared `FlowCancel` token) outranks every limit.
+  The interrupt handler aborts pure-JS execution, and each in-flight host call is raced
+  against the token and dropped, returning `cancelled` without waiting for the host
+  operation to finish.
+- Error classes: `script | timeout | blocked | network | http | cancelled | unknown`,
+  aligned with ReqFlow's `error-class.ts`. Script exceptions and syntax errors classify as
+  `script`; instruction/wall-clock/memory overruns classify as `timeout`; host-bridge
+  errors keep the kind supplied by the host implementation; unexpected VM failures
+  classify as `unknown`. The engine interrupt surfaces as a JS "interrupted" error which
+  the runtime maps back through the handler's recorded reason (cancelled outranks
+  over-limit), and QuickJS allocation failures ("out of memory") classify as `timeout`.
+- Host-function registration constraint: host functions must be generic fn items whose
+  state is stored in runtime user data (`Ctx::store_userdata`) and whose `Ctx` arrives as
+  a parameter. Registering a closure that captures a `Ctx` clone pins the function object
+  on QuickJS's GC list and aborts the process at VM teardown
+  (`list_empty(&rt->gc_obj_list)` assertion); closures are also unusable because their
+  late-bound parameter lifetimes cannot satisfy the `'js` future bound.
+- Failure-face tests: `cargo test -p proxy-crab-mitm --test flow_runtime` exercises
+  instruction-quota and wall-clock dead loops, memory exhaustion, script throws, host
+  errors, cancellation during sleep and during pure compute, and a JSON round-trip smoke
+  run, each with a 10-second settle bound.
+
 ## Session sharing links
 
 The desktop and CLI management UIs open a managed application window from “链接分享” in a
