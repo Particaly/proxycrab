@@ -117,10 +117,10 @@
 - Modify: `crates/proxy-crab-mgr/src/manager.rs`、`crates/proxy-crab-mgr/src/dto.rs`
 - Create: `crates/proxy-crab-mitm/tests/replay_await.rs`
 
-- [ ] **Step 1: 设计回传信封**：`{status, statusText, headers, body, bodyType, json?, durationMs, truncated}`，从 capture 完成信号 + blob 读取装配；超时/取消/网络失败归一为错误分类（对齐 ReqFlow `error-class` 的 `timeout|network|http|cancelled|script|blocked|unknown`）。
-- [ ] **Step 2: 实现内部等待通路**：不动 `POST /api/replay` 的既有语义（仍回 `log_id`），在 flow 域内提供「等待响应」的调用入口。
-- [ ] **Step 3: 边界**：4xx/5xx **不算失败**（按 ReqFlow 语义交由上层判定）、响应体超限截断并标记、代理未运行/ Session 不存在给出明确错误码。
-- [ ] **Step 4: 测试**：正常响应、4xx、超时、取消、代理停止、大 body 截断。
+- [x] **Step 1: 设计回传信封**：`{status, statusText, headers, body, bodyType, json?, durationMs, truncated}`，从 capture 完成信号 + blob 读取装配；超时/取消/网络失败归一为错误分类（对齐 ReqFlow `error-class` 的 `timeout|network|http|cancelled|script|blocked|unknown`）。
+- [x] **Step 2: 实现内部等待通路**：不动 `POST /api/replay` 的既有语义（仍回 `log_id`），在 flow 域内提供「等待响应」的调用入口。
+- [x] **Step 3: 边界**：4xx/5xx **不算失败**（按 ReqFlow 语义交由上层判定）、响应体超限截断并标记、代理未运行/ Session 不存在给出明确错误码。
+- [x] **Step 4: 测试**：正常响应、4xx、超时、取消、代理停止、大 body 截断。
 
 ### Task 4: 工作区 schema v4 与 flow 存储骨架
 
@@ -128,10 +128,10 @@
 - Modify: `crates/proxy-crab-mitm/src/workspace.rs`（初始化 `flow/` 目录族）、`crates/proxy-crab-mitm/src/migration.rs`（v3→v4）
 - Create: `crates/proxy-crab-mitm/src/flow/store.rs`（请求库 / 流程定义 / 环境变量集的读写与原子替换）
 
-- [ ] **Step 1: 目录布局定案并落地**：`<workspace>/flow/{request-library/**, workflows/**, env-sets.json, runs.db}`；沿用既有原子写与独占锁约定。
-- [ ] **Step 2: 迁移链 v3→v4**：老工作区打开时原子推进；无旧数据时仅建目录，不写空文件。
-- [ ] **Step 3: 读写 API**：请求库条目、流程定义、环境变量集的最小 CRUD（Rust 侧，供后续任务复用），带形状校验与失败降级（对齐 ReqFlow `storage/validate.ts` 的读时校验口径）。
-- [ ] **Step 4: 测试**：迁移幂等、并发写、损坏文件降级、schema 版本推进。
+- [x] **Step 1: 目录布局定案并落地**：`<workspace>/flow/{request-library/**, workflows/**, env-sets.json, runs.db}`；沿用既有原子写与独占锁约定。
+- [x] **Step 2: 迁移链 v3→v4**：老工作区打开时原子推进；无旧数据时仅建目录，不写空文件。
+- [x] **Step 3: 读写 API**：请求库条目、流程定义、环境变量集的最小 CRUD（Rust 侧，供后续任务复用），带形状校验与失败降级（对齐 ReqFlow `storage/validate.ts` 的读时校验口径）。
+- [x] **Step 4: 测试**：迁移幂等、并发写、损坏文件降级、schema 版本推进。
 
 ---
 
