@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 tempfile.workspace = true
 anyhow.workspace = true
+async-trait.workspace = true
 base64.workspace = true
 brotli.workspace = true
 bytes.workspace = true
@@ -20,6 +21,7 @@ hyper-rustls.workspace = true
 hyper-util.workspace = true
 mlua.workspace = true
 rcgen.workspace = true
+rquickjs.workspace = true
 rusqlite.workspace = true
 rustls.workspace = true
 serde.workspace = true
