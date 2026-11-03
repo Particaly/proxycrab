@@ -90,10 +90,10 @@
 - Modify: `crates/proxy-crab-mitm/src/lib.rs`、`crates/proxy-crab-mitm/Cargo.toml`（新增 `rquickjs`）
 - Create: `crates/proxy-crab-mitm/tests/flow_runtime.rs`
 
-- [ ] **Step 1: 选定运行时并接入**：`rquickjs`（vendored QuickJS），配置内存上限与中断处理器（指令数/墙钟双限），线程模型定为「单运行一个 VM 上下文」，禁止 `io/os` 之外的外部宿主对象进入沙箱。
-- [ ] **Step 2: 定义宿主函数最小面**：`host.replay`（异步）、`host.now`、`host.log`、`host.sleep`（可中断）、`host.emit`（运行事件）、`host.cancelled`（取消轮询）——全部以显式 JSON 载荷进出，错误归一为 `{kind, message}`。
-- [ ] **Step 3: 写失败面测试**：死循环（超指令数）、内存爆炸、脚本抛错、宿主函数抛错、取消中断，断言错误分类与 Rust 侧不被拖死。
-- [ ] **Step 4: 记录运行时约束到 `docs/runtime-notes.md`**（上限值、线程模型、失败分类）。
+- [x] **Step 1: 选定运行时并接入**：`rquickjs`（vendored QuickJS），配置内存上限与中断处理器（指令数/墙钟双限），线程模型定为「单运行一个 VM 上下文」，禁止 `io/os` 之外的外部宿主对象进入沙箱。
+- [x] **Step 2: 定义宿主函数最小面**：`host.replay`（异步）、`host.now`、`host.log`、`host.sleep`（可中断）、`host.emit`（运行事件）、`host.cancelled`（取消轮询）——全部以显式 JSON 载荷进出，错误归一为 `{kind, message}`。
+- [x] **Step 3: 写失败面测试**：死循环（超指令数）、内存爆炸、脚本抛错、宿主函数抛错、取消中断，断言错误分类与 Rust 侧不被拖死。
+- [x] **Step 4: 记录运行时约束到 `docs/runtime-notes.md`**（上限值、线程模型、失败分类）。
 
 ### Task 2: JS 引擎载荷（ReqFlow `engine/` 移植）与构建链
 
