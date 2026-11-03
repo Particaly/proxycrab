@@ -165,11 +165,11 @@
 - Create: `src/windows/RequestLibraryWindow.vue`、`src/components/request-library/*.vue`
 - Modify: `src/api/backend.ts`、`src/api/tauri-backend.ts`、`src/api/http-backend.ts`、`src/api/types.ts`、`src/windows/launcher.ts`、`src/components/AppToolbar.vue`
 
-- [ ] **Step 1: Backend 能力位**：`requestLibrary*` 可选方法（无则不显示入口）。
-- [ ] **Step 2: 列表**：关键字/标签/来源过滤、分组（标签/域名）、排序、批量删除、来源徽标（抓包入库/导入/手工）。
-- [ ] **Step 3: 详情**：Headers / Query / Body / Response 四 tab（复用 `BodyViewer.vue` 与既有 KV 展示形态）。
-- [ ] **Step 4: 入库入口**：日志详情与日志表右键「存入请求库」（复用 `ContextMenu.vue`）；冲突/重名提示。
-- [ ] **Step 5: 与仓库风格对齐**：`base.css` token、13px 基准、高信息密度；窗口标题与文案中文。
+- [x] **Step 1: Backend 能力位**：`requestLibrary*` 可选方法（无则不显示入口）。
+- [x] **Step 2: 列表**：关键字/标签/来源过滤、分组（标签/域名）、排序、批量删除、来源徽标（抓包入库/导入/手工）。
+- [x] **Step 3: 详情**：Headers / Query / Body / Response 四 tab（复用 `BodyViewer.vue` 与既有 KV 展示形态）。
+- [x] **Step 4: 入库入口**：日志详情与日志表右键「存入请求库」（复用 `ContextMenu.vue`）；冲突/重名提示。
+- [x] **Step 5: 与仓库风格对齐**：`base.css` token、13px 基准、高信息密度；窗口标题与文案中文。
 
 ### Task 8: 导入（cURL / HAR / Postman）
 
