@@ -30,6 +30,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, bail};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::{
@@ -231,6 +232,15 @@ pub(crate) fn validate_flow_id(id: &str) -> Result<()> {
         bail!("invalid flow id {id:?}");
     }
     Ok(())
+}
+
+/// Fresh flow entity id (`{prefix}-{base64url(12 random bytes)}`), safe as a
+/// file name and API path segment (same policy as request library entry ids).
+/// Callers pick a stable prefix per entity family (`proj`, `wf`, …).
+pub fn generate_flow_id(prefix: &str) -> Result<String> {
+    let mut bytes = [0_u8; 12];
+    getrandom::fill(&mut bytes).map_err(|error| anyhow!("generate flow id: {error}"))?;
+    Ok(format!("{prefix}-{}", URL_SAFE_NO_PAD.encode(bytes)))
 }
 
 fn entity_path(flow_root: &Path, directory: &str, id: &str) -> PathBuf {

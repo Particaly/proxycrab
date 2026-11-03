@@ -41,11 +41,13 @@ use crate::{
     dto::{
         ActiveSession, AssetQuery, BodyQuery, BreakpointQuery, BypassQuery, CreateSessionRequest,
         DebugFilterScriptRequest, DeleteBypassRequest, ErrorCode, ExecuteTemporaryScriptRequest,
-        ExtendBreakpointRequest, HttpApiChange, HttpApiResource, InterceptorCreateRequest,
-        InterceptorUpdateRequest, LogIdsRequest, LogViewsRequest, ManagerError, ManagerResult,
+        ExtendBreakpointRequest, FlowListQuery, FlowProjectCreateRequest, FlowProjectUpdateRequest,
+        HttpApiChange, HttpApiResource, InterceptorCreateRequest, InterceptorUpdateRequest,
+        LogIdsRequest, LogViewsRequest, ManagerError, ManagerResult,
         ReplaceSessionInterceptorsRequest, ReplaceSessionViewRequest, ReplayRequestPayload,
         RoutingSelection, ScriptRequest, SessionQuery, SystemLogsQuery, UpdateScriptRequest,
-        UpdateSessionRequest, WebSocketQuery, default_body_max_size,
+        UpdateSessionRequest, WebSocketQuery, WorkflowCreateRequest, WorkflowListQuery,
+        WorkflowUpdateRequest, default_body_max_size,
     },
     manager::ProxyCrabManager,
     permission::{
@@ -411,6 +413,22 @@ fn router_with_changes_and_extra(
             "/api/system-logs",
             get(system_logs).delete(clear_system_logs),
         )
+        .route(
+            "/api/flow-projects",
+            get(flow_projects).post(create_flow_project),
+        )
+        .route(
+            "/api/flow-projects/{id}",
+            get(flow_project)
+                .put(update_flow_project)
+                .delete(delete_flow_project),
+        )
+        .route("/api/workflows", get(workflows).post(create_workflow))
+        .route(
+            "/api/workflows/{id}",
+            get(workflow).put(update_workflow).delete(delete_workflow),
+        )
+        .route("/api/workflows/{id}/validate", post(validate_workflow))
         .route(
             "/api/bypass",
             get(bypass_entries).delete(clear_bypass_entries),
@@ -1526,6 +1544,89 @@ async fn clear_system_logs(State(manager): State<ManagerState>) -> ApiResult {
     success(json!({}))
 }
 
+/* ---- Workflow domain (flow projects / workflows) ---- */
+
+async fn flow_projects(
+    State(manager): State<ManagerState>,
+    ApiQuery(query): ApiQuery<FlowListQuery>,
+) -> ApiResult {
+    success(manager.flow_projects(query).await?)
+}
+
+async fn create_flow_project(
+    State(manager): State<ManagerState>,
+    ApiJson(request): ApiJson<FlowProjectCreateRequest>,
+) -> ApiResult {
+    success(manager.create_flow_project(request).await?)
+}
+
+async fn flow_project(
+    State(manager): State<ManagerState>,
+    ApiPath(id): ApiPath<String>,
+) -> ApiResult {
+    success(manager.flow_project(id).await?)
+}
+
+async fn update_flow_project(
+    State(manager): State<ManagerState>,
+    ApiPath(id): ApiPath<String>,
+    ApiJson(request): ApiJson<FlowProjectUpdateRequest>,
+) -> ApiResult {
+    success(manager.update_flow_project(id, request).await?)
+}
+
+async fn delete_flow_project(
+    State(manager): State<ManagerState>,
+    ApiPath(id): ApiPath<String>,
+) -> ApiResult {
+    manager.delete_flow_project(id).await?;
+    success(json!({}))
+}
+
+async fn workflows(
+    State(manager): State<ManagerState>,
+    ApiQuery(query): ApiQuery<WorkflowListQuery>,
+) -> ApiResult {
+    success(manager.workflows(query).await?)
+}
+
+async fn create_workflow(
+    State(manager): State<ManagerState>,
+    ApiJson(request): ApiJson<WorkflowCreateRequest>,
+) -> ApiResult {
+    success(manager.create_workflow(request).await?)
+}
+
+async fn workflow(
+    State(manager): State<ManagerState>,
+    ApiPath(id): ApiPath<String>,
+) -> ApiResult {
+    success(manager.workflow(id).await?)
+}
+
+async fn update_workflow(
+    State(manager): State<ManagerState>,
+    ApiPath(id): ApiPath<String>,
+    ApiJson(request): ApiJson<WorkflowUpdateRequest>,
+) -> ApiResult {
+    success(manager.update_workflow(id, request).await?)
+}
+
+async fn delete_workflow(
+    State(manager): State<ManagerState>,
+    ApiPath(id): ApiPath<String>,
+) -> ApiResult {
+    manager.delete_workflow(id).await?;
+    success(json!({}))
+}
+
+async fn validate_workflow(
+    State(manager): State<ManagerState>,
+    ApiPath(id): ApiPath<String>,
+) -> ApiResult {
+    success(json!({ "issues": manager.validate_workflow(id).await? }))
+}
+
 async fn bypass_entries(
     ReadManager(manager): ReadManager,
     ApiQuery(query): ApiQuery<BypassQuery>,
@@ -1905,6 +2006,42 @@ impl IntoResponse for ApiError {
         }
         response
     }
+}
+
+async fn redaction_scripts(State(manager): State<ManagerState>) -> ApiResult {
+    success(manager.redaction_scripts().await?)
+}
+
+async fn create_redaction_script(
+    State(manager): State<ManagerState>,
+    ApiJson(request): ApiJson<ScriptRequest>,
+) -> ApiResult {
+    manager.create_redaction_script(request).await?;
+    success(json!({}))
+}
+
+async fn redaction_script(
+    State(manager): State<ManagerState>,
+    ApiPath(name): ApiPath<String>,
+) -> ApiResult {
+    success(manager.redaction_script(name).await?)
+}
+
+async fn update_redaction_script(
+    State(manager): State<ManagerState>,
+    ApiPath(name): ApiPath<String>,
+    ApiJson(request): ApiJson<UpdateScriptRequest>,
+) -> ApiResult {
+    manager.update_redaction_script(name, request).await?;
+    success(json!({}))
+}
+
+async fn delete_redaction_script(
+    State(manager): State<ManagerState>,
+    ApiPath(name): ApiPath<String>,
+) -> ApiResult {
+    manager.delete_redaction_script(name).await?;
+    success(json!({}))
 }
 
 #[cfg(test)]
@@ -2312,6 +2449,194 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(recorded.lock().unwrap()[0].id, "PUT /api/sessions/{id}");
+    }
+
+    /// Send one management request with an optional JSON body and deserialize
+    /// the response envelope; used by the workflow-domain endpoint tests.
+    async fn flow_request(
+        app: axum::Router,
+        method: Method,
+        uri: &str,
+        body: Option<&str>,
+    ) -> (StatusCode, Value) {
+        let mut builder = Request::builder().method(method).uri(uri);
+        if body.is_some() {
+            builder = builder.header("content-type", "application/json");
+        }
+        let response = app
+            .oneshot(
+                builder
+                    .body(Body::from(body.unwrap_or_default().to_owned()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let payload: Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), usize::MAX).await.unwrap(),
+        )
+        .unwrap_or(Value::Null);
+        (status, payload)
+    }
+
+    #[tokio::test]
+    async fn workflow_domain_endpoints_cover_crud_and_validation() {
+        let app_data = tempdir().unwrap();
+        let runtime = ProxyCrab::open(app_data.path(), Arc::new(LogBuffer::default())).unwrap();
+        let manager = MitmManager::new(runtime);
+        let (permissions, recorded) = recording_permissions(None);
+        let app = router(manager, permissions);
+
+        // Create a project; ids and timestamps are server-generated.
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::POST,
+            "/api/flow-projects",
+            Some(r##"{"name":"demo","color":"#4f46e5","secretVariables":{"k":"v"}}"##),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(payload["ok"], true);
+        let project = &payload["data"];
+        assert!(project["id"].as_str().unwrap().starts_with("proj-"));
+        assert_eq!(project["name"], "demo");
+        assert_eq!(project["color"], "#4f46e5");
+        assert_eq!(project["secretVariables"]["k"], "v");
+        assert!(project["createdAt"].as_u64().is_some());
+        let project_id = project["id"].as_str().unwrap().to_owned();
+
+        // Create a workflow whose graph is intentionally invalid (no start).
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::POST,
+            "/api/workflows",
+            Some(&format!(
+                r#"{{"projectId":"{project_id}","name":"flow","nodes":[{{"id":"n1","type":"httpReplay","position":{{"x":1,"y":2}},"config":{{}}}}],"edges":[{{"id":"e1","source":"n1","target":"ghost"}}]}}"#
+            )),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let workflow = &payload["data"];
+        assert!(workflow["id"].as_str().unwrap().starts_with("wf-"));
+        assert_eq!(workflow["projectId"], project_id.as_str());
+        assert_eq!(workflow["schemaVersion"], 1);
+        let workflow_id = workflow["id"].as_str().unwrap().to_owned();
+
+        // Validation reports the structural issues without blocking the save.
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::POST,
+            &format!("/api/workflows/{workflow_id}/validate"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let issues = payload["data"]["issues"].as_array().unwrap();
+        let codes: Vec<&str> = issues.iter().map(|issue| issue["code"].as_str().unwrap()).collect();
+        assert_eq!(
+            codes,
+            vec!["missing-start", "dangling-edge"],
+            "issue DTO shape: {{code,message,nodeIds}} with fixed order"
+        );
+        assert!(issues[0]["message"].is_string());
+        assert_eq!(issues[0]["nodeIds"], json!([]));
+        assert_eq!(issues[1]["nodeIds"], json!(["n1"]));
+
+        // Lists are filterable and paginated.
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::GET,
+            &format!("/api/workflows?projectId={project_id}&limit=10&offset=0"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(payload["data"]["total"], 1);
+        assert_eq!(payload["data"]["workflows"][0]["id"], workflow_id.as_str());
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::GET,
+            "/api/flow-projects?limit=10",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(payload["data"]["total"], 1);
+        assert_eq!(payload["data"]["projects"][0]["id"], project_id.as_str());
+
+        // Whole-graph replacement requires both nodes and edges.
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::PUT,
+            &format!("/api/workflows/{workflow_id}"),
+            Some(r#"{"nodes":[]}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(payload["error"]["code"], "bad_request");
+
+        // A valid graph replacement plus a rename succeeds.
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::PUT,
+            &format!("/api/workflows/{workflow_id}"),
+            Some(
+                r#"{"name":"flow2","nodes":[{"id":"s","type":"start","position":{"x":0,"y":0},"config":{}}],"edges":[]}"#,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(payload["data"]["name"], "flow2");
+        assert_eq!(payload["data"]["nodes"][0]["type"], "start");
+        assert_eq!(payload["data"]["nodes"].as_array().unwrap().len(), 1);
+        assert_eq!(payload["data"]["edges"], json!([]));
+        assert!(payload["data"]["updatedAt"].as_u64().is_some());
+
+        // Validation is now clean.
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::POST,
+            &format!("/api/workflows/{workflow_id}/validate"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(payload["data"]["issues"], json!([]));
+
+        // Permission checks resolved the concrete route actions.
+        let recorded_ids: Vec<&'static str> =
+            recorded.lock().unwrap().iter().map(|item| item.id).collect();
+        assert!(recorded_ids.contains(&"POST /api/flow-projects"));
+        assert!(recorded_ids.contains(&"POST /api/workflows/{id}/validate"));
+        assert!(recorded_ids.contains(&"PUT /api/workflows/{id}"));
+
+        // Single reads, deletes and the 404 paths.
+        let (status, _) = flow_request(
+            app.clone(),
+            Method::GET,
+            &format!("/api/flow-projects/{project_id}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::DELETE,
+            &format!("/api/workflows/{workflow_id}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(payload["data"], json!({}));
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::GET,
+            &format!("/api/workflows/{workflow_id}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(payload["error"]["code"], "not_found");
     }
 
     #[tokio::test]
@@ -4838,7 +5163,7 @@ mod tests {
         let app_data = tempdir().unwrap();
         let runtime = ProxyCrab::open(app_data.path(), Arc::new(LogBuffer::default())).unwrap();
         let mut upload = runtime
-            .begin_asset_upload("fixtures/a.json".into(), "application/json".into())
+            .begin_asset_upload("fixtures/a.json", "application/json".into())
             .await
             .unwrap();
         upload.write(b"{}").await.unwrap();
@@ -4860,40 +5185,4 @@ mod tests {
         assert_eq!(body["data"][0]["id"], "fixtures/a.json");
         assert_eq!(body["data"][0]["content_type"], "application/json");
     }
-}
-
-async fn redaction_scripts(State(manager): State<ManagerState>) -> ApiResult {
-    success(manager.redaction_scripts().await?)
-}
-
-async fn create_redaction_script(
-    State(manager): State<ManagerState>,
-    ApiJson(request): ApiJson<ScriptRequest>,
-) -> ApiResult {
-    manager.create_redaction_script(request).await?;
-    success(json!({}))
-}
-
-async fn redaction_script(
-    State(manager): State<ManagerState>,
-    ApiPath(name): ApiPath<String>,
-) -> ApiResult {
-    success(manager.redaction_script(name).await?)
-}
-
-async fn update_redaction_script(
-    State(manager): State<ManagerState>,
-    ApiPath(name): ApiPath<String>,
-    ApiJson(request): ApiJson<UpdateScriptRequest>,
-) -> ApiResult {
-    manager.update_redaction_script(name, request).await?;
-    success(json!({}))
-}
-
-async fn delete_redaction_script(
-    State(manager): State<ManagerState>,
-    ApiPath(name): ApiPath<String>,
-) -> ApiResult {
-    manager.delete_redaction_script(name).await?;
-    success(json!({}))
 }

@@ -7,6 +7,11 @@ use async_trait::async_trait;
 use proxy_crab_mitm::{
     ProxyCrab, ReplayBody, ReplayError, ReplayRequest,
     asset::{Asset, AssetError, AssetUpload},
+    flow::{
+        model::{Project, Workflow, WORKFLOW_SCHEMA_VERSION},
+        store::{FlowStore, generate_flow_id},
+        validate::{ValidationIssue, validate_workflow_graph},
+    },
     lua::{CaptureBodyAccess, ColumnEvaluator, FilterEvaluator},
     model::{
         AppConfig, BreakpointListFilter, BreakpointSummary, CaptureDetail, CaptureOutcome,
@@ -16,6 +21,7 @@ use proxy_crab_mitm::{
         TemporaryExecutionResult,
     },
     storage::{BodySide, BodySource},
+    workspace::now_millis,
 };
 use regex::Regex;
 
@@ -29,14 +35,16 @@ use crate::{
         ActiveSession, AgentsPresetState, BreakpointDetailPayload, BreakpointQuery, BypassPage,
         BypassQuery, CertificateResponse, CreateAgentsPresetRequest, CreateSessionRequest,
         DebugFilterScriptRequest, DeleteCount, ErrorCode, ExecuteTemporaryScriptRequest,
-        ExtendBreakpointRequest, HeaderItem, InterceptorCreateRequest, InterceptorDetail,
+        ExtendBreakpointRequest, FlowListQuery, FlowProjectCreateRequest, FlowProjectPage,
+        FlowProjectUpdateRequest, HeaderItem, InterceptorCreateRequest, InterceptorDetail,
         InterceptorLibraryList, InterceptorUpdateRequest, LogDetail, LogIdsPayload, LogIdsRequest,
         LogViewException, LogViewRow, LogViewsPayload, LogViewsRequest, ManagerError,
         ManagerResult, ReplaceSessionInterceptorsRequest, ReplaceSessionViewRequest,
         ReplayBodyPayload, ReplayRequestPayload, ReplayResult, RequestDetail, ResponseDetail,
         RoutingSelection, ScriptRequest, SessionInterceptorItem, SessionInterceptorsPayload,
         SessionViewPayload, SessionsPayload, SystemLogsQuery, UpdateAgentsPresetRequest,
-        UpdateScriptRequest, UpdateSessionRequest,
+        UpdateScriptRequest, UpdateSessionRequest, WorkflowCreateRequest, WorkflowListQuery,
+        WorkflowPage, WorkflowUpdateRequest, WorkflowValidationIssue,
     },
 };
 use tokio::sync::{Semaphore, watch};
@@ -269,6 +277,26 @@ pub trait ProxyCrabManager: Send + Sync {
     async fn delete_bypass_entry(&self, id: u64) -> ManagerResult<()>;
     async fn delete_bypass_entries(&self, ids: Vec<u64>) -> ManagerResult<DeleteCount>;
     async fn clear_bypass_entries(&self) -> ManagerResult<DeleteCount>;
+    async fn flow_projects(&self, query: FlowListQuery) -> ManagerResult<FlowProjectPage>;
+    async fn create_flow_project(&self, request: FlowProjectCreateRequest)
+    -> ManagerResult<Project>;
+    async fn flow_project(&self, id: String) -> ManagerResult<Project>;
+    async fn update_flow_project(
+        &self,
+        id: String,
+        request: FlowProjectUpdateRequest,
+    ) -> ManagerResult<Project>;
+    async fn delete_flow_project(&self, id: String) -> ManagerResult<()>;
+    async fn workflows(&self, query: WorkflowListQuery) -> ManagerResult<WorkflowPage>;
+    async fn create_workflow(&self, request: WorkflowCreateRequest) -> ManagerResult<Workflow>;
+    async fn workflow(&self, id: String) -> ManagerResult<Workflow>;
+    async fn update_workflow(
+        &self,
+        id: String,
+        request: WorkflowUpdateRequest,
+    ) -> ManagerResult<Workflow>;
+    async fn delete_workflow(&self, id: String) -> ManagerResult<()>;
+    async fn validate_workflow(&self, id: String) -> ManagerResult<Vec<WorkflowValidationIssue>>;
 }
 
 #[derive(Clone)]
@@ -493,6 +521,7 @@ impl MitmManager {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn classify_log_id<F>(
         filter: &PreparedFilter,
         item: &CaptureSummary,
@@ -1178,32 +1207,32 @@ impl ProxyCrabManager for MitmManager {
             };
             let mut result = log_detail_from_capture(detail);
             result.websocket = runtime.websocket_info(session_id, id).map_err(map_error)?;
-            if policy.is_some() {
-                if let Some(info) = &mut result.websocket {
-                    info.close_reason = None;
-                    // Negotiated headers must follow the same policy as the handshake.
-                    let handshake = runtime
-                        .capture(session_id, info.handshake_log_id)
-                        .map_err(map_error)?
-                        .ok_or_else(|| ManagerError::not_found("handshake not found"))?;
-                    let safe = redactor
-                        .as_ref()
-                        .expect("policy redactor")
-                        .detail(&runtime, handshake)?
-                        .summary;
-                    info.subprotocol = safe
-                        .response
-                        .as_ref()
-                        .and_then(|r| r.headers.get("sec-websocket-protocol"))
-                        .and_then(|v| v.first())
-                        .cloned();
-                    info.extensions = safe
-                        .response
-                        .as_ref()
-                        .and_then(|r| r.headers.get("sec-websocket-extensions"))
-                        .map(|v| v.join(","))
-                        .unwrap_or_default();
-                }
+            if policy.is_some()
+                && let Some(info) = &mut result.websocket
+            {
+                info.close_reason = None;
+                // Negotiated headers must follow the same policy as the handshake.
+                let handshake = runtime
+                    .capture(session_id, info.handshake_log_id)
+                    .map_err(map_error)?
+                    .ok_or_else(|| ManagerError::not_found("handshake not found"))?;
+                let safe = redactor
+                    .as_ref()
+                    .expect("policy redactor")
+                    .detail(&runtime, handshake)?
+                    .summary;
+                info.subprotocol = safe
+                    .response
+                    .as_ref()
+                    .and_then(|r| r.headers.get("sec-websocket-protocol"))
+                    .and_then(|v| v.first())
+                    .cloned();
+                info.extensions = safe
+                    .response
+                    .as_ref()
+                    .and_then(|r| r.headers.get("sec-websocket-extensions"))
+                    .map(|v| v.join(","))
+                    .unwrap_or_default();
             }
             Ok(result)
         })
@@ -2052,6 +2081,265 @@ impl ProxyCrabManager for MitmManager {
                 .map_err(map_error)
         })
         .await
+    }
+
+    /* ---- Workflow domain (flow projects / workflows) ---- */
+
+    async fn flow_projects(&self, query: FlowListQuery) -> ManagerResult<FlowProjectPage> {
+        let flow_root = self.flow_root();
+        self.run_blocking("flow project list", move || {
+            let mut projects = FlowStore::open(&flow_root)
+                .and_then(|store| store.list_projects())
+                .map_err(map_flow_error)?;
+            let total = projects.len();
+            paginate(&mut projects, query);
+            Ok(FlowProjectPage { projects, total })
+        })
+        .await
+    }
+
+    async fn create_flow_project(
+        &self,
+        request: FlowProjectCreateRequest,
+    ) -> ManagerResult<Project> {
+        let flow_root = self.flow_root();
+        self.run_blocking("flow project create", move || {
+            let store = FlowStore::open(&flow_root).map_err(map_flow_error)?;
+            let now = now_millis();
+            let project = Project {
+                id: generate_flow_id("proj")
+                    .map_err(map_flow_error)?,
+                name: request.name,
+                description: request.description,
+                color: request.color,
+                variables: request.variables,
+                secret_variables: request.secret_variables,
+                created_at: now,
+                updated_at: now,
+            };
+            store.put_project(&project).map_err(map_flow_error)?;
+            Ok(project)
+        })
+        .await
+    }
+
+    async fn flow_project(&self, id: String) -> ManagerResult<Project> {
+        let flow_root = self.flow_root();
+        self.run_blocking("flow project read", move || {
+            require_flow_project(&flow_root, &id)
+        })
+        .await
+    }
+
+    async fn update_flow_project(
+        &self,
+        id: String,
+        request: FlowProjectUpdateRequest,
+    ) -> ManagerResult<Project> {
+        let flow_root = self.flow_root();
+        self.run_blocking("flow project update", move || {
+            let store = FlowStore::open(&flow_root).map_err(map_flow_error)?;
+            let mut project = require_flow_project(&flow_root, &id)?;
+            if let Some(name) = request.name {
+                project.name = name;
+            }
+            if let Some(description) = request.description {
+                project.description = description;
+            }
+            if let Some(color) = request.color {
+                project.color = color;
+            }
+            if let Some(variables) = request.variables {
+                project.variables = variables;
+            }
+            if let Some(secret_variables) = request.secret_variables {
+                project.secret_variables = secret_variables;
+            }
+            project.updated_at = now_millis();
+            store.put_project(&project).map_err(map_flow_error)?;
+            Ok(project)
+        })
+        .await
+    }
+
+    async fn delete_flow_project(&self, id: String) -> ManagerResult<()> {
+        let flow_root = self.flow_root();
+        self.run_blocking("flow project delete", move || {
+            let store = FlowStore::open(&flow_root).map_err(map_flow_error)?;
+            require_flow_project(&flow_root, &id)?;
+            store.delete_project(&id).map_err(map_flow_error)
+        })
+        .await
+    }
+
+    async fn workflows(&self, query: WorkflowListQuery) -> ManagerResult<WorkflowPage> {
+        let flow_root = self.flow_root();
+        self.run_blocking("workflow list", move || {
+            let mut workflows = FlowStore::open(&flow_root)
+                .and_then(|store| store.list_workflows())
+                .map_err(map_flow_error)?;
+            if let Some(project_id) = query.project_id.as_deref() {
+                workflows.retain(|workflow| workflow.project_id == project_id);
+            }
+            let total = workflows.len();
+            paginate(&mut workflows, FlowListQuery {
+                limit: query.limit,
+                offset: query.offset,
+            });
+            Ok(WorkflowPage { workflows, total })
+        })
+        .await
+    }
+
+    async fn create_workflow(&self, request: WorkflowCreateRequest) -> ManagerResult<Workflow> {
+        let flow_root = self.flow_root();
+        self.run_blocking("workflow create", move || {
+            let store = FlowStore::open(&flow_root).map_err(map_flow_error)?;
+            let now = now_millis();
+            let workflow = Workflow {
+                id: generate_flow_id("wf").map_err(map_flow_error)?,
+                project_id: request.project_id,
+                name: request.name,
+                description: request.description,
+                nodes: request.nodes,
+                edges: request.edges,
+                variables: request.variables,
+                secret_variables: request.secret_variables,
+                // put_workflow persists at the current schema version; mirror it
+                // on the returned document.
+                schema_version: WORKFLOW_SCHEMA_VERSION,
+                created_at: now,
+                updated_at: now,
+            };
+            store.put_workflow(&workflow).map_err(map_flow_error)?;
+            Ok(workflow)
+        })
+        .await
+    }
+
+    async fn workflow(&self, id: String) -> ManagerResult<Workflow> {
+        let flow_root = self.flow_root();
+        self.run_blocking("workflow read", move || require_workflow(&flow_root, &id)).await
+    }
+
+    async fn update_workflow(
+        &self,
+        id: String,
+        request: WorkflowUpdateRequest,
+    ) -> ManagerResult<Workflow> {
+        if request.nodes.is_some() != request.edges.is_some() {
+            return Err(ManagerError::bad_request(
+                "workflow graph update requires both nodes and edges",
+            ));
+        }
+        let flow_root = self.flow_root();
+        self.run_blocking("workflow update", move || {
+            let store = FlowStore::open(&flow_root).map_err(map_flow_error)?;
+            let mut workflow = require_workflow(&flow_root, &id)?;
+            if let Some(project_id) = request.project_id {
+                workflow.project_id = project_id;
+            }
+            if let Some(name) = request.name {
+                workflow.name = name;
+            }
+            if let Some(description) = request.description {
+                workflow.description = description;
+            }
+            if let Some(nodes) = request.nodes {
+                workflow.nodes = nodes;
+            }
+            if let Some(edges) = request.edges {
+                workflow.edges = edges;
+            }
+            if let Some(variables) = request.variables {
+                workflow.variables = variables;
+            }
+            if let Some(secret_variables) = request.secret_variables {
+                workflow.secret_variables = secret_variables;
+            }
+            workflow.updated_at = now_millis();
+            store.put_workflow(&workflow).map_err(map_flow_error)?;
+            Ok(workflow)
+        })
+        .await
+    }
+
+    async fn delete_workflow(&self, id: String) -> ManagerResult<()> {
+        let flow_root = self.flow_root();
+        self.run_blocking("workflow delete", move || {
+            let store = FlowStore::open(&flow_root).map_err(map_flow_error)?;
+            require_workflow(&flow_root, &id)?;
+            store.delete_workflow(&id).map_err(map_flow_error)
+        })
+        .await
+    }
+
+    async fn validate_workflow(&self, id: String) -> ManagerResult<Vec<WorkflowValidationIssue>> {
+        let flow_root = self.flow_root();
+        self.run_blocking("workflow validate", move || {
+            let workflow = require_workflow(&flow_root, &id)?;
+            let issues = validate_workflow_graph(&workflow.nodes, &workflow.edges);
+            Ok(issues.into_iter().map(validation_issue).collect())
+        })
+        .await
+    }
+}
+
+/// Helpers shared by the workflow-domain manager methods: resolve the workspace
+/// flow root for use inside blocking tasks.
+impl MitmManager {
+    fn flow_root(&self) -> std::path::PathBuf {
+        self.runtime.workspace().root().to_path_buf()
+    }
+}
+
+fn require_flow_project(flow_root: &std::path::Path, id: &str) -> ManagerResult<Project> {
+    FlowStore::open(flow_root)
+        .and_then(|store| store.get_project(id))
+        .map_err(map_flow_error)?
+        .ok_or_else(|| ManagerError::not_found(format!("project {id} not found")))
+}
+
+fn require_workflow(flow_root: &std::path::Path, id: &str) -> ManagerResult<Workflow> {
+    FlowStore::open(flow_root)
+        .and_then(|store| store.get_workflow(id))
+        .map_err(map_flow_error)?
+        .ok_or_else(|| ManagerError::not_found(format!("workflow {id} not found")))
+}
+
+/// Apply `limit`/`offset` pagination to an already sorted list.
+fn paginate<T>(items: &mut Vec<T>, query: FlowListQuery) {
+    let offset = query.offset.unwrap_or(0).min(items.len());
+    items.drain(..offset);
+    if let Some(limit) = query.limit {
+        items.truncate(limit);
+    }
+}
+
+fn validation_issue(issue: ValidationIssue) -> WorkflowValidationIssue {
+    WorkflowValidationIssue {
+        code: issue.code.as_str().to_owned(),
+        message: issue.message,
+        node_ids: issue.node_ids,
+    }
+}
+
+/// Map flow-store failures to HTTP semantics: shape-validation rejections and
+/// vanished entities are client errors, everything else is an internal error.
+fn map_flow_error(error: anyhow::Error) -> ManagerError {
+    let message = error.to_string();
+    if message.contains("not found") {
+        ManagerError::not_found(message)
+    } else if message.contains("invalid flow id")
+        || message.contains("requires a non-empty")
+        || message.contains("is not supported")
+        || message.contains("without an id")
+        || message.contains("without id/source/target")
+        || message.contains("non-finite position")
+    {
+        ManagerError::bad_request(message)
+    } else {
+        ManagerError::internal(message)
     }
 }
 

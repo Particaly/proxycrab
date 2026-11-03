@@ -20,7 +20,7 @@ fn permission_catalog_contains_every_unique_route_action() {
         .map(|action| action.id)
         .collect::<BTreeSet<_>>();
 
-    assert_eq!(actions.len(), 82);
+    assert_eq!(actions.len(), 93);
     assert_eq!(ids.len(), actions.len());
     assert!(
         actions
@@ -57,6 +57,8 @@ fn permission_catalog_has_the_confirmed_default_matrix() {
         "DELETE /api/clash-config",
         "GET /api/filter-scripts",
         "GET /api/filter-scripts/{name}",
+        "GET /api/flow-projects",
+        "GET /api/flow-projects/{id}",
         "GET /api/interceptors",
         "GET /api/interceptors/{kind}/{name}",
         "GET /api/logs/{id}",
@@ -75,10 +77,13 @@ fn permission_catalog_has_the_confirmed_default_matrix() {
         "GET /api/session-view",
         "GET /api/sessions",
         "GET /api/system-logs",
+        "GET /api/workflows",
+        "GET /api/workflows/{id}",
         "POST /api/filter-scripts/{name}/debug",
         "POST /api/logs/ids",
         "POST /api/logs/views",
         "POST /api/replay",
+        "POST /api/workflows/{id}/validate",
     ]);
     let approval = BTreeSet::from([
         "PUT /api/redaction-scripts/{name}",
@@ -110,7 +115,13 @@ fn permission_catalog_has_the_confirmed_default_matrix() {
         "PUT /api/session-view",
         "PUT /api/sessions/{id}",
         "PUT /api/sessions/{id}/filter",
+        "DELETE /api/flow-projects/{id}",
+        "DELETE /api/workflows/{id}",
         "DELETE /api/session-shares/{id}",
+        "POST /api/flow-projects",
+        "POST /api/workflows",
+        "PUT /api/flow-projects/{id}",
+        "PUT /api/workflows/{id}",
     ]);
     let deny = BTreeSet::from([
         "GET /api/redaction-scripts/{name}",
@@ -174,6 +185,39 @@ fn permission_lookup_uses_both_method_and_route_template() {
             .default_mode,
         PermissionMode::Approval
     );
+    // Workflow domain: reads (and the read-only graph validation executed via
+    // POST) default to allow; definition writes default to approval.
+    assert_eq!(
+        find_api_action("POST", "/api/workflows/{id}/validate")
+            .unwrap()
+            .default_mode,
+        PermissionMode::Allow
+    );
+    assert_eq!(
+        find_api_action("GET", "/api/flow-projects/{id}")
+            .unwrap()
+            .default_mode,
+        PermissionMode::Allow
+    );
+    assert_eq!(
+        find_api_action("POST", "/api/workflows")
+            .unwrap()
+            .default_mode,
+        PermissionMode::Approval
+    );
+    assert_eq!(
+        find_api_action("PUT", "/api/workflows/{id}")
+            .unwrap()
+            .default_mode,
+        PermissionMode::Approval
+    );
+    assert_eq!(
+        find_api_action("DELETE", "/api/flow-projects/{id}")
+            .unwrap()
+            .default_mode,
+        PermissionMode::Approval
+    );
+    assert!(find_api_action("PATCH", "/api/workflows/{id}").is_none());
     assert!(find_api_action("DELETE", "/api/ca").is_none());
     assert!(find_api_action("GET", "/api/logs/123").is_none());
 
@@ -181,5 +225,13 @@ fn permission_lookup_uses_both_method_and_route_template() {
         .map(|action| action.method)
         .collect::<BTreeSet<_>>();
     assert_eq!(methods, BTreeSet::from(["DELETE", "GET", "PUT"]));
+    let workflow_methods = api_actions_for_path("/api/workflows/wf-example")
+        .map(|action| action.method)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(workflow_methods, BTreeSet::from(["DELETE", "GET", "PUT"]));
+    let validate_methods = api_actions_for_path("/api/workflows/wf-example/validate")
+        .map(|action| action.method)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(validate_methods, BTreeSet::from(["POST"]));
     assert_eq!(api_actions_for_path("/api/not-found").count(), 0);
 }

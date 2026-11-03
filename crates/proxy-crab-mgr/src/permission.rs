@@ -225,6 +225,20 @@ pub static API_ACTIONS: &[ApiAction] = &[
     action!("DELETE", "/api/clash-config", Allow),
     action!("GET", "/api/system-logs", Allow),
     action!("DELETE", "/api/system-logs", Deny),
+    action!("GET", "/api/flow-projects", Allow),
+    action!("POST", "/api/flow-projects", Approval),
+    action!("GET", "/api/flow-projects/{id}", Allow),
+    action!("PUT", "/api/flow-projects/{id}", Approval),
+    action!("DELETE", "/api/flow-projects/{id}", Approval),
+    action!("GET", "/api/workflows", Allow),
+    action!("POST", "/api/workflows", Approval),
+    action!("GET", "/api/workflows/{id}", Allow),
+    action!("PUT", "/api/workflows/{id}", Approval),
+    action!("DELETE", "/api/workflows/{id}", Approval),
+    // Graph validation only reads the stored definition and runs the structural
+    // validator (no mutation), so despite the POST verb it is registered as a
+    // read (`allow`) — the POST is the "execute validation" semantics.
+    action!("POST", "/api/workflows/{id}/validate", Allow),
 ];
 
 pub const OBSOLETE_API_ACTION_IDS: &[&str] = &[

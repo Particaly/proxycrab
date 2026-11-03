@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use proxy_crab_mitm::{
     bypass::BypassEntry,
+    flow::model::{Project, Workflow, WorkflowEdge, WorkflowNode},
     model::{
         AppConfig, BodyPayload, BreakpointSummary, CaptureError, Column, InterceptorExecution,
         InterceptorKind, InterceptorLibraryItem, ProxyStatus, Script, SessionFilter,
@@ -590,4 +591,111 @@ pub struct ReplayResult {
 #[serde(deny_unknown_fields)]
 pub struct RedactionBinding {
     pub redaction_script: Option<String>,
+}
+
+/* ---- Workflow domain (flow projects / workflows) ---- */
+
+/// Create one flow project: id and timestamps are server-generated.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FlowProjectCreateRequest {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub color: String,
+    #[serde(default)]
+    pub variables: BTreeMap<String, String>,
+    #[serde(default)]
+    pub secret_variables: BTreeMap<String, String>,
+}
+
+/// Update one flow project: only the fields present in the body are replaced
+/// (clearing a text field is done by sending an empty string, clearing a map
+/// by sending an empty object).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FlowProjectUpdateRequest {
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub color: Option<String>,
+    pub variables: Option<BTreeMap<String, String>>,
+    pub secret_variables: Option<BTreeMap<String, String>>,
+}
+
+/// Create one workflow definition: id and timestamps are server-generated.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowCreateRequest {
+    pub project_id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub nodes: Vec<WorkflowNode>,
+    #[serde(default)]
+    pub edges: Vec<WorkflowEdge>,
+    #[serde(default)]
+    pub variables: BTreeMap<String, String>,
+    #[serde(default)]
+    pub secret_variables: BTreeMap<String, String>,
+}
+
+/// Update one workflow definition. `nodes` and `edges` form one graph unit:
+/// they must be sent together (whole replacement) or both omitted. Other
+/// present fields are replaced individually.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowUpdateRequest {
+    pub project_id: Option<String>,
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub nodes: Option<Vec<WorkflowNode>>,
+    pub edges: Option<Vec<WorkflowEdge>>,
+    pub variables: Option<BTreeMap<String, String>>,
+    pub secret_variables: Option<BTreeMap<String, String>>,
+}
+
+/// Shared pagination parameters for flow entity lists: `limit` omitted returns
+/// every entity, `offset` skips the first entries of the deterministic
+/// (createdAt, id) order.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FlowListQuery {
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
+}
+
+/// Workflow list query: filters by owning project before paginating.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowListQuery {
+    pub project_id: Option<String>,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FlowProjectPage {
+    pub projects: Vec<Project>,
+    pub total: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WorkflowPage {
+    pub workflows: Vec<Workflow>,
+    pub total: usize,
+}
+
+/// One workflow-graph validation issue (`flow::validate::ValidationIssue`
+/// shaped for the wire; every issue is blocking for runs, none for saves).
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowValidationIssue {
+    /// Stable kebab-case issue code (`missing-start`, `dangling-edge`, …).
+    pub code: String,
+    /// Human-readable message (already localized by the validator).
+    pub message: String,
+    /// Node ids for locating the problem; empty for workflow-level issues.
+    pub node_ids: Vec<String>,
 }

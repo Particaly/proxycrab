@@ -509,9 +509,9 @@ impl BundleImports {
         }
         if files.iter().any(|f| {
             f.status == "conflict"
-                && !decisions
+                && decisions
                     .get(&f.path)
-                    .is_some_and(|r| r.fingerprint == f.fingerprint)
+                    .is_none_or(|r| r.fingerprint != f.fingerprint)
         }) {
             return Ok(ImportResult {
                 import_id: Some(id),
