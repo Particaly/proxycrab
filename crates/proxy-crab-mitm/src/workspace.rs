@@ -654,7 +654,16 @@ fn write_import_file(path: &Path, bytes: &[u8]) -> Result<()> {
     let mut temporary = tempfile::NamedTempFile::new_in(path.parent().unwrap())?;
     temporary.write_all(bytes)?;
     temporary.as_file().sync_all()?;
-    temporary.persist(path)?;
+    // Close the temp handle before replacing: `NamedTempFile::persist` fails with
+    // ACCESS_DENIED on Windows when the target is open elsewhere, while a plain
+    // rename after the source handle is closed succeeds and keeps already-open
+    // streams reading the old content. The random temp name keeps arbitrary asset
+    // extensions (including .tmp) from aliasing the staging file.
+    let staged = temporary.into_temp_path().keep()?;
+    if let Err(error) = fs::rename(&staged, path) {
+        let _ = fs::remove_file(&staged);
+        return Err(error.into());
+    }
     Ok(())
 }
 
