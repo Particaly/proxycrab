@@ -1,0 +1,159 @@
+/*
+ * 请求工作流画布样式（Task 12 骨架）。
+ *
+ * 约定（Agreed contract 决策 7）：不引入 @vue-flow/core 的默认主题
+ * （theme-default.css）；其结构样式（style.css，视口 / 手柄 / 连线的
+ * 布局机制）在此引入，随后全部视觉细节用 base.css token 覆盖，13px 基准。
+ * 类名前缀 flow-，避免与全局样式冲突。
+ */
+@import "@vue-flow/core/dist/style.css";
+
+/* ---------- 画布容器 ---------- */
+
+.flow-canvas {
+  flex: 1;
+  min-height: 0;
+  /* 静态点阵网格（随视口平移缩放的动态网格属 Task 13 视图细化） */
+  background-color: var(--bg-app);
+  background-image: radial-gradient(var(--border) 1px, transparent 1px);
+  background-size: 20px 20px;
+}
+
+.flow-canvas .vue-flow__pane {
+  cursor: grab;
+}
+.flow-canvas .vue-flow__pane.dragging {
+  cursor: grabbing;
+}
+
+/* ---------- 连线 / 连线路径 ---------- */
+
+.flow-canvas .vue-flow__edge-path,
+.flow-canvas .vue-flow__connection-path {
+  stroke: var(--border-strong);
+  stroke-width: 1.5;
+}
+
+.flow-canvas .vue-flow__edge.selected .vue-flow__edge-path,
+.flow-canvas .vue-flow__edge:focus .vue-flow__edge-path {
+  stroke: var(--accent);
+}
+
+.flow-canvas .vue-flow__edge-text {
+  fill: var(--text-secondary);
+  font-size: 10px;
+}
+.flow-canvas .vue-flow__edge-textbg {
+  fill: var(--bg-panel);
+}
+
+/* ---------- 节点卡 ---------- */
+
+.flow-canvas .vue-flow__node {
+  cursor: grab;
+}
+.flow-canvas .vue-flow__node.dragging {
+  cursor: grabbing;
+}
+
+/* 卡片本体：176×56 基准，类型色描边 + 圆点由 --node-color 注入 */
+.flow-node {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  width: 176px;
+  min-height: 56px;
+  padding: 6px 10px;
+  border: 1px solid color-mix(in srgb, var(--node-color) 70%, transparent);
+  border-radius: var(--radius-lg);
+  background: var(--bg-panel);
+  font-size: 12px;
+  line-height: 1.3;
+  transition: box-shadow 0.12s;
+}
+.flow-node-selected {
+  box-shadow:
+    0 0 0 1px var(--accent),
+    0 0 0 4px var(--bg-selected);
+}
+
+.flow-node-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.flow-node-dot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--node-color);
+}
+.flow-node-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  color: var(--text);
+}
+.flow-node-badge {
+  flex: none;
+  padding: 0 4px;
+  border-radius: 6px;
+  background: var(--bg-active);
+  color: var(--text-secondary);
+  font-size: 9px;
+  line-height: 14px;
+}
+.flow-node-summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+
+/* 便签：无手柄注释卡，底色由 config.color（或默认黄）注入 */
+.flow-node-sticky {
+  min-height: 72px;
+  border-color: color-mix(in srgb, var(--text-faint) 45%, transparent);
+  box-shadow: var(--shadow-popup);
+}
+.flow-node-sticky .flow-node-summary {
+  white-space: pre-wrap;
+  color: var(--text);
+}
+
+/* ---------- 手柄 ---------- */
+
+.flow-canvas .vue-flow__handle {
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--bg-panel);
+  background: var(--border-strong);
+  transition: background-color 0.15s;
+}
+.flow-canvas .vue-flow__handle:hover {
+  background: var(--accent);
+}
+/* 条件分支真 / 假双出口沿用同款手柄（垂直位置由内联 style 落位） */
+.flow-canvas .flow-branch-handle {
+  width: 9px;
+  height: 9px;
+}
+
+/* 真 / 假出口小字标识（贴在手柄内侧，不参与指针事件） */
+.flow-branch-label {
+  position: absolute;
+  right: 14px;
+  transform: translateY(-50%);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 1;
+  color: var(--text-faint);
+  pointer-events: none;
+}

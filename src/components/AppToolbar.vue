@@ -22,6 +22,7 @@ import {
   openQrCode,
   openReplay,
   openTextDiff,
+  openWorkflowEditor,
   openRequestInterceptorManager,
   openResponseInterceptorManager,
   openRoutingManager,
@@ -40,6 +41,7 @@ import {
   Io5Desktop,
   Io5DocumentText,
   Io5Download,
+  Io5GitNetwork,
   Io5InformationCircle,
   Io5List,
   Io5Moon,
@@ -286,13 +288,17 @@ onBeforeUnmount(() => {
             <Io5RadioButtonOn :size="14" />
             <span>分流规则</span>
           </button>
-          <button
-            v-if="backend.envSets"
-            class="tb-menu-item"
-            @click="runMenuAction(openEnvSets)"
-          >
+          <button v-if="backend.envSets" class="tb-menu-item" @click="runMenuAction(openEnvSets)">
             <Io5Options :size="14" />
             <span>环境变量</span>
+          </button>
+          <button
+            v-if="backend.workflows"
+            class="tb-menu-item"
+            @click="runMenuAction(openWorkflowEditor)"
+          >
+            <Io5GitNetwork :size="14" />
+            <span>工作流</span>
           </button>
           <div class="tb-menu-divider" />
           <button class="tb-menu-item" @click="runMenuAction(openAssetManager)">

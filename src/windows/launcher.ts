@@ -25,6 +25,7 @@ import ReadonlyViewerWindow from "./ReadonlyViewerWindow.vue";
 import SkillManagerWindow from "./SkillManagerWindow.vue";
 import RoutingManagerWindow from "./RoutingManagerWindow.vue";
 import EnvSetsWindow from "./EnvSetsWindow.vue";
+import WorkflowEditorWindow from "./WorkflowEditorWindow.vue";
 import BypassWindow from "./BypassWindow.vue";
 import BreakpointListWindow from "./BreakpointListWindow.vue";
 import AgentsPresetsWindow from "./AgentsPresetsWindow.vue";
@@ -355,6 +356,17 @@ export function openEnvSets(): void {
     component: EnvSetsWindow,
     width: 880,
     height: 580,
+  });
+}
+
+/** 请求工作流编辑器；后端未提供 workflows 能力时不打开入口。 */
+export function openWorkflowEditor(): void {
+  if (!getBackend().workflows) return;
+  windowsStore.open("workflow-editor", {
+    title: "工作流编辑器",
+    component: WorkflowEditorWindow,
+    width: 1180,
+    height: 720,
   });
 }
 
