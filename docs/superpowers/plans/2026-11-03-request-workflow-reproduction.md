@@ -279,10 +279,10 @@
 - Create: `crates/proxy-crab-mitm/src/flow/env_sets.rs`、`src/windows/EnvSetsWindow.vue`
 - Modify: `crates/proxy-crab-mgr/src/{http.rs,permission.rs}`、`src/components/AppToolbar.vue`
 
-- [ ] **Step 1: 存储**：环境变量集（版本化信封 + 迁移注册表）+ 全局变量/secret 变量；secret 全链路脱敏与导出剔除（移植 `engine/secret-mask.ts`）。
-- [ ] **Step 2: API + 权限**：集合 CRUD、激活集切换、脚本写回入口；读 `allow`、写 `approval`。
-- [ ] **Step 3: 窗口**：集合 CRUD/复制/删除、kv 编辑（secret 掩码）、一键激活（删除激活集自动清偏好）。
-- [ ] **Step 4: 运行期写回语义**：脚本 env 写回双写（运行快照立即更新 + 派发时落库）、串行队列、硬超时下已提交写回不回滚（与 ReqFlow 一致并在文档披露）。
+- [x] **Step 1: 存储**：环境变量集（版本化信封 + 迁移注册表）+ 全局变量/secret 变量；secret 全链路脱敏与导出剔除（移植 `engine/secret-mask.ts`）。
+- [x] **Step 2: API + 权限**：集合 CRUD、激活集切换、脚本写回入口；读 `allow`、写 `approval`。
+- [x] **Step 3: 窗口**：集合 CRUD/复制/删除、kv 编辑（secret 掩码）、一键激活（删除激活集自动清偏好）。
+- [x] **Step 4: 运行期写回语义**：脚本 env 写回双写（运行快照立即更新 + 派发时落库）、串行队列、硬超时下已提交写回不回滚（与 ReqFlow 一致并在文档披露）。
 
 ### Task 18: 脚本编辑器与试跑
 
