@@ -220,6 +220,8 @@ impl EnvVariableSet {
 
 /// Flow entity ids double as file names and later API path segments: restrict
 /// them to a single safe component (same character policy as script names).
+/// Typed as [`crate::error::Error::InvalidArgument`] so the management layer
+/// maps a malformed API id to 400 instead of an internal error.
 pub(crate) fn validate_flow_id(id: &str) -> Result<()> {
     if id.is_empty()
         || id.len() > 128
@@ -228,7 +230,7 @@ pub(crate) fn validate_flow_id(id: &str) -> Result<()> {
             .chars()
             .all(|character| character.is_alphanumeric() || matches!(character, '-' | '_' | '.'))
     {
-        bail!("invalid flow id {id:?}");
+        bail!(crate::error::Error::InvalidArgument(format!("invalid flow id {id:?}")));
     }
     Ok(())
 }
@@ -237,7 +239,7 @@ fn entity_path(flow_root: &Path, directory: &str, id: &str) -> PathBuf {
     flow_root.join(directory).join(format!("{id}.json"))
 }
 
-fn put_entity<T: FlowEntity>(flow_root: &Path, value: &T) -> Result<()> {
+pub(crate) fn put_entity<T: FlowEntity>(flow_root: &Path, value: &T) -> Result<()> {
     let _guard = WRITE_LOCK.lock().expect("flow write lock poisoned");
     put_entity_locked(flow_root, value)
 }
@@ -251,7 +253,7 @@ pub(crate) fn put_entity_locked<T: FlowEntity>(flow_root: &Path, value: &T) -> R
         .with_context(|| format!("failed to save {} {}", T::LABEL, value.flow_id()))
 }
 
-fn get_entity<T: FlowEntity>(flow_root: &Path, id: &str) -> Result<Option<T>> {
+pub(crate) fn get_entity<T: FlowEntity>(flow_root: &Path, id: &str) -> Result<Option<T>> {
     validate_flow_id(id)?;
     let path = entity_path(flow_root, T::DIRECTORY, id);
     let bytes = match fs::read(&path) {
@@ -324,7 +326,7 @@ pub(crate) fn delete_entity<T: FlowEntity>(flow_root: &Path, id: &str) -> Result
     match fs::remove_file(&path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            Err(anyhow!("{} {id} not found", T::LABEL))
+            Err(crate::error::Error::FlowEntityNotFound(T::LABEL, id.to_owned()).into())
         }
         Err(error) => Err(error).with_context(|| format!("failed to delete {} {id}", T::LABEL)),
     }

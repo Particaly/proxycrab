@@ -20,7 +20,7 @@ use crate::{
         InterceptorExecutionOrigin, InterceptorKind, InterceptorRun, InterceptorScriptContent,
         InterceptorSnapshot, Modification, RequestData, RequestTags, ResponseData,
     },
-    workspace::{SESSIONS_DIRECTORY, now_millis},
+    workspace::{ARCHIVED_SESSIONS_DIRECTORY, SESSIONS_DIRECTORY, now_millis},
 };
 
 pub(crate) const BODY_DETAIL_LIMIT: u64 = 64 * 1024;
@@ -102,6 +102,35 @@ impl CaptureStore {
             .join(SESSIONS_DIRECTORY)
             .join(session_id.to_string());
         fs::create_dir_all(session_directory.join("blob"))?;
+        let connection = Connection::open(session_directory.join("captures.db"))?;
+        connection.busy_timeout(Duration::from_secs(5))?;
+        connection.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             PRAGMA synchronous = NORMAL;",
+        )?;
+        let store = Self {
+            session_id,
+            connection: Arc::new(Mutex::new(connection)),
+            websocket_index: Arc::new(Mutex::new(Default::default())),
+            session_directory,
+            workspace_root: workspace_root.to_path_buf(),
+        };
+        store.initialize()?;
+        Ok(store)
+    }
+
+    /// Open the capture store of an archived session (`sessions_archived/{id}`)
+    /// for read-only access. Unlike [`CaptureStore::open`] no directory or
+    /// database file is created: a missing archive surfaces as an error instead
+    /// of an empty store, because archives are only ever produced by the
+    /// archive flow.
+    pub fn open_archived(session_id: u64, workspace_root: &Path) -> Result<Self> {
+        let session_directory = workspace_root
+            .join(ARCHIVED_SESSIONS_DIRECTORY)
+            .join(session_id.to_string());
+        if !session_directory.is_dir() {
+            anyhow::bail!(crate::error::Error::ArchivedSessionNotFound(session_id));
+        }
         let connection = Connection::open(session_directory.join("captures.db"))?;
         connection.busy_timeout(Duration::from_secs(5))?;
         connection.execute_batch(

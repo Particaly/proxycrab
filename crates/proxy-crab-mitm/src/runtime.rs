@@ -364,6 +364,39 @@ impl ProxyCrab {
         self.pin_capture_store(session_id)?.store.get(id)
     }
 
+    /// Open the capture store of an archived session for one read. Archived
+    /// stores are never cached or pinned: the archive directory is immutable
+    /// until restore, and restore renames it away so a cached handle could keep
+    /// serving deleted data.
+    fn archived_capture_store(&self, session_id: u64) -> Result<CaptureStore> {
+        if !self
+            .workspace
+            .archived_sessions()
+            .iter()
+            .any(|session| session.id == session_id)
+        {
+            bail!(Error::ArchivedSessionNotFound(session_id));
+        }
+        CaptureStore::open_archived(session_id, self.workspace.root())
+    }
+
+    /// Read one capture from an archived session (request library ingestion
+    /// keeps working after a Session is archived).
+    pub fn archived_capture(&self, session_id: u64, id: u64) -> Result<Option<CaptureDetail>> {
+        self.archived_capture_store(session_id)?.get(id)
+    }
+
+    /// Read one capture body from an archived session.
+    pub fn archived_capture_body_source(
+        &self,
+        session_id: u64,
+        id: u64,
+        side: BodySide,
+    ) -> Result<Option<BodySource>> {
+        self.archived_capture_store(session_id)?
+            .body_source(id, side)
+    }
+
     pub fn has_capture(&self, session_id: u64, id: u64) -> Result<bool> {
         self.pin_capture_store(session_id)?.store.contains(id)
     }

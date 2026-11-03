@@ -38,8 +38,8 @@ use crate::{
 };
 
 use super::store::{
-    REQUEST_LIBRARY_DIRECTORY, WRITE_LOCK, FlowStore, delete_entity, list_entities,
-    put_entity_locked, validate_flow_id,
+    REQUEST_LIBRARY_DIRECTORY, WRITE_LOCK, FlowEntity, FlowStore, delete_entity, get_entity,
+    list_entities, put_entity, put_entity_locked, validate_flow_id,
 };
 
 /// Request bodies at or below this size that decode as UTF-8 text are inlined
@@ -383,22 +383,133 @@ impl FlowStore {
             .with_context(|| format!("failed to read request library body {}", body_ref.path))
     }
 
+    /// Insert one caller-built entry (manual creation today, import flows
+    /// later): assigns the id and timestamps, applies the naming policy —
+    /// `METHOD host+path` default with numeric-suffix dedup — and persists the
+    /// entry. The snapshot must carry at least one entry.
+    pub fn add_request(
+        &self,
+        har: HarSnapshot,
+        source: RequestSource,
+        name: Option<&str>,
+        tags: &[String],
+        origin: String,
+    ) -> Result<RequestLibraryEntry> {
+        let desired = match name.map(str::trim).filter(|value| !value.is_empty()) {
+            Some(custom) => custom.to_string(),
+            None => {
+                let request = har
+                    .log
+                    .entries
+                    .first()
+                    .ok_or_else(|| {
+                        crate::error::Error::InvalidArgument(
+                            "request library entry requires a HAR snapshot with at least one entry"
+                                .to_owned(),
+                        )
+                    })?
+                    .request
+                    .clone();
+                build_default_request_name(&request.method, &request.url)
+            }
+        };
+        let now = now_millis();
+        let mut entry = RequestLibraryEntry {
+            id: generate_request_id()?,
+            name: String::new(),
+            tags: tags.to_vec(),
+            source,
+            origin,
+            har,
+            body_ref: None,
+            created_at: now,
+            updated_at: now,
+        };
+        // Same critical section as ingestion: name dedup and the entry write
+        // cannot interleave with a concurrent insert.
+        let _guard = WRITE_LOCK.lock().expect("flow write lock poisoned");
+        let existing = list_entities::<RequestLibraryEntry>(&self.flow_root)?;
+        entry.name = assign_unique_name(&desired, existing.iter().map(|entry| entry.name.as_str()));
+        put_entity_locked(&self.flow_root, &entry)?;
+        Ok(entry)
+    }
+
+    /// Update the editable fields of one entry (`None` keeps the stored
+    /// value). `id`, `source` and `createdAt` are never editable; `updatedAt`
+    /// is refreshed. When the replacement snapshot embeds an inline request
+    /// body while the stored entry referenced a blob, the stale blob is
+    /// deleted and the reference cleared; otherwise an existing blob reference
+    /// is preserved (clients round-trip snapshots that never contain blob
+    /// bytes).
+    pub fn update_request(
+        &self,
+        id: &str,
+        name: Option<&str>,
+        tags: Option<&[String]>,
+        origin: Option<&str>,
+        har: Option<HarSnapshot>,
+    ) -> Result<RequestLibraryEntry> {
+        let mut entry = get_entity::<RequestLibraryEntry>(&self.flow_root, id)?
+            .ok_or_else(|| {
+                crate::error::Error::FlowEntityNotFound(
+                    <RequestLibraryEntry as FlowEntity>::LABEL,
+                    id.to_owned(),
+                )
+            })?;
+        if let Some(name) = name {
+            entry.name = name.trim().to_owned();
+        }
+        if let Some(tags) = tags {
+            entry.tags = tags.to_vec();
+        }
+        if let Some(origin) = origin {
+            entry.origin = origin.to_owned();
+        }
+        if let Some(har) = har {
+            if har.log.entries.is_empty() {
+                bail!(crate::error::Error::InvalidArgument(format!(
+                    "request library entry {id} requires a HAR snapshot with at least one entry"
+                )));
+            }
+            let embeds_body = har.log.entries[0]
+                .request
+                .post_data
+                .as_ref()
+                .and_then(|post_data| post_data.text.as_ref())
+                .is_some();
+            let stale_blob = embeds_body.then(|| entry.id.clone());
+            entry.har = har;
+            if let Some(id) = stale_blob {
+                entry.body_ref = None;
+                delete_body_blob(&self.flow_root, &id)?;
+            }
+        }
+        entry.updated_at = now_millis();
+        put_entity(&self.flow_root, &entry)?;
+        Ok(entry)
+    }
+
     /// Delete one request library entry together with its body blob when one
     /// is referenced.
     pub fn delete_request(&self, id: &str) -> Result<()> {
         delete_entity::<RequestLibraryEntry>(&self.flow_root, id)?;
-        let path = self
-            .flow_root
-            .join(REQUEST_LIBRARY_DIRECTORY)
-            .join(BODIES_DIRECTORY)
-            .join(format!("{id}.body"));
-        if let Err(error) = fs::remove_file(&path)
-            && error.kind() != std::io::ErrorKind::NotFound
-        {
-            return Err(error).with_context(|| format!("failed to delete request library body {id}"));
-        }
-        Ok(())
+        delete_body_blob(&self.flow_root, id)
     }
+}
+
+/// Remove the body blob of one entry; a missing blob file is not an error
+/// (entries without blobs and already-removed blobs share the path).
+fn delete_body_blob(flow_root: &Path, id: &str) -> Result<()> {
+    let path = flow_root
+        .join(REQUEST_LIBRARY_DIRECTORY)
+        .join(BODIES_DIRECTORY)
+        .join(format!("{id}.body"));
+    if let Err(error) = fs::remove_file(&path)
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        return Err(error).with_context(|| format!("failed to delete request library body {id}"));
+    }
+    Ok(())
 }
 
 /// Build the typed HAR entry for one capture: headers expanded to HAR pairs,

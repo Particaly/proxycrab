@@ -31,6 +31,10 @@ pub enum Error {
     BreakpointNotFound(u64),
     #[error("bypass entry {0} not found")]
     BypassEntryNotFound(u64),
+    /// A flow domain entity (project / request library entry / workflow) does
+    /// not exist; the label is the human-readable entity name.
+    #[error("{0} {1} not found")]
+    FlowEntityNotFound(&'static str, String),
     #[error("bypass entry {0} is still in progress")]
     BypassEntryInProgress(u64),
     #[error("proxy is already running or changing state")]
