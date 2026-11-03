@@ -24,6 +24,7 @@ import AboutWindow from "./AboutWindow.vue";
 import ReadonlyViewerWindow from "./ReadonlyViewerWindow.vue";
 import SkillManagerWindow from "./SkillManagerWindow.vue";
 import RoutingManagerWindow from "./RoutingManagerWindow.vue";
+import EnvSetsWindow from "./EnvSetsWindow.vue";
 import BypassWindow from "./BypassWindow.vue";
 import BreakpointListWindow from "./BreakpointListWindow.vue";
 import AgentsPresetsWindow from "./AgentsPresetsWindow.vue";
@@ -343,6 +344,17 @@ export function openRedactionManager(): void {
     component: RedactionManagerWindow,
     width: 1000,
     height: 600,
+  });
+}
+
+/** 环境变量集与全局变量；后端未提供 envSets 能力时不打开入口。 */
+export function openEnvSets(): void {
+  if (!getBackend().envSets) return;
+  windowsStore.open("env-sets", {
+    title: "环境变量",
+    component: EnvSetsWindow,
+    width: 880,
+    height: 580,
   });
 }
 

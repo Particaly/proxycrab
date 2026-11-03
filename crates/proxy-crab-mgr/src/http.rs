@@ -1976,6 +1976,7 @@ impl IntoResponse for ApiError {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use std::{
         io::{Read, Write},
@@ -4906,7 +4907,7 @@ mod tests {
         let app_data = tempdir().unwrap();
         let runtime = ProxyCrab::open(app_data.path(), Arc::new(LogBuffer::default())).unwrap();
         let mut upload = runtime
-            .begin_asset_upload("fixtures/a.json".into(), "application/json".into())
+            .begin_asset_upload("fixtures/a.json", "application/json".into())
             .await
             .unwrap();
         upload.write(b"{}").await.unwrap();

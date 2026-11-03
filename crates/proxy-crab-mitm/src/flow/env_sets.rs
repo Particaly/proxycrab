@@ -731,14 +731,22 @@ mod tests {
 
     #[test]
     fn migration_registry_covers_every_version_step() {
-        // The registry must stay contiguous so a stored envelope never skips
-        // a version silently; vacuous for the initial empty registry.
-        for step in 2..=ENV_SETS_SCHEMA_VERSION {
+        // The registry must stay contiguous from v2 so a stored envelope
+        // never skips a version silently; vacuous for the initial empty
+        // registry (v1 is the initial layout).
+        let steps: Vec<u32> = env_sets_envelope_migrations()
+            .iter()
+            .map(|(target, _)| *target)
+            .collect();
+        for (index, step) in steps.iter().enumerate() {
+            assert_eq!(
+                *step,
+                index as u32 + 2,
+                "env-sets envelope migrations must be contiguous starting at v2"
+            );
             assert!(
-                env_sets_envelope_migrations()
-                    .iter()
-                    .any(|(target, _)| *target == step),
-                "missing env-sets envelope migration for v{step}"
+                *step <= ENV_SETS_SCHEMA_VERSION,
+                "env-sets envelope migration v{step} exceeds the current version"
             );
         }
     }

@@ -130,3 +130,74 @@ test("bundle imports submit the original file and explicit accepted IDs, then re
   ]);
   expect(fetchMock.mock.calls[1]![0].pathname).toBe("/api/imports/pending/resolve");
 });
+
+test("env set operations map onto the management routes with camelCase bodies", async () => {
+  const set = {
+    id: "env-dev",
+    name: "dev",
+    values: { baseUrl: "http://localhost" },
+    secretValues: { password: "******" },
+    createdAt: 1,
+    updatedAt: 2,
+  };
+  const fetchMock = vi.fn().mockImplementation(async (url: URL, init: RequestInit) => {
+    const route = `${init.method ?? "GET"} ${url.pathname}`;
+    const data =
+      route === "GET /api/env-sets"
+        ? { sets: [set], activeSetId: "env-dev", globals: { values: {}, secretValues: {} } }
+        : route === "PUT /api/env-sets/active"
+          ? { activeSetId: "env-dev" }
+          : route === "PUT /api/env-globals"
+            ? { values: {}, secretValues: {} }
+            : route === "POST /api/env-write-back"
+              ? { applied: 1, dropped: 0 }
+              : route === "GET /api/env-sets/env-dev"
+                ? set
+                : route === "DELETE /api/env-sets/env-dev"
+                  ? {}
+                  : set;
+    return new Response(JSON.stringify({ ok: true, data }));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  const backend = createHttpBackend("http://localhost:18089", "test-key", {
+    target: "cli",
+    workspace: { current_path: "/workspace", configured_path: "/workspace" },
+    http_service: { running: true, host: "0.0.0.0", port: 18089, error: null },
+  });
+  const payload = await backend.envSets!.get();
+  expect(payload.sets).toEqual([set]);
+  expect(payload.activeSetId).toBe("env-dev");
+
+  expect(
+    await backend.envSets!.create({ name: "prod", copyFrom: "env-dev" }),
+  ).toEqual(set);
+  expect(
+    await backend.envSets!.save("env-dev", {
+      name: "dev",
+      values: {},
+      secretValues: { password: "******" },
+    }),
+  ).toEqual(set);
+  expect(await backend.envSets!.setActive(null)).toBe("env-dev");
+  expect(
+    await backend.envSets!.saveGlobals({ values: {}, secretValues: {} }),
+  ).toEqual({ values: {}, secretValues: {} });
+  expect(
+    await backend.envSets!.writeBack({ setId: "env-dev", writes: { count: 2 } }),
+  ).toEqual({ applied: 1, dropped: 0 });
+  await backend.envSets!.remove("env-dev");
+
+  const calls = fetchMock.mock.calls as Array<[URL, RequestInit]>;
+  expect(calls.map(([url, init]) => `${init.method ?? "GET"} ${url.pathname}`)).toEqual([
+    "GET /api/env-sets",
+    "POST /api/env-sets",
+    "PUT /api/env-sets/env-dev",
+    "PUT /api/env-sets/active",
+    "PUT /api/env-globals",
+    "POST /api/env-write-back",
+    "DELETE /api/env-sets/env-dev",
+  ]);
+  expect(JSON.parse(calls[1]![1].body)).toEqual({ name: "prod", copyFrom: "env-dev" });
+  expect(JSON.parse(calls[3]![1].body)).toEqual({ setId: null });
+  expect(JSON.parse(calls[5]![1].body)).toEqual({ setId: "env-dev", writes: { count: 2 } });
+});

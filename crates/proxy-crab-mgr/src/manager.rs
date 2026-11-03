@@ -519,6 +519,7 @@ impl MitmManager {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn classify_log_id<F>(
         filter: &PreparedFilter,
         item: &CaptureSummary,
@@ -1204,32 +1205,32 @@ impl ProxyCrabManager for MitmManager {
             };
             let mut result = log_detail_from_capture(detail);
             result.websocket = runtime.websocket_info(session_id, id).map_err(map_error)?;
-            if policy.is_some() {
-                if let Some(info) = &mut result.websocket {
-                    info.close_reason = None;
-                    // Negotiated headers must follow the same policy as the handshake.
-                    let handshake = runtime
-                        .capture(session_id, info.handshake_log_id)
-                        .map_err(map_error)?
-                        .ok_or_else(|| ManagerError::not_found("handshake not found"))?;
-                    let safe = redactor
-                        .as_ref()
-                        .expect("policy redactor")
-                        .detail(&runtime, handshake)?
-                        .summary;
-                    info.subprotocol = safe
-                        .response
-                        .as_ref()
-                        .and_then(|r| r.headers.get("sec-websocket-protocol"))
-                        .and_then(|v| v.first())
-                        .cloned();
-                    info.extensions = safe
-                        .response
-                        .as_ref()
-                        .and_then(|r| r.headers.get("sec-websocket-extensions"))
-                        .map(|v| v.join(","))
-                        .unwrap_or_default();
-                }
+            if policy.is_some()
+                && let Some(info) = &mut result.websocket
+            {
+                info.close_reason = None;
+                // Negotiated headers must follow the same policy as the handshake.
+                let handshake = runtime
+                    .capture(session_id, info.handshake_log_id)
+                    .map_err(map_error)?
+                    .ok_or_else(|| ManagerError::not_found("handshake not found"))?;
+                let safe = redactor
+                    .as_ref()
+                    .expect("policy redactor")
+                    .detail(&runtime, handshake)?
+                    .summary;
+                info.subprotocol = safe
+                    .response
+                    .as_ref()
+                    .and_then(|r| r.headers.get("sec-websocket-protocol"))
+                    .and_then(|v| v.first())
+                    .cloned();
+                info.extensions = safe
+                    .response
+                    .as_ref()
+                    .and_then(|r| r.headers.get("sec-websocket-extensions"))
+                    .map(|v| v.join(","))
+                    .unwrap_or_default();
             }
             Ok(result)
         })

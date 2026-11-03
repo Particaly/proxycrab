@@ -4,6 +4,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::sync::Mutex;
 
 use proxy_crab_mitm::flow::env_sets::{
     self, EnvGlobalVariables, SECRET_MASK_PLACEHOLDER, mask_env_set, mask_globals,
@@ -12,6 +13,9 @@ use proxy_crab_mitm::flow::env_sets::{
 use proxy_crab_mitm::flow::store::{ENV_SETS_SCHEMA_VERSION, EnvVariableSet, FlowStore};
 use serde_json::{Value, json};
 use tempfile::tempdir;
+
+/// 写回队列是进程级单例：同二进制内使用队列的测试必须串行，避免批次互串。
+static WRITE_BACK_QUEUE_LOCK: Mutex<()> = Mutex::new(());
 
 fn sample_set(id: &str, name: &str) -> EnvVariableSet {
     EnvVariableSet {
@@ -232,6 +236,7 @@ fn masked_reads_and_restored_writes_keep_secrets_intact() {
 
 #[test]
 fn write_back_batches_persist_serially_with_secret_routing() {
+    let _guard = WRITE_BACK_QUEUE_LOCK.lock().unwrap();
     let root = tempdir().unwrap();
     let store = FlowStore::open(root.path()).unwrap();
     let mut set = sample_set("env-dev", "dev");
@@ -309,6 +314,7 @@ fn write_back_batches_persist_serially_with_secret_routing() {
 
 #[test]
 fn write_back_to_a_deleted_set_is_dropped_without_resurrection() {
+    let _guard = WRITE_BACK_QUEUE_LOCK.lock().unwrap();
     let root = tempdir().unwrap();
     let store = FlowStore::open(root.path()).unwrap();
     store.save_env_set(&sample_set("env-dev", "dev")).unwrap();

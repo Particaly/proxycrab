@@ -16,8 +16,14 @@ import type {
   BreakpointQuery,
   BypassQuery,
   ClashConfig,
+  CreateEnvSetRequest,
   CreateSessionRequest,
   DebugFilterScriptRequest,
+  EnvGlobalVariables,
+  EnvSetsPayload,
+  EnvVariableSet,
+  EnvWriteBackRequest,
+  EnvWriteBackResult,
   ExecuteTemporaryScriptRequest,
   ExtendBreakpointRequest,
   InterceptorCreateRequest,
@@ -38,8 +44,10 @@ import type {
   ReplaceSessionViewRequest,
   ReplayRequestPayload,
   ReplayResult,
+  ReplaceEnvGlobalsRequest,
   ResolveApprovalRequest,
   RoutingSelection,
+  SaveEnvSetRequest,
   SaveFileRequest,
   SessionShareState,
   SessionSharesPayload,
@@ -299,6 +307,19 @@ export function createTauriBackend(): Backend {
       get: () => call<ClashConfig>("get_clash_config"),
       save: (yaml) => call<ClashConfig>("save_clash_config", { request: { yaml } }),
       reset: () => call<ClashConfig>("reset_clash_config"),
+    },
+    envSets: {
+      get: () => call<EnvSetsPayload>("get_env_sets"),
+      create: (request: CreateEnvSetRequest) => call<EnvVariableSet>("create_env_set", { request }),
+      save: (id: string, request: SaveEnvSetRequest) =>
+        call<EnvVariableSet>("save_env_set", { id, request }),
+      remove: (id: string) => call<void>("delete_env_set", { id }),
+      setActive: (id: string | null) =>
+        call<string | null>("replace_active_env_set", { request: { setId: id } }),
+      saveGlobals: (request: ReplaceEnvGlobalsRequest) =>
+        call<EnvGlobalVariables>("replace_env_globals", { request }),
+      writeBack: (request: EnvWriteBackRequest) =>
+        call<EnvWriteBackResult>("env_write_back", { request }),
     },
 
     getSystemLogs: (query: SystemLogsQuery) => call("get_system_logs", { query }),

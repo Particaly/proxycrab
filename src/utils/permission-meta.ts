@@ -113,6 +113,13 @@ export const ACTION_META: Readonly<Record<string, PermissionActionMeta>> = {
   "GET /api/clash-config": { label: "读取 Clash 配置", impact: "read" },
   "PUT /api/clash-config": { label: "更新 Clash 配置", impact: "write" },
   "DELETE /api/clash-config": { label: "重置 Clash 配置", impact: "write" },
+  "GET /api/env-sets": { label: "读取环境变量集与全局变量", impact: "read" },
+  "POST /api/env-sets": { label: "新建或复制环境变量集", impact: "write" },
+  "PUT /api/env-sets/{id}": { label: "保存环境变量集", impact: "write" },
+  "DELETE /api/env-sets/{id}": { label: "删除环境变量集", impact: "write" },
+  "PUT /api/env-sets/active": { label: "切换激活环境变量集", impact: "write" },
+  "PUT /api/env-globals": { label: "保存全局变量", impact: "write" },
+  "POST /api/env-write-back": { label: "脚本环境变量写回", impact: "write" },
 };
 
 /** 「功能」维度分组定义（顺序即展示顺序；prefixes 按 route_template 前缀匹配）。 */
@@ -155,6 +162,11 @@ export const FUNCTION_GROUPS: FunctionGroupDef[] = [
   },
   { key: "breakpoints", label: "断点", prefixes: ["/api/breakpoints"] },
   { key: "bypass", label: "Bypass 流量", prefixes: ["/api/bypass"] },
+  {
+    key: "env_sets",
+    label: "环境变量",
+    prefixes: ["/api/env-sets", "/api/env-globals", "/api/env-write-back"],
+  },
   { key: "system_logs", label: "系统日志", prefixes: ["/api/system-logs"] },
 ];
 
