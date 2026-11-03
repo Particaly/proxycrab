@@ -203,10 +203,10 @@
 - Create: `crates/proxy-crab-mitm/src/flow/model.rs`、`crates/proxy-crab-mitm/src/flow/validate.rs`
 - Modify: `crates/proxy-crab-mitm/src/flow/store.rs`
 
-- [ ] **Step 1: 模型**：`Project`、`Workflow{nodes, edges, variables, secretVariables}`、`WorkflowNode{type, position, config, label?, refId?}`、`WorkflowEdge{source, target, sourceHandle?: 'true'|'false'}`；9 类节点的 `NodeConfig` 字段级对齐 ReqFlow（含 `override/headerFidelity/cookieMode/expression/condition/items/assignments/assertions/extractions/retry/pinnedOutput`）。
-- [ ] **Step 2: 校验口径**：图校验（唯一 start、refId 流程内唯一、边端点存在、便签不可连线）+ `failPolicy` 合法值；校验失败在建单前直接判失败。
-- [ ] **Step 3: 版本与迁移**：流程定义带 `schemaVersion`，为后续字段演进留迁移入口（refId 读时迁移参照 `WorkflowRepo.get` 语义）。
-- [ ] **Step 4: 测试**：模型往返、校验用例、旧数据归一。
+- [x] **Step 1: 模型**：`Project`、`Workflow{nodes, edges, variables, secretVariables}`、`WorkflowNode{type, position, config, label?, refId?}`、`WorkflowEdge{source, target, sourceHandle?: 'true'|'false'}`；9 类节点的 `NodeConfig` 字段级对齐 ReqFlow（含 `override/headerFidelity/cookieMode/expression/condition/items/assignments/assertions/extractions/retry/pinnedOutput`）。
+- [x] **Step 2: 校验口径**：图校验（唯一 start、refId 流程内唯一、边端点存在、便签不可连线）+ `failPolicy` 合法值；校验失败在建单前直接判失败。
+- [x] **Step 3: 版本与迁移**：流程定义带 `schemaVersion`，为后续字段演进留迁移入口（refId 读时迁移参照 `WorkflowRepo.get` 语义）。
+- [x] **Step 4: 测试**：模型往返、校验用例、旧数据归一。
 
 ### Task 11: 工作流 API 与权限登记
 
