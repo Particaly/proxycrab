@@ -28,6 +28,7 @@ const ALL_RESOURCES: HttpApiResource[] = [
   "clash_subscription",
   "clash_config",
   "env_sets",
+  "request_library",
   "system_logs",
 ];
 

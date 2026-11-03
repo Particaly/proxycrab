@@ -9,7 +9,9 @@ export type BodySide = "request" | "response";
 export type BodyTarget =
   | { kind: "log"; id: number; sessionId: number }
   | { kind: "interceptor"; id: number; sessionId: number; executionId: number }
-  | { kind: "breakpoint"; id: number };
+  | { kind: "breakpoint"; id: number }
+  /** 请求库条目的请求体（`GET /api/request-library/{id}/body`，无 side 维度）。 */
+  | { kind: "request-library"; id: string };
 
 export interface LoadedBody {
   bytes: Uint8Array;
@@ -97,11 +99,15 @@ async function requestBody(
   const path =
     target.kind === "breakpoint"
       ? `${apiPrefix}/breakpoints/${target.id}/body`
-      : `${apiPrefix}/logs/${target.id}/body`;
+      : target.kind === "request-library"
+        ? `${apiPrefix}/request-library/${encodeURIComponent(target.id)}/body`
+        : `${apiPrefix}/logs/${target.id}/body`;
   const url = new URL(path, base);
-  url.searchParams.set("side", side);
   url.searchParams.set("max_size", String(maxSize));
-  if (target.kind !== "breakpoint") {
+  if (target.kind !== "request-library") {
+    url.searchParams.set("side", side);
+  }
+  if (target.kind === "log" || target.kind === "interceptor") {
     url.searchParams.set("session_id", String(target.sessionId));
   }
   if (target.kind === "interceptor") {

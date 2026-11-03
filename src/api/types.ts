@@ -229,6 +229,7 @@ export type HttpApiResource =
   | "clash_config"
   | "system_logs"
   | "env_sets"
+  | "request_library"
   | "all";
 
 export interface HttpApiChange {
@@ -645,6 +646,109 @@ export interface EnvWriteBackRequest {
 export interface EnvWriteBackResult {
   applied: number;
   dropped: number;
+}
+
+// ---------- request library (flow/request_library.rs; wire format is camelCase) ----------
+
+export type RequestLibrarySource = "capture" | "import" | "manual";
+
+/** HAR 1.2 名值对（headers / queryString / 表单 params / cookies 共用）。 */
+export interface RequestLibraryHarPair {
+  name: string;
+  value: string;
+}
+
+/** HAR 请求体：text 为原文（UTF-8，或 encoding="base64" 的 Base64）。 */
+export interface RequestLibraryHarPostData {
+  mimeType: string;
+  params?: RequestLibraryHarPair[];
+  text?: string | null;
+  encoding?: string | null;
+}
+
+/** HAR 响应摘要（不含响应体：重放只消费请求侧）。 */
+export interface RequestLibraryHarResponse {
+  status: number;
+  statusText?: string;
+  httpVersion?: string;
+  headers?: RequestLibraryHarPair[];
+  content?: { size: number; mimeType: string };
+  redirectURL?: string;
+}
+
+/** HAR 条目（请求库快照恒为单 entry；response 缺省表示未收到响应）。 */
+export interface RequestLibraryHarEntry {
+  startedDateTime?: string;
+  time?: number;
+  request: {
+    method: string;
+    url: string;
+    httpVersion?: string;
+    headers: RequestLibraryHarPair[];
+    queryString: RequestLibraryHarPair[];
+    cookies?: RequestLibraryHarPair[];
+    postData?: RequestLibraryHarPostData | null;
+  };
+  response?: RequestLibraryHarResponse | null;
+}
+
+/** 最小 HAR 1.2 快照（`{log: {entries: [...]}}`），字段与 Rust 侧模型一一对应。 */
+export interface RequestLibraryHarSnapshot {
+  log: {
+    version: string;
+    creator?: { name: string; version?: string };
+    entries: RequestLibraryHarEntry[];
+  };
+}
+
+/** 请求库条目；请求体可能内联在 har.postData.text 或经 bodyRef 指向 blob。 */
+export interface RequestLibraryEntry {
+  id: string;
+  name: string;
+  tags: string[];
+  source: RequestLibrarySource;
+  origin: string;
+  har: RequestLibraryHarSnapshot;
+  bodyRef?: { path: string; size: number } | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface RequestLibraryPage {
+  entries: RequestLibraryEntry[];
+  total: number;
+}
+
+/** 列表过滤：query 匹配名称与首个 HAR URL（忽略大小写）；tags 逗号分隔且需全部携带。 */
+export interface RequestLibraryQuery {
+  query?: string | null;
+  tags?: string | null;
+  source?: RequestLibrarySource | null;
+  limit?: number | null;
+  offset?: number | null;
+}
+
+export interface CreateRequestLibraryRequest {
+  har: RequestLibraryHarSnapshot;
+  name?: string | null;
+  tags?: string[];
+  origin?: string;
+}
+
+/** 部分更新：缺省字段保持不变；id/source/createdAt 不可改。 */
+export interface UpdateRequestLibraryRequest {
+  name?: string | null;
+  tags?: string[] | null;
+  origin?: string | null;
+  har?: RequestLibraryHarSnapshot | null;
+}
+
+/** 从抓包入库；sessionId 缺省时使用活动 Session（无活动 Session 返回 409）。 */
+export interface IngestCaptureRequest {
+  capture_id: number;
+  session_id?: number | null;
+  name?: string | null;
+  tags?: string[];
 }
 
 export interface HttpServiceStatus {

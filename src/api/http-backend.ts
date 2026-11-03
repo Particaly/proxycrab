@@ -1,6 +1,11 @@
 import type { Backend } from "./backend";
 import { BackendError } from "./backend-error";
-import { downloadBodyFromBase, fetchBodyFromBase, fetchWebSocketBodyFromBase } from "./body";
+import {
+  DEFAULT_BODY_MAX_SIZE,
+  downloadBodyFromBase,
+  fetchBodyFromBase,
+  fetchWebSocketBodyFromBase,
+} from "./body";
 import { saveFileInWebview } from "./save-file";
 import type {
   ActiveSession,
@@ -32,6 +37,12 @@ import type {
   LogIdsRequest,
   LogViewsRequest,
   ManagerError,
+  CreateRequestLibraryRequest,
+  IngestCaptureRequest,
+  RequestLibraryEntry,
+  RequestLibraryPage,
+  RequestLibraryQuery,
+  UpdateRequestLibraryRequest,
   PermissionEntry,
   PermissionIdentitySummary,
   ReplaceSessionInterceptorsRequest,
@@ -426,6 +437,51 @@ export function createHttpBackend(
         call<EnvGlobalVariables>("/api/env-globals", json("PUT", request)),
       writeBack: (request: EnvWriteBackRequest) =>
         call<EnvWriteBackResult>("/api/env-write-back", json("POST", request)),
+    },
+    requestLibrary: {
+      page: (filter: RequestLibraryQuery) =>
+        call<RequestLibraryPage>(
+          query("/api/request-library", filter as unknown as Record<string, unknown>),
+        ),
+      get: (id: string) =>
+        call<RequestLibraryEntry>(`/api/request-library/${encodeURIComponent(id)}`),
+      create: (request: CreateRequestLibraryRequest) =>
+        call<RequestLibraryEntry>("/api/request-library", json("POST", request)),
+      update: (id: string, request: UpdateRequestLibraryRequest) =>
+        call<RequestLibraryEntry>(
+          `/api/request-library/${encodeURIComponent(id)}`,
+          json("PUT", request),
+        ),
+      remove: async (id: string) => {
+        await call(`/api/request-library/${encodeURIComponent(id)}`, json("DELETE"));
+      },
+      ingestFromCapture: (request: IngestCaptureRequest) =>
+        call<RequestLibraryEntry>("/api/request-library/from-capture", json("POST", request)),
+      getBody: async (id: string, maxSize = DEFAULT_BODY_MAX_SIZE) => {
+        const path = `/api/request-library/${encodeURIComponent(id)}/body?max_size=${maxSize}`;
+        const response = await fetch(new URL(path, baseUrl), {
+          headers: { Authorization: authorization(token) },
+        });
+        if (!response.ok) {
+          let error: ManagerError = {
+            code: `http_${response.status}`,
+            message: `HTTP ${response.status}`,
+          };
+          try {
+            const payload = (await response.json()) as ApiEnvelope<unknown>;
+            if (payload.error) error = payload.error;
+          } catch {
+            // Keep the status-derived fallback when the server did not return JSON.
+          }
+          throw new BackendError(error);
+        }
+        const buffer = await response.arrayBuffer();
+        return {
+          bytes: new Uint8Array(buffer),
+          decodedSize: buffer.byteLength,
+          contentType: response.headers.get("content-type") ?? "application/octet-stream",
+        };
+      },
     },
     getSystemLogs: (requestValue: SystemLogsQuery) =>
       call(query("/api/system-logs", requestValue as unknown as Record<string, unknown>)),

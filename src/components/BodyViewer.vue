@@ -243,7 +243,9 @@ const bodyIdentity = computed(() =>
     props.target.kind,
     props.target.id,
     props.target.kind === "interceptor" ? props.target.executionId : undefined,
-    props.target.kind !== "breakpoint" ? props.target.sessionId : undefined,
+    props.target.kind === "log" || props.target.kind === "interceptor"
+      ? props.target.sessionId
+      : undefined,
     props.side,
     headerIdentity.value,
     props.revision,

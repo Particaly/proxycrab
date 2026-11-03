@@ -26,6 +26,12 @@ import type {
   EnvWriteBackResult,
   ExecuteTemporaryScriptRequest,
   ExtendBreakpointRequest,
+  CreateRequestLibraryRequest,
+  IngestCaptureRequest,
+  RequestLibraryEntry,
+  RequestLibraryPage,
+  RequestLibraryQuery,
+  UpdateRequestLibraryRequest,
   InterceptorCreateRequest,
   InterceptorContent,
   InterceptorKind,
@@ -320,6 +326,29 @@ export function createTauriBackend(): Backend {
         call<EnvGlobalVariables>("replace_env_globals", { request }),
       writeBack: (request: EnvWriteBackRequest) =>
         call<EnvWriteBackResult>("env_write_back", { request }),
+    },
+    requestLibrary: {
+      page: (query: RequestLibraryQuery) =>
+        call<RequestLibraryPage>("get_request_library_page", { query }),
+      get: (id: string) => call<RequestLibraryEntry>("get_request_library_entry", { id }),
+      create: (request: CreateRequestLibraryRequest) =>
+        call<RequestLibraryEntry>("create_request_library_entry", { request }),
+      update: (id: string, request: UpdateRequestLibraryRequest) =>
+        call<RequestLibraryEntry>("update_request_library_entry", { id, request }),
+      remove: (id: string) => call<void>("delete_request_library_entry", { id }),
+      ingestFromCapture: (request: IngestCaptureRequest) =>
+        call<RequestLibraryEntry>("ingest_request_from_capture", { request }),
+      getBody: async (id: string, maxSize = DEFAULT_BODY_MAX_SIZE) => {
+        if (!Number.isSafeInteger(maxSize) || maxSize <= 0 || maxSize > UI_BODY_MAX_SIZE) {
+          throw new BodyFetchError({ code: "bad_request", message: "无效的 Body 大小限制" });
+        }
+        const result = await call<{ bytes: number[]; contentType: string }>(
+          "fetch_request_library_body",
+          { id, maxSize },
+        );
+        const bytes = new Uint8Array(result.bytes);
+        return { bytes, decodedSize: bytes.byteLength, contentType: result.contentType };
+      },
     },
 
     getSystemLogs: (query: SystemLogsQuery) => call("get_system_logs", { query }),
