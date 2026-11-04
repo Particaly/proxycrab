@@ -2242,13 +2242,35 @@ pub(crate) async fn body_response(
     Ok(response)
 }
 
-/* ---- MCP endpoint (plan Task 24 Step 1/2): JSON-RPC 2.0 over POST /mcp ---- */
+/* ---- MCP endpoint (plan Task 24): JSON-RPC 2.0 over POST /mcp ---- */
 
 /// 无状态 JSON-RPC 2.0 端点。鉴权已在 `authorize_request` 中间件完成
-/// （"POST /mcp" 目录 action，既有 LocalLoopback/Bearer 身份），信封处理
-/// 不触碰 manager 状态。畸形信封以 HTTP 200 携带 JSON-RPC 协议错误应答；
-/// 纯通知请求回 202 无正文；读体失败（含超限）按解析错误 -32700 应答。
-async fn mcp_endpoint(request: Request) -> Response {
+/// （"POST /mcp" 目录 action，既有 LocalLoopback/Bearer 身份）；
+/// `tools/call` 由策展工具链接管（映射路由逐次鉴权 + 执行，见
+/// `mcp::tools`），信封处理不触碰 manager 状态。畸形信封以 HTTP 200
+/// 携带 JSON-RPC 协议错误应答；纯通知请求回 202 无正文；读体失败
+/// （含超限）按解析错误 -32700 应答。
+async fn mcp_endpoint(
+    State(manager): State<ManagerState>,
+    Extension(permissions): Extension<Arc<dyn PermissionManager>>,
+    request: Request,
+) -> Response {
+    // 中间件已通过 "POST /mcp" action 并把调用者身份写入 extensions；
+    // 理论上必然存在，缺失时按未授权拒绝（fail closed）。
+    let credential = match request.extensions().get::<ManagementCredential>().cloned() {
+        Some(credential) => credential,
+        None => {
+            return permission_denied_response(PermissionDenied::unauthorized(
+                "remote_auth_required",
+                "remote management API requests require Authorization",
+            ));
+        }
+    };
+    let context = mcp::tools::ToolCallContext {
+        manager: &manager,
+        permissions: &permissions,
+        credential,
+    };
     let body = match axum::body::to_bytes(request.into_body(), mcp::MAX_MESSAGE_BYTES).await {
         Ok(bytes) => bytes,
         Err(_) => {
@@ -2263,7 +2285,7 @@ async fn mcp_endpoint(request: Request) -> Response {
                 .into_response();
         }
     };
-    match mcp::respond(&body) {
+    match mcp::respond(&body, &context).await {
         Some(envelope) => (StatusCode::OK, Json(envelope)).into_response(),
         None => StatusCode::ACCEPTED.into_response(),
     }
@@ -5829,6 +5851,109 @@ mod tests {
                 .unwrap();
         assert_eq!(payload["result"]["isError"], true);
         assert!(payload.get("error").is_none());
+    }
+
+    /// 只对映射路由（GET /api/flow/runs）拒绝的权限桩：端点档位
+    /// ("POST /mcp") 放行，用于验证 tools/call 的逐次鉴权——若逐次
+    /// 鉴权没有按映射路由 action 再查一次，调用将成功而不是被拒。
+    struct DenyMappedRoute {
+        denied: PermissionDenied,
+    }
+
+    #[async_trait]
+    impl PermissionManager for DenyMappedRoute {
+        async fn check_permission(&self, action: PermissionAction) -> Option<PermissionDenied> {
+            (action.action.id == "GET /api/flow/runs").then(|| self.denied.clone())
+        }
+    }
+
+    async fn mcp_tools_call_workflow_runs_list(app: axum::Router, id: i64) -> Value {
+        let mut request = Request::builder()
+            .method(Method::POST)
+            .uri("/mcp")
+            .header("host", "127.0.0.1:18089")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                format!(
+                    r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/call","params":{{"name":"workflow_runs_list","arguments":{{}}}}}}"#
+                )
+                .into_bytes(),
+            ))
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(SocketAddr::from((
+                std::net::Ipv4Addr::LOCALHOST,
+                40000,
+            ))));
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn mcp_tools_call_workflow_runs_list_returns_curated_page() {
+        let app_data = tempdir().unwrap();
+        let runtime = ProxyCrab::open(app_data.path(), Arc::new(LogBuffer::default())).unwrap();
+        let app = secured_router(MitmManager::new(runtime), allow_all());
+
+        let payload = mcp_tools_call_workflow_runs_list(app, 3).await;
+
+        assert_eq!(payload["jsonrpc"], "2.0");
+        assert_eq!(payload["id"], 3);
+        assert!(payload.get("error").is_none());
+        assert!(payload["result"].get("isError").is_none());
+        let text = payload["result"]["content"][0]["text"].as_str().unwrap();
+        // 空库返回与 GET /api/flow/runs 一致的分页形态。
+        assert_eq!(
+            serde_json::from_str::<Value>(text).unwrap(),
+            json!({ "runs": [], "total": 0 })
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_tools_call_maps_approval_timeout_to_a_tool_level_error() {
+        let app_data = tempdir().unwrap();
+        let runtime = ProxyCrab::open(app_data.path(), Arc::new(LogBuffer::default())).unwrap();
+        let app = secured_router(
+            MitmManager::new(runtime),
+            Arc::new(DenyMappedRoute {
+                denied: PermissionDenied::forbidden(
+                    "approval_timeout",
+                    "management API approval timed out",
+                ),
+            }),
+        );
+
+        let payload = mcp_tools_call_workflow_runs_list(app, 4).await;
+
+        assert!(payload.get("error").is_none());
+        assert_eq!(payload["result"]["isError"], true);
+        let text = payload["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("workflow_runs_list"));
+        assert!(text.contains("approval timed out"));
+    }
+
+    #[tokio::test]
+    async fn mcp_tools_call_maps_denial_to_a_tool_level_error() {
+        let app_data = tempdir().unwrap();
+        let runtime = ProxyCrab::open(app_data.path(), Arc::new(LogBuffer::default())).unwrap();
+        let app = secured_router(
+            MitmManager::new(runtime),
+            Arc::new(DenyMappedRoute {
+                denied: PermissionDenied::forbidden(
+                    "permission_denied",
+                    "management API action was denied",
+                ),
+            }),
+        );
+
+        let payload = mcp_tools_call_workflow_runs_list(app, 5).await;
+
+        assert!(payload.get("error").is_none());
+        assert_eq!(payload["result"]["isError"], true);
+        let text = payload["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("permission denied"));
     }
 
     #[tokio::test]
