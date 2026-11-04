@@ -5969,14 +5969,12 @@ mod tests {
 
         // 新工作区缺省档：读开 / 写关 / 执行关，读类工具在 tools/list。
         let payload = mcp_tools_list(app.clone(), 1).await;
-        assert_eq!(
-            payload["result"]["tools"]
-                .as_array()
-                .unwrap()
+        let tools = payload["result"]["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 11);
+        assert!(
+            tools
                 .iter()
-                .map(|tool| tool["name"].clone())
-                .collect::<Vec<_>>(),
-            vec![json!("workflow_runs_list")]
+                .any(|tool| tool["name"] == "workflow_runs_list")
         );
         let (status, payload) = flow_request(app.clone(), Method::GET, "/api/mcp-tiers", None).await;
         assert_eq!(status, StatusCode::OK);
@@ -5995,7 +5993,16 @@ mod tests {
             json!({ "read": false, "write": false, "execute": true })
         );
         let payload = mcp_tools_list(app.clone(), 2).await;
-        assert_eq!(payload["result"]["tools"].as_array().unwrap().len(), 0);
+        // 读档关闭后，清单只剩执行类工具（trigger/cancel）；读类工具既不
+        // 出现在 tools/list，tools/call 直呼工具名也被硬拒。
+        let tools = payload["result"]["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 2);
+        assert!(
+            tools
+                .iter()
+                .all(|tool| tool["name"] == "workflow_run_trigger"
+                    || tool["name"] == "workflow_run_cancel")
+        );
         let payload = mcp_tools_call_workflow_runs_list(app.clone(), 3).await;
         assert_eq!(payload["result"]["isError"], true);
         assert!(
