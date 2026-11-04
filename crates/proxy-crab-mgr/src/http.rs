@@ -28,6 +28,7 @@ use futures::{StreamExt, stream};
 use proxy_crab_mitm::model::{InterceptorKind, InterceptorScriptContent, SessionFilter};
 use proxy_crab_mitm::storage::{BodySide, BodySource, BodySourceData};
 use proxy_crab_mitm::flow::run::FlowRunEvent;
+use proxy_crab_mitm::flow::mcp_audit::MCP_AUDIT_MAX_ENTRIES;
 use proxy_crab_mitm::flow::mcp_tiers::McpTiers;
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -493,6 +494,9 @@ fn router_with_changes_and_extra(
         /* MCP exposure tiers (plan Task 25 Step 2): read (allow) and write
         (approval, like other posture-changing settings). */
         .route("/api/mcp-tiers", get(get_mcp_tiers).put(replace_mcp_tiers))
+        /* MCP tool call audit (plan Task 25 Step 4): read-only query of the
+        workspace audit log, entries newest (highest seq) first. */
+        .route("/api/mcp-audit", get(mcp_audit))
         .route(
             "/api/system-logs",
             get(system_logs).delete(clear_system_logs),
@@ -1841,6 +1845,22 @@ async fn replace_mcp_tiers(
     ApiJson(tiers): ApiJson<McpTiers>,
 ) -> ApiResult {
     success(manager.replace_mcp_tiers(tiers).await?)
+}
+
+/* ---- MCP tool call audit (plan Task 25 Step 4) ---- */
+
+/// `GET /api/mcp-audit` 查询参数：`limit` 缺省 100，超出上限收敛到 500。
+#[derive(Deserialize)]
+struct McpAuditQuery {
+    limit: Option<usize>,
+}
+
+async fn mcp_audit(
+    State(manager): State<ManagerState>,
+    ApiQuery(query): ApiQuery<McpAuditQuery>,
+) -> ApiResult {
+    let limit = query.limit.unwrap_or(100).min(MCP_AUDIT_MAX_ENTRIES);
+    success(json!({ "entries": manager.mcp_audit(limit).await? }))
 }
 
 async fn create_env_set(
