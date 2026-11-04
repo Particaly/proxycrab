@@ -18,6 +18,12 @@ API key, use the least-privileged key suitable for the task through `PROXYCRAB_A
 it as `Authorization: Bearer ...`.
 Never put an API key in command arguments, URLs, output, or logs.
 
+The same management surface is also exposed over MCP at `POST /mcp` (stateless JSON-RPC 2.0 with
+curated read/write/execute tool tiers). MCP tools run under the same permission catalog and the
+same desktop approval chain as the HTTP API — an approval, denial, or timeout on one side is the
+same decision on the other. See [docs/mcp.md](../../docs/mcp.md) for client configuration and the
+tool catalog.
+
 ## Load active Agent instructions first
 
 For management API workflows, immediately after reading this Skill and before calling any other
