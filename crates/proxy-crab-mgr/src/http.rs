@@ -27,6 +27,7 @@ use bytes::Bytes;
 use futures::{StreamExt, stream};
 use proxy_crab_mitm::model::{InterceptorKind, InterceptorScriptContent, SessionFilter};
 use proxy_crab_mitm::storage::{BodySide, BodySource, BodySourceData};
+use proxy_crab_mitm::flow::run::FlowRunEvent;
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, BufReader};
@@ -45,6 +46,7 @@ use crate::{
         ExecuteTemporaryScriptRequest, ExtendBreakpointRequest, FlowListQuery,
         FlowProjectCreateRequest, FlowProjectUpdateRequest, HttpApiChange, HttpApiResource,
         IngestCaptureRequest, InterceptorCreateRequest, InterceptorUpdateRequest,
+        FlowRunListQuery, FlowRunTriggerRequest,
         FlowScriptDryRunRequest, LogIdsRequest, LogViewsRequest, ManagerError, ManagerResult,
         ReplaceActiveEnvSetRequest, ReplaceEnvGlobalsRequest,
         ReplaceSessionInterceptorsRequest, ReplaceSessionViewRequest, ReplayRequestPayload,
@@ -88,6 +90,36 @@ impl FromRequestParts<ManagerState> for ReadManager {
             .unwrap_or(parts.uri.path());
         Ok(Self(state.reader(name, api)?))
     }
+}
+/* ---- Workflow run domain (plan Task 19) ---- */
+
+async fn trigger_workflow_run(
+    State(manager): State<ManagerState>,
+    ApiJson(request): ApiJson<FlowRunTriggerRequest>,
+) -> ApiResult {
+    success(manager.trigger_workflow_run(request).await?)
+}
+
+async fn workflow_runs(
+    State(manager): State<ManagerState>,
+    ApiQuery(query): ApiQuery<FlowRunListQuery>,
+) -> ApiResult {
+    success(manager.workflow_runs(query).await?)
+}
+
+async fn workflow_run_detail(
+    State(manager): State<ManagerState>,
+    ApiPath(id): ApiPath<String>,
+) -> ApiResult {
+    success(manager.workflow_run_detail(id).await?)
+}
+
+async fn cancel_workflow_run(
+    State(manager): State<ManagerState>,
+    ApiPath(id): ApiPath<String>,
+) -> ApiResult {
+    manager.cancel_workflow_run(id).await?;
+    success(json!({}))
 }
 
 struct ApiJson<T>(T);
@@ -195,6 +227,11 @@ where
         changes.clone(),
         cancellation.clone(),
     );
+    let run_change_task = spawn_flow_run_change_bridge(
+        manager.subscribe_flow_run_events(),
+        changes.clone(),
+        cancellation.clone(),
+    );
     let extra = extra_routes(changes.clone());
     let app =
         secured_router_with_changes_and_extra(manager, permissions, shares, changes.clone(), extra);
@@ -210,6 +247,7 @@ where
         }
         task_shutdown.cancel();
         let _ = change_task.await;
+        let _ = run_change_task.await;
     });
     Ok(HttpServerHandle {
         host: std::net::Ipv4Addr::UNSPECIFIED.to_string(),
@@ -236,6 +274,34 @@ fn spawn_proxy_status_change_bridge(
                         resources: vec![HttpApiResource::Proxy],
                         session_id: None,
                     });
+                }
+                _ = cancellation.cancelled() => break,
+            }
+        }
+    })
+}
+
+fn spawn_flow_run_change_bridge(
+    mut run_events: broadcast::Receiver<FlowRunEvent>,
+    changes: ChangeSender,
+    cancellation: CancellationToken,
+) -> JoinHandle<()> {
+    // Step 2 进度事件桥：把运行编排的节点级 / 运行级事件折算成 `FlowRuns`
+    // 资源变更广播（前端收到后拉取运行列表 / 详情刷新，运行级与节点级
+    // 统一收敛为一个资源域，避免高频节点事件逐条建模）。
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                result = run_events.recv() => {
+                    match result {
+                        Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {
+                            let _ = changes.send(HttpApiChange {
+                                resources: vec![HttpApiResource::FlowRuns],
+                                session_id: None,
+                            });
+                        }
+                        Err(broadcast::error::RecvError::Closed) => break,
+                    }
                 }
                 _ = cancellation.cancelled() => break,
             }
@@ -443,6 +509,16 @@ fn router_with_changes_and_extra(
         )
         .route("/api/workflows/{id}/validate", post(validate_workflow))
         .route("/api/flow/script/dry-run", post(flow_script_dry_run))
+        /* ---- Workflow run domain (plan Task 19): standalone section ---- */
+        .route(
+            "/api/flow/runs",
+            get(workflow_runs).post(trigger_workflow_run),
+        )
+        .route("/api/flow/runs/{id}", get(workflow_run_detail))
+        .route(
+            "/api/flow/runs/{id}/cancel",
+            post(cancel_workflow_run),
+        )
         .route("/api/workflows/export", get(export_workflows))
         .route("/api/workflows/import", post(import_workflows))
         .route(
@@ -811,6 +887,13 @@ fn change_for_request(method: &Method, path: &str, query: Option<&str>) -> Optio
         (&Method::DELETE, value) if value.starts_with("/api/bypass/") => {
             vec![HttpApiResource::Bypass]
         }
+        // Workflow runs (plan Task 19): triggering creates a run row and
+        // cancelling requests a terminal transition; the progress event bridge
+        // additionally broadcasts on every FlowRunEvent.
+        (&Method::POST, "/api/flow/runs") => vec![HttpApiResource::FlowRuns],
+        (&Method::POST, value)
+            if value.starts_with("/api/flow/runs/") && value.ends_with("/cancel") =>
+            vec![HttpApiResource::FlowRuns],
         _ => return None,
     };
     Some(HttpApiChange {
@@ -2164,7 +2247,9 @@ impl ErrorCode {
             Self::RedactionManagementDisabled
             | Self::MessageContentHidden
             | Self::ShareRedactionForbidden => StatusCode::FORBIDDEN,
-            Self::MessageContentUnavailable => StatusCode::UNPROCESSABLE_ENTITY,
+            Self::MessageContentUnavailable | Self::WorkflowGraphInvalid => {
+                StatusCode::UNPROCESSABLE_ENTITY
+            }
             Self::BadRequest | Self::InvalidAssetId | Self::InvalidAssetFormat => {
                 StatusCode::BAD_REQUEST
             }
@@ -2288,7 +2373,7 @@ mod tests {
         read::{GzDecoder, ZlibDecoder},
         write::{GzEncoder, ZlibEncoder},
     };
-    use proxy_crab_mitm::{ProxyCrab, log_buffer::LogBuffer};
+    use proxy_crab_mitm::{ProxyCrab, flow::run::FlowRunEvent, log_buffer::LogBuffer};
     use proxy_crab_mitm::{
         model::{
             BodySourceType, HeaderValues, InterceptorExecutionOrigin, InterceptorKind,
@@ -2306,7 +2391,7 @@ mod tests {
         dto::{ErrorCode, HttpApiResource},
         http::{
             ApiError, body_response, change_for_request, router, router_with_changes,
-            secured_router, spawn_proxy_status_change_bridge,
+            secured_router, spawn_flow_run_change_bridge, spawn_proxy_status_change_bridge,
         },
         manager::{MitmManager, ProxyCrabManager},
         permission::{ManagementCredential, PermissionAction, PermissionDenied, PermissionManager},
@@ -6387,4 +6472,355 @@ mod tests {
         let response = request_library_json(&app, "GET", &large_id_path, None).await;
         assert_eq!(response.status(), StatusCode::OK);
     }
+    fn unused_port() -> u16 {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+    }
+
+    async fn settle_run(app: &axum::Router, run_id: &str) -> Value {
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "run {run_id} did not settle in time"
+            );
+            let (status, payload) =
+                flow_request(app.clone(), Method::GET, &format!("/api/flow/runs/{run_id}"), None)
+                    .await;
+            assert_eq!(status, StatusCode::OK);
+            if payload["data"]["status"] != "running" {
+                return payload;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn bridges_flow_run_events_to_ui_events() {
+        let (events, event_receiver) = tokio::sync::broadcast::channel(8);
+        let (changes, mut receiver) = tokio::sync::broadcast::channel(8);
+        let cancellation = CancellationToken::new();
+        let task = spawn_flow_run_change_bridge(event_receiver, changes, cancellation.clone());
+
+        events
+            .send(FlowRunEvent {
+                run_id: "run-1".into(),
+                kind: "node".into(),
+                node_id: Some("n1".into()),
+            })
+            .unwrap();
+        let change = tokio::time::timeout(Duration::from_secs(1), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(change.resources, vec![HttpApiResource::FlowRuns]);
+        assert_eq!(change.session_id, None);
+
+        cancellation.cancel();
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn workflow_run_trigger_reports_precondition_failures_without_creating_runs() {
+        let app_data = tempdir().unwrap();
+        let runtime = ProxyCrab::open(app_data.path(), Arc::new(LogBuffer::default())).unwrap();
+        let manager = MitmManager::new(runtime.clone());
+        let (permissions, recorded) = recording_permissions(None);
+        let app = router(manager, permissions);
+
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::POST,
+            "/api/flow-projects",
+            Some(r#"{"name":"demo"}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let project_id = payload["data"]["id"].as_str().unwrap().to_owned();
+        // 合法图：start → delay（不发起真实出站请求）。
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::POST,
+            "/api/workflows",
+            Some(&format!(
+                r#"{{"projectId":"{project_id}","name":"valid","nodes":[{{"id":"s","type":"start","position":{{"x":0,"y":0}},"config":{{}}}},{{"id":"n1","type":"delay","position":{{"x":1,"y":0}},"config":{{"durationMs":200}}}}],"edges":[{{"id":"e1","source":"s","target":"n1"}}]}}"#
+            )),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let workflow_id = payload["data"]["id"].as_str().unwrap().to_owned();
+        // 无效图：缺 start 节点。
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::POST,
+            "/api/workflows",
+            Some(&format!(
+                r#"{{"projectId":"{project_id}","name":"invalid","nodes":[{{"id":"n1","type":"delay","position":{{"x":1,"y":0}},"config":{{}}}}],"edges":[]}}"#
+            )),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let invalid_workflow_id = payload["data"]["id"].as_str().unwrap().to_owned();
+
+        // 代理未运行：未知工作流 404（输入读取先于代理检查）；无效图 409
+        // proxy_not_running（代理检查先于图校验）。都不建单。
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::POST,
+            "/api/flow/runs",
+            Some(r#"{"workflowId":"wf-ghost"}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(payload["error"]["code"], "not_found");
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::POST,
+            "/api/flow/runs",
+            Some(&format!(r#"{{"workflowId":"{invalid_workflow_id}"}}"#)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(payload["error"]["code"], "proxy_not_running");
+        let (status, payload) = flow_request(app.clone(), Method::GET, "/api/flow/runs", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(payload["data"]["total"], 0, "no run row is created on guards");
+
+        // 代理运行后：无活动 Session → 409 conflict（会话检查先于图校验）。
+        let mut config = runtime.config();
+        config.proxy_host = "127.0.0.1".into();
+        config.proxy_port = unused_port();
+        runtime.replace_config(config).await.unwrap();
+        runtime.start_proxy().await.unwrap();
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::POST,
+            "/api/flow/runs",
+            Some(&format!(r#"{{"workflowId":"{invalid_workflow_id}"}}"#)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(payload["error"]["code"], "conflict");
+
+        // 有 Session 后：无效图 422；指定不存在的 Session 404。
+        let session = runtime.create_session(NewSession::default()).unwrap();
+        runtime
+            .replace_active_session(Some(session.id))
+            .await
+            .unwrap();
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::POST,
+            "/api/flow/runs",
+            Some(&format!(r#"{{"workflowId":"{invalid_workflow_id}"}}"#)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(payload["error"]["code"], "workflow_graph_invalid");
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::POST,
+            "/api/flow/runs",
+            Some(&format!(r#"{{"workflowId":"{workflow_id}","sessionId":999999}}"#)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(payload["error"]["code"], "not_found");
+
+        // 成功触发：run 记录返回 `running` 且携带图快照。
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::POST,
+            "/api/flow/runs",
+            Some(&format!(
+                r#"{{"workflowId":"{workflow_id}","sessionId":{}}}"#,
+                session.id
+            )),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let run = &payload["data"];
+        assert!(run["id"].as_str().unwrap().starts_with("run-"));
+        assert_eq!(run["status"], "running");
+        assert_eq!(run["trigger"], "manual");
+        assert_eq!(run["sessionId"], session.id);
+        assert!(run["graphSnapshot"].is_object());
+        let run_id = run["id"].as_str().unwrap().to_owned();
+        let payload = settle_run(&app, &run_id).await;
+        assert_eq!(payload["data"]["status"], "success");
+
+        // 权限检查按具体路由模板解析。
+        let recorded_ids: Vec<&'static str> =
+            recorded.lock().unwrap().iter().map(|item| item.id).collect();
+        assert!(recorded_ids.contains(&"POST /api/flow/runs"));
+        assert!(recorded_ids.contains(&"GET /api/flow/runs"));
+    }
+
+    #[tokio::test]
+    async fn workflow_run_detail_list_pagination_and_cancel_settle_cancelled() {
+        let app_data = tempdir().unwrap();
+        let runtime = ProxyCrab::open(app_data.path(), Arc::new(LogBuffer::default())).unwrap();
+        let mut config = runtime.config();
+        config.proxy_host = "127.0.0.1".into();
+        config.proxy_port = unused_port();
+        runtime.replace_config(config).await.unwrap();
+        runtime.start_proxy().await.unwrap();
+        let session = runtime.create_session(NewSession::default()).unwrap();
+        let app = router(MitmManager::new(runtime), allow_all());
+
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::POST,
+            "/api/flow-projects",
+            Some(r#"{"name":"demo"}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let project_id = payload["data"]["id"].as_str().unwrap().to_owned();
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::POST,
+            "/api/workflows",
+            Some(&format!(
+                r#"{{"projectId":"{project_id}","name":"flow","nodes":[{{"id":"s","type":"start","position":{{"x":0,"y":0}},"config":{{}}}},{{"id":"n1","type":"delay","position":{{"x":1,"y":0}},"config":{{"durationMs":200}}}}],"edges":[{{"id":"e1","source":"s","target":"n1"}}]}}"#
+            )),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let workflow_id = payload["data"]["id"].as_str().unwrap().to_owned();
+
+        // 详情形状：flatten 的 run 主记录 + nodeRuns 节点 checkpoint 列表。
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::POST,
+            "/api/flow/runs",
+            Some(&format!(
+                r#"{{"workflowId":"{workflow_id}","sessionId":{}}}"#,
+                session.id
+            )),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let run_id = payload["data"]["id"].as_str().unwrap().to_owned();
+        let payload = settle_run(&app, &run_id).await;
+        assert_eq!(payload["data"]["status"], "success");
+        assert_eq!(payload["data"]["id"], run_id.as_str());
+        assert_eq!(payload["data"]["workflowId"], workflow_id.as_str());
+        assert!(payload["data"]["finishedAt"].as_u64().is_some());
+        let node_runs = payload["data"]["nodeRuns"].as_array().unwrap();
+        assert!(
+            node_runs
+                .iter()
+                .any(|node| node["nodeId"] == "n1" && node["status"] == "success"),
+            "delay node settles with a success checkpoint: {node_runs:?}"
+        );
+
+        // 列表分页与筛选。
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::GET,
+            &format!("/api/flow/runs?workflowId={workflow_id}&limit=10&offset=0"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(payload["data"]["total"], 1);
+        assert_eq!(payload["data"]["runs"][0]["id"], run_id.as_str());
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::GET,
+            &format!("/api/flow/runs?workflowId={workflow_id}&status=success"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(payload["data"]["total"], 1);
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::GET,
+            &format!("/api/flow/runs?workflowId={workflow_id}&status=failed"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(payload["data"]["total"], 0);
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::GET,
+            "/api/flow/runs?limit=1&offset=0",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(payload["data"]["runs"].as_array().unwrap().len(), 1);
+
+        // 未知运行：详情与取消都是 404。
+        let (status, _) = flow_request(
+            app.clone(),
+            Method::GET,
+            "/api/flow/runs/run-ghost",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, _) = flow_request(
+            app.clone(),
+            Method::POST,
+            "/api/flow/runs/run-ghost/cancel",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        // 取消：长运行在时限内归 `cancelled`（取消优先于失败），二次取消 404。
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::POST,
+            "/api/workflows",
+            Some(&format!(
+                r#"{{"projectId":"{project_id}","name":"long","nodes":[{{"id":"s","type":"start","position":{{"x":0,"y":0}},"config":{{}}}},{{"id":"n1","type":"delay","position":{{"x":1,"y":0}},"config":{{"durationMs":30000}}}}],"edges":[{{"id":"e1","source":"s","target":"n1"}}]}}"#
+            )),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let long_workflow_id = payload["data"]["id"].as_str().unwrap().to_owned();
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::POST,
+            "/api/flow/runs",
+            Some(&format!(
+                r#"{{"workflowId":"{long_workflow_id}","sessionId":{}}}"#,
+                session.id
+            )),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let run_id = payload["data"]["id"].as_str().unwrap().to_owned();
+        // 等首个节点 checkpoint 落库，保证取消命中运行中的编排。
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::POST,
+            &format!("/api/flow/runs/{run_id}/cancel"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(payload["data"], json!({}));
+        let payload = settle_run(&app, &run_id).await;
+        assert_eq!(payload["data"]["status"], "cancelled");
+        let (status, _) = flow_request(
+            app.clone(),
+            Method::POST,
+            &format!("/api/flow/runs/{run_id}/cancel"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
 }
+

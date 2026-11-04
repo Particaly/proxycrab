@@ -265,6 +265,13 @@ pub static API_ACTIONS: &[ApiAction] = &[
     // `approval` like the other definition writes.
     action!("GET", "/api/workflows/export", Allow),
     action!("POST", "/api/workflows/import", Approval),
+    // Workflow runs (plan Task 19): reads are allow; triggering and cancelling
+    // runs execute workflow replays against real traffic, so both default to
+    // `approval` (execution-class actions, tightened by default).
+    action!("GET", "/api/flow/runs", Allow),
+    action!("POST", "/api/flow/runs", Approval),
+    action!("GET", "/api/flow/runs/{id}", Allow),
+    action!("POST", "/api/flow/runs/{id}/cancel", Approval),
 ];
 
 pub const OBSOLETE_API_ACTION_IDS: &[&str] = &[

@@ -20,9 +20,10 @@ This reference documents the complete local HTTP surface used by ProxyCrab agent
 14. [Certificate authority](#certificate-authority)
 15. [System logs](#system-logs)
 16. [Workflow projects and definitions](#workflow-projects-and-definitions)
-17. [Errors and lifecycle notes](#errors-and-lifecycle-notes)
-18. [Clash subscription](#clash-subscription)
-19. [Redaction library and bindings](#redaction-library-and-bindings)
+17. [Workflow runs](#workflow-runs)
+18. [Errors and lifecycle notes](#errors-and-lifecycle-notes)
+19. [Clash subscription](#clash-subscription)
+20. [Redaction library and bindings](#redaction-library-and-bindings)
 
 ## Script relative paths
 
@@ -1445,6 +1446,55 @@ outcome:
   "envSets": {"imported": 0, "skipped": []}
 }
 ```
+## Workflow runs
+
+Trigger and inspect workflow runs (plan Task 19). Runs replay the workflow's requests through the
+target Session's pipeline; records persist in the workspace `flow/runs.db` and are read through
+these endpoints. Wire shapes are camelCase. Run `status`: `running | success | failed | cancelled |
+interrupted`; node checkpoint `status` follows the engine's `NodeRun` states.
+
+### `POST /api/flow/runs`
+
+Body `{"workflowId":"wf-…","sessionId":123}` (`sessionId` optional — defaults to the active
+Session; requires an explicit or active Session). Defaults to `approval` (execution-class). The
+run is created only when every precondition holds; otherwise no row is written and the error
+envelope carries the reason:
+
+| Condition | Envelope |
+| --- | --- |
+| Workflow id unknown | `404 not_found` |
+| Target Session missing or archived | `404 not_found` |
+| Proxy stopped (replays need the proxy running) | `409 proxy_not_running` |
+| No active Session to target | `409 conflict` |
+| Graph validation failed | `422 workflow_graph_invalid`, message lists the issues |
+
+On success `data` is the run record: `{"id":"run-…","workflowId","workflowName","trigger":"manual",
+"status":"running","sessionId","startedAt","graphSnapshot"}` — `finishedAt`/`error` appear once the
+run settles. The graph snapshot is captured at dispatch (`pinnedOutput` stripped) so a run can be
+rendered even after the definition changes.
+
+### `GET /api/flow/runs?workflowId={id}&status=failed&limit=100&offset=0`
+
+Returns `{"runs":[FlowRunRecord],"total":N}` newest first. `workflowId` and `status` filter before
+pagination; `limit` defaults to 200 and is capped at 1000 (`400 bad_request` outside 1–1000).
+
+### `GET /api/flow/runs/{id}`
+
+Returns the flattened run record plus `{"nodeRuns":[…]}` — one checkpoint per node
+(`(runId, nodeId)` last-write-wins): `{"nodeId","status","input","output","error","startedAt",
+"durationMs","iterations","updatedAt"}`. Snapshots are secret-masked server-side. `404 not_found`
+when the run is unknown.
+
+### `POST /api/flow/runs/{id}/cancel`
+
+Defaults to `approval`. Requests cancellation; the engine stops at the next batch boundary (the
+current node completes) and the run settles as `cancelled` (cancel wins over failure). Returns
+`{"ok":true,"data":{}}`; `404 not_found` when the run is unknown or already finished.
+
+Trigger/cancel publish a `FlowRuns` UI change, and every run progress event (`started`/`node`/
+`finished`) is bridged into the same change channel — poll `GET /api/flow/runs/{id}` after a
+change notification to observe progress (agents should prefer the list/detail endpoints over
+event assumptions).
 
 ## Errors and lifecycle notes
 
@@ -1470,6 +1520,7 @@ HTTP status mapping:
 | `proxy_not_running` | 409 | Replay or another proxy-dependent operation while the proxy is stopped |
 | `body_too_large` | 413 | Stored body exceeds `max_size`; includes both sizes |
 | `body_decode_failed` | 422 | Original encoding cannot be decoded for a negotiated fallback |
+| `workflow_graph_invalid` | 422 | Workflow run trigger rejected: the stored graph failed structural validation |
 | `internal_error` | 500 | Storage, runtime, I/O, or other internal failure |
 | `permission_check_failed` | 500 | Permission storage or approval infrastructure failed closed |
 | `body_read_failed` | 500 | Body file cannot be opened or read |

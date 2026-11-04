@@ -15,6 +15,8 @@ use proxy_crab_mitm::{
         },
         model::{Project, Workflow, WORKFLOW_SCHEMA_VERSION, generate_ref_id},
         request_library::{CapturedRequest, RequestLibraryEntry, RequestSource},
+        run::{FlowRunEvent, FlowRunManager, RunTriggerError},
+        run_store::FlowRunRecord,
         store::{EnvVariableSet, FlowStore, generate_flow_id},
         transfer,
         validate::{ValidationIssue, validate_workflow_graph},
@@ -46,9 +48,10 @@ use crate::{
         DeleteCount, EnvSetsPayload, EnvWriteBackRequest, EnvWriteBackResult, ErrorCode,
         ExecuteTemporaryScriptRequest, ExtendBreakpointRequest, FlowListQuery,
         FlowProjectCreateRequest, FlowProjectPage, FlowProjectUpdateRequest,
-        FlowScriptDryRunRequest, HeaderItem,
-        IngestCaptureRequest, InterceptorCreateRequest, InterceptorDetail,
-        InterceptorLibraryList, InterceptorUpdateRequest, LogDetail, LogIdsPayload,
+        FlowRunDetailPayload, FlowRunListQuery, FlowRunPage, FlowRunTriggerRequest,
+        FlowScriptDryRunRequest, FLOW_RUN_DEFAULT_LIMIT, FLOW_RUN_MAX_LIMIT, HeaderItem,
+        IngestCaptureRequest, InterceptorCreateRequest, InterceptorDetail, InterceptorLibraryList,
+        InterceptorUpdateRequest, LogDetail, LogIdsPayload,
         LogIdsRequest, LogViewException, LogViewRow, LogViewsPayload, LogViewsRequest,
         ManagerError, ManagerResult, ReplaceActiveEnvSetRequest, ReplaceEnvGlobalsRequest,
         ReplaceSessionInterceptorsRequest, ReplaceSessionViewRequest, ReplayBodyPayload,
@@ -63,7 +66,7 @@ use crate::{
         WorkflowPage, WorkflowUpdateRequest, WorkflowValidationIssue,
     },
 };
-use tokio::sync::{Semaphore, watch};
+use tokio::sync::{Semaphore, broadcast, watch};
 
 pub(crate) mod redaction;
 use redaction::{ReadPolicy, ReadRedactor};
@@ -331,6 +334,14 @@ pub trait ProxyCrabManager: Send + Sync {
         &self,
         request: FlowScriptDryRunRequest,
     ) -> ManagerResult<ScriptDryRunOutput>;
+    async fn trigger_workflow_run(
+        &self,
+        request: FlowRunTriggerRequest,
+    ) -> ManagerResult<FlowRunRecord>;
+    async fn cancel_workflow_run(&self, run_id: String) -> ManagerResult<()>;
+    async fn workflow_runs(&self, query: FlowRunListQuery) -> ManagerResult<FlowRunPage>;
+    async fn workflow_run_detail(&self, run_id: String) -> ManagerResult<FlowRunDetailPayload>;
+    fn subscribe_flow_run_events(&self) -> broadcast::Receiver<FlowRunEvent>;
     async fn request_library_page(
         &self,
         query: RequestLibraryQuery,
@@ -378,6 +389,7 @@ pub struct MitmManager {
     runtime: Arc<ProxyCrab>,
     agents: Arc<AgentsStore>,
     clash_subscription: Arc<ClashSubscription>,
+    flow_runs: Arc<FlowRunManager>,
     blocking_tasks: Arc<Semaphore>,
 }
 
@@ -410,6 +422,12 @@ impl MitmManager {
             tracing::error!("failed to initialize AGENTS.md presets: {error}");
         }
         let clash_subscription = Arc::new(ClashSubscription::new(runtime.workspace().root()));
+        // 运行记录库随管理器打开（收敛孤儿 `running` 行；打开失败只记日志，
+        // 运行类接口统一报「运行记录库不可用」）。
+        let flow_runs = Arc::new(FlowRunManager::open(
+            runtime.workspace().root().to_path_buf(),
+            runtime.clone(),
+        ));
         Arc::new(Self {
             imports: Arc::new(crate::bundle::BundleImports::default()),
             forced_redaction: None,
@@ -417,6 +435,7 @@ impl MitmManager {
             runtime,
             agents,
             clash_subscription,
+            flow_runs,
             blocking_tasks: Arc::new(Semaphore::new(MAX_BLOCKING_MANAGEMENT_TASKS)),
         })
     }
@@ -2571,6 +2590,62 @@ impl ProxyCrabManager for MitmManager {
             .map_err(|error| ManagerError::internal(error.to_string()))
     }
 
+    async fn trigger_workflow_run(
+        &self,
+        request: FlowRunTriggerRequest,
+    ) -> ManagerResult<FlowRunRecord> {
+        self.flow_runs
+            .trigger(&request.workflow_id, request.session_id)
+            .await
+            .map_err(map_trigger_error)
+    }
+
+    async fn cancel_workflow_run(&self, run_id: String) -> ManagerResult<()> {
+        if self.flow_runs.cancel(&run_id) {
+            Ok(())
+        } else {
+            Err(ManagerError::not_found(format!(
+                "workflow run {run_id} not found or already finished"
+            )))
+        }
+    }
+
+    async fn workflow_runs(&self, query: FlowRunListQuery) -> ManagerResult<FlowRunPage> {
+        let limit = query.limit.unwrap_or(FLOW_RUN_DEFAULT_LIMIT);
+        if limit == 0 || limit > FLOW_RUN_MAX_LIMIT {
+            return Err(ManagerError::bad_request(format!(
+                "limit must be between 1 and {FLOW_RUN_MAX_LIMIT}"
+            )));
+        }
+        self.flow_runs
+            .list_runs(
+                query.workflow_id,
+                query.status,
+                limit,
+                query.offset.unwrap_or(0),
+            )
+            .await
+            .map(|(runs, total)| FlowRunPage { runs, total })
+            .map_err(map_error)
+    }
+
+    async fn workflow_run_detail(&self, run_id: String) -> ManagerResult<FlowRunDetailPayload> {
+        let detail = self
+            .flow_runs
+            .get_run_detail(&run_id)
+            .await
+            .map_err(map_error)?
+            .ok_or_else(|| ManagerError::not_found(format!("workflow run {run_id} not found")))?;
+        Ok(FlowRunDetailPayload {
+            run: detail.run,
+            node_runs: detail.node_runs,
+        })
+    }
+
+    fn subscribe_flow_run_events(&self) -> broadcast::Receiver<FlowRunEvent> {
+        self.flow_runs.subscribe_events()
+    }
+
     async fn request_library_page(
         &self,
         query: RequestLibraryQuery,
@@ -2922,6 +2997,27 @@ fn map_flow_error(error: anyhow::Error) -> ManagerError {
         ManagerError::bad_request(message)
     } else {
         ManagerError::internal(message)
+    }
+}
+
+/// Map a run trigger failure to the HTTP error envelope (plan Task 19):
+/// unknown workflow / target session are 404, a stopped proxy and a missing
+/// active session are 409, an invalid graph is 422, and storage faults stay
+/// internal errors. The messages carry no internal paths.
+fn map_trigger_error(error: RunTriggerError) -> ManagerError {
+    let message = error.to_string();
+    match error {
+        RunTriggerError::WorkflowNotFound(_) | RunTriggerError::SessionMissing(_) => {
+            ManagerError::not_found(message)
+        }
+        RunTriggerError::NotValid(_) => {
+            ManagerError::new(ErrorCode::WorkflowGraphInvalid, message)
+        }
+        RunTriggerError::ProxyNotRunning => {
+            ManagerError::new(ErrorCode::ProxyNotRunning, message)
+        }
+        RunTriggerError::NoSession => ManagerError::conflict(message),
+        RunTriggerError::Storage(error) => map_error(error),
     }
 }
 

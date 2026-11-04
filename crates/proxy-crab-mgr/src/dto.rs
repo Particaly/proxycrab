@@ -7,6 +7,7 @@ use proxy_crab_mitm::{
         env_sets::EnvGlobalVariables,
         model::{Project, Workflow, WorkflowEdge, WorkflowNode},
         request_library::HarSnapshot,
+        run_store::{FlowNodeRunRecord, FlowRunRecord},
         store::EnvVariableSet,
     },
     model::{
@@ -51,6 +52,7 @@ pub enum ErrorCode {
     InvalidApiKey,
     InvalidUiToken,
     ShareSessionUnavailable,
+    WorkflowGraphInvalid,
 }
 
 impl ErrorCode {
@@ -88,6 +90,7 @@ impl ErrorCode {
             Self::InvalidApiKey => "invalid_api_key",
             Self::InvalidUiToken => "invalid_ui_token",
             Self::ShareSessionUnavailable => "share_session_unavailable",
+            Self::WorkflowGraphInvalid => "workflow_graph_invalid",
         }
     }
 }
@@ -678,6 +681,7 @@ pub enum HttpApiResource {
     SystemLogs,
     RequestLibrary,
     EnvSets,
+    FlowRuns,
     All,
 }
 
@@ -942,4 +946,51 @@ pub struct WorkflowImportResult {
     pub skipped: Vec<WorkflowImportSkipped>,
     pub requests: WorkflowImportExtensionOutcome,
     pub env_sets: WorkflowImportExtensionOutcome,
+}
+
+/* ---- Workflow runs (plan Task 19) ---- */
+
+/// Default page size of the workflow run list; runs carry inline graph
+/// snapshots so one response must stay bounded (same shape as the request
+/// library page).
+pub const FLOW_RUN_DEFAULT_LIMIT: usize = 200;
+/// Hard upper bound for the workflow run list page size.
+pub const FLOW_RUN_MAX_LIMIT: usize = 1000;
+
+/// Trigger one workflow run (plan Task 19): the workflow is addressed by the
+/// body; the target Session defaults to the active one.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FlowRunTriggerRequest {
+    pub workflow_id: String,
+    #[serde(default)]
+    pub session_id: Option<u64>,
+}
+
+/// Workflow run list query: filters by workflow/status before paginating.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FlowRunListQuery {
+    pub workflow_id: Option<String>,
+    pub status: Option<String>,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
+}
+
+/// One bounded page of workflow runs, newest first.
+#[derive(Debug, Clone, Serialize)]
+pub struct FlowRunPage {
+    pub runs: Vec<FlowRunRecord>,
+    pub total: usize,
+}
+
+/// Run detail payload: the flattened run record plus its node checkpoints.
+/// Wraps the mitm `FlowRunDetail` to keep the wire shape camelCase
+/// (`nodeRuns`) consistent with the run records.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FlowRunDetailPayload {
+    #[serde(flatten)]
+    pub run: FlowRunRecord,
+    pub node_runs: Vec<FlowNodeRunRecord>,
 }
