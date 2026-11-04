@@ -6,6 +6,7 @@ pub mod clash_subscription;
 pub mod dto;
 pub mod http;
 pub mod manager;
+pub mod mcp;
 pub mod permission;
 pub mod session_share;
 pub mod skill_install;
