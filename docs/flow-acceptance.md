@@ -111,3 +111,83 @@ ReqFlow 复刻（计划 `docs/superpowers/plans/2026-11-03-request-workflow-repr
   - 图快照仍随记录可读（建单时已捕获）；重放的 capture 记录不受重启改写。
   - 已知限制：引擎 `bodyBase64` 字节 body 重放按 UTF-8 文本有损处理（`ReplayBody` 无字节变体），二进制 body 场景不在本场景判定范围。
 - 失败排查：重启后仍 `running` → 管理进程未真正重启（工作区未重新打开）；查询报 工作流运行记录库不可用 → `runs.db` 打开失败降级（运行功能整体不可用，查系统日志定位原因）。
+
+## A-07 Agent 经 HTTP API 触发工作流（审批链）
+
+对回上游 ROADMAP：MCP/Agent 操作入口的执行面（M19-T3 的 HTTP 等价物）；审批链复用既有管理接口权限体系（读 `allow`、触发/取消 `approval`，见 `docs/backend-api.md` Workflow runs 一节）。
+
+- 前置条件：桌面端运行（审批窗可用）；已创建一个 API Key；代理运行中、活动 Session 正常。
+- 操作步骤：
+  1. 设置 > 管理接口 确认 `POST /api/flow/runs` 档位为 `approval`、`GET /api/flow/runs` 为 `allow`。
+  2. `curl -X POST http://127.0.0.1:18089/api/flow/runs -H "Authorization: Bearer <key>" -H 'Content-Type: application/json' -d '{"workflowId":"<id>"}'`，在桌面审批窗选「仅本次允许」。
+  3. 紧接着再触发一次，审批窗选「1 小时允许」；随后第三次触发（不带等待）。
+  4. `curl http://127.0.0.1:18089/api/flow/runs -H "Authorization: Bearer <key>"` 查运行列表；再试 `POST /api/flow/runs/{id}/cancel`。
+- 预期结果：
+  - 第 2 步请求在审批窗挂起（≤30s），允许后返回 run 记录；拒绝或不决 30s 分别得到 `403 permission_denied` / `403 approval_timeout`。
+  - 定时授权对同 identity+route 生效：第 3 步后的触发不再弹窗；该授权仅在内存，重启消失。
+  - 列表读取直接放行；取消同样走审批档。
+- 失败排查：`403 permission_denied` → 该 identity 此 action 被设为 `deny`（CLI 目标会把持久化 `approval` 判为 `deny`）；审批窗未弹 → 远端请求缺 `Authorization: Bearer` 或用了非桌面目标。
+
+## A-08 外部 AI 经 MCP 触发工作流（档位与审批链）
+
+> **依赖 Task 24/25 落地，当前为预留场景**（`POST /mcp` JSON-RPC 2.0 端点、策展工具面与三档开关均未实现）。以下按计划规格与上游 M19/DD-10 功能面（M19-T2 读 / T3 执行 / T4 写 / T6 档位与审计）编写；上游的宿主 MCP、桥侧工具声明、命令通道与长轮询形态不迁移。
+
+- 前置条件（预留）：Task 24/25 已合入；管理服务运行中；MCP 客户端（或 curl 手拼 JSON-RPC）可用。
+- 操作步骤（预留）：
+  1. 客户端连 `POST /mcp`，完成 `initialize` 握手（协议版本协商），`tools/list` 核对工具面为策展子集（抓包读取/请求库/工作流列表·详情·保存·校验/运行触发·取消·记录查询；脚本库、权限、分享、CA、系统日志不出现）。
+  2. 默认档位下（读开、写/执行关）：`tools/call` 调运行触发工具。
+  3. 在设置中打开执行档后再次触发；审批窗弹出的场景下分别选「允许」与「拒绝/不决」。
+  4. 关闭执行档复查：`tools/list` 不再出现执行类工具，且直接 `tools/call` 被硬拒（两层都测）。
+- 预期结果（预留）：
+  - 触发工具返回 run id，等价 `POST /api/flow/runs`；审批链复用既有体系（超时/被拒按 MCP `isError` 与可读原因返回，不静默降级）。
+  - 档位更严者生效（与权限目录协同）；工具调用全量审计落工作区并可查。
+- 失败排查（预留）：工具不可见 → 档位关闭（列表过滤层）或未鉴权；`isError` → 审批超时/被拒或越界参数，按返回原因处理。
+
+## A-09 导入导出往返
+
+对回上游 ROADMAP：流程导入导出（M7-T5）＋导入安全与 secret 剔除（M9-T5）。
+
+- 前置条件：已有 A-01 流程；其中请求节点引用请求库条目；给流程加一段后置脚本与一个 secret 变量（用于审查与剔除核对）；目标项目已建。
+- 操作步骤：
+  1. `curl 'http://127.0.0.1:18089/api/workflows/export?ids=<wf-id>' -o export.json`（默认 `allow`），核对信封：`format:"reqflow-workflow"`、`requests` 原样携带被引用条目、secret 变量值置空、环境集整体剔除 secret 表。
+  2. 不带 `confirmScripts` 导入：`POST /api/workflows/import` body `{file:export.json, projectId:"<pid>"}`。
+  3. 再以 `confirmScripts:true` + `confirmedScripts:["<workflowIndex>:<nodeIndex>:postProcess"]` 重导一次。
+  4. 打开导入的两条流程核对：节点 id/refId/边 id 已重生成、重名加 `(导入 N)` 后缀、请求引用解析到新入库条目；运行一次验证。
+- 预期结果：
+  - 第 2 步导入的副本脚本被整字段置空（节点保留不中止）；第 3 步指定键的脚本逐字保留。
+  - 返回 `{imported, skipped, requests:{imported,skipped}, envSets}`；与现有条目 id 冲突的 requests/envSets 被 skip 且不覆盖现有数据。
+  - 往返后的流程可运行且结果与原流程一致。
+- 失败排查：`400 bad_request` → 信封形状/版本不符（勿手改导出文件关键字段）；请求引用断开 → requests 条目被 skip（id 冲突），核对返回里的 skip 原因。
+
+## A-10 请求库导入三格式入库核对
+
+对回上游 ROADMAP：cURL/HAR 导入（M7-T3）；Postman v2.1 解析随导入对话框落地（计划 Task 8）。
+
+- 前置条件：代理无需运行；请求库窗口可用；准备三份源样本（一条浏览器复制的 cURL、一个 HAR 文件、一个 Postman Collection v2.1）。
+- 操作步骤：
+  1. 请求库窗口打开「导入」对话框，切换粘贴/文件两种输入方式。
+  2. cURL：粘贴含 `-X/-H/-d/--data-urlencode/-b` 的命令，核对预览的 method/url/headers/body 后导入。
+  3. HAR：选择文件导入（含多 entry），核对预览条目数；Postman：导入 Collection，核对逐请求预览。
+  4. 三者统一打标签 `import-check` 后入库；在列表按标签过滤并打开详情核对四 tab。
+  5. 同源重复导入一次，核对去重策略（预览提示/重名后缀）。
+- 预期结果：
+  - 三种格式均生成条目：来源徽标「导入」、命名 `METHOD host+path`（重名加数字后缀）、头/查询/body 与源一致。
+  - HAR 大 body 按 64KB 安全截断且条目仍可用；标签过滤可命中全部三条。
+- 失败排查：cURL 解析缺头 → 多行续行/引号被 shell 或剪贴板破坏，重贴原文；HAR 条目数偏少 → WebSocket/CONNECT 类条目被过滤属预期，核对源文件类型。
+
+## A-11 环境变量集激活切换与 secret 脱敏显示
+
+对回上游 ROADMAP：环境变量集（M10-T4）＋secret 变量全链路脱敏（M9-T5）。
+
+- 前置条件：环境变量窗口可用（Backend 提供 `envSets` 能力位）；请求库有一条目标条目。
+- 操作步骤：
+  1. 建两个集合 `dev`/`prod`：各含普通变量 `baseUrl` 与 secret 变量 `apiToken`（值不同）。
+  2. `GET /api/env-sets` 核对：`secretValues` 全部显示 `******`，普通值明文。
+  3. 激活 `dev`；建流程：请求节点 URL 写 `{{ env.baseUrl }}/path`、头写 `{{ env.apiToken }}`，运行；再激活 `prod` 重跑一次。
+  4. 再做一次运行中切换（dev 运行未结束时切到 prod）。
+  5. 掩码往返：`PUT /api/env-sets/{id}` 把读到的 `******` 原样回传，另一次显式给新值。
+- 预期结果：
+  - 两次运行的 capture URL/host 分别命中 dev 与 prod 的值；运行中切换不影响进行中 run（派发时冻结），下一次运行才生效。
+  - 掩码 `******` 回传不损坏 secret（读改写往返后 `GET` 仍掩码、重放仍用原值）；显式新值覆盖原值。
+  - 删除激活集合自动清激活偏好；工作流导出信封不含 secret 表。
+- 失败排查：模板渲染为空 → 未激活集合或变量名大小写不符；secret 意外变更 → 上一步误用显式新值覆盖（预期行为），重新录入即可。
