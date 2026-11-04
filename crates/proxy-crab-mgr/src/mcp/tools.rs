@@ -916,6 +916,115 @@ mod tests {
         );
     }
 
+    #[test]
+    fn page_bounds_inject_safe_default_and_reject_out_of_range() {
+        // 未声明界限的工具原样放行（含已有 manager 侧校验的 workflow_runs_list）。
+        let raw = json!({ "limit": 999, "offset": -1 });
+        assert_eq!(enforce_page_bounds("workflow_runs_list", &raw).unwrap(), raw);
+        // 不带 limit（含显式 null）时注入安全缺省值，避免一次拉爆全量。
+        assert_eq!(
+            enforce_page_bounds("workflows_list", &json!({})).unwrap(),
+            json!({ "limit": 50 })
+        );
+        assert_eq!(
+            enforce_page_bounds("workflows_list", &json!({ "limit": null, "offset": 10 }))
+                .unwrap(),
+            json!({ "limit": 50, "offset": 10 })
+        );
+        // 越界拒绝：limit=0/超上限/负 limit/负 offset，文案说明合法范围。
+        for arguments in [
+            json!({ "limit": 0 }),
+            json!({ "limit": 201 }),
+            json!({ "limit": -1 }),
+            json!({ "limit": 50, "offset": -1 }),
+        ] {
+            let error = enforce_page_bounds("workflows_list", &arguments).unwrap_err();
+            assert_eq!(error.code, ErrorCode::BadRequest);
+            assert!(
+                error.message.contains("1 and 200") || error.message.contains("non-negative"),
+                "{}",
+                error.message
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn call_rejects_out_of_bounds_pagination_with_the_legal_range() {
+        let app_data = tempdir().unwrap();
+        let runtime = ProxyCrab::open(app_data.path(), Arc::new(LogBuffer::default())).unwrap();
+        let context = test_context(
+            MitmManager::new(runtime),
+            Arc::new(Semaphore::new(MAX_IN_FLIGHT_TOOL_CALLS)),
+        );
+        // 工具层界限（workflows_list）：越界在执行前即拒，文案带合法范围。
+        for (arguments, reason) in [
+            (json!({ "limit": 0 }), "limit must be between 1 and 200"),
+            (json!({ "limit": 201 }), "limit must be between 1 and 200"),
+            (
+                json!({ "offset": -1 }),
+                "offset must be a non-negative integer",
+            ),
+        ] {
+            let request = RpcRequest {
+                id: json!(1),
+                method: "tools/call".into(),
+                params: json!({ "name": "workflows_list", "arguments": arguments }),
+            };
+            let response = call(&request, &context, TOOL_CALL_TIMEOUT).await;
+            assert_eq!(response["result"]["isError"], true, "{reason}");
+            assert!(response.get("error").is_none());
+            assert!(
+                response["result"]["content"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains(reason)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn call_applies_the_safe_default_and_keeps_manager_validated_bounds() {
+        let app_data = tempdir().unwrap();
+        let runtime = ProxyCrab::open(app_data.path(), Arc::new(LogBuffer::default())).unwrap();
+        let context = test_context(
+            MitmManager::new(runtime),
+            Arc::new(Semaphore::new(MAX_IN_FLIGHT_TOOL_CALLS)),
+        );
+        // 不带 limit：工具层注入安全缺省后调用成功（空工作区返回空页）。
+        let request = RpcRequest {
+            id: json!(2),
+            method: "tools/call".into(),
+            params: json!({ "name": "workflows_list", "arguments": {} }),
+        };
+        let response = call(&request, &context, TOOL_CALL_TIMEOUT).await;
+        assert!(response.get("error").is_none());
+        assert!(response["result"]["isError"].is_null());
+        let text = response["result"]["content"][0]["text"].as_str().unwrap();
+        let payload: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(payload["workflows"], json!([]));
+        assert_eq!(payload["total"], 0);
+        // 边界值 limit=200 仍在合法范围内。
+        let request = RpcRequest {
+            id: json!(3),
+            method: "tools/call".into(),
+            params: json!({ "name": "workflows_list", "arguments": { "limit": 200 } }),
+        };
+        let response = call(&request, &context, TOOL_CALL_TIMEOUT).await;
+        assert!(response.get("error").is_none());
+        assert!(response["result"]["isError"].is_null());
+        // 已有 manager 侧校验的工具抽检（workflow_runs_list）：limit=0 走
+        // manager 校验路径同样被拒，文案带 manager 的合法范围（1..=1000）。
+        let request = RpcRequest {
+            id: json!(4),
+            method: "tools/call".into(),
+            params: json!({ "name": "workflow_runs_list", "arguments": { "limit": 0 } }),
+        };
+        let response = call(&request, &context, TOOL_CALL_TIMEOUT).await;
+        assert_eq!(response["result"]["isError"], true);
+        let text = response["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("limit must be between 1 and 1000"), "{text}");
+    }
+
     #[tokio::test]
     async fn call_rejects_unknown_tools_and_unusable_arguments() {
         let app_data = tempdir().unwrap();
