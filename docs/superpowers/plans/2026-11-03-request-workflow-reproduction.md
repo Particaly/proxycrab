@@ -257,7 +257,7 @@
 - Create: `src/components/expression-input/*`（移植 ReqFlow 的建议弹窗 + 实时预览形态）、`src/components/flow/{NodeIoDrawer.vue,template-dnd.ts}`
 - Modify: `src/components/flow/config/*`
 
-- [ ] **Step 1: 模板语义对齐**：四命名空间（`node.<refId>.<path>` / `input` / `var` / `env`）+ 裸路径与 `$json` 别名；渲染永不因缺数据失败（空串 + 分类 warning）。
+- [x] **Step 1: 模板语义对齐**：四命名空间（`node.<refId>.<path>` / `input` / `var` / `env`）+ 裸路径与 `$json` 别名；渲染永不因缺数据失败（空串 + 分类 warning）。
 - [ ] **Step 2: 表达式输入**：建议（深路径补全、样本深度/条数上限）、防抖求值预览、缺失引用告警展示。
 - [ ] **Step 3: IO 面板**：节点入参/出参字段树、chip 复制、**拖拽映射**（自定义 MIME）、路径截断与搜索、试跑结果标注。
 - [ ] **Step 4: 试跑入参**：编辑器内试跑的结果并入会话态，供下游节点预览。
