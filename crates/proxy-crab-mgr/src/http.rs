@@ -2904,6 +2904,323 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn workflow_transfer_endpoints_round_trip_confirm_scripts_and_adjudication() {
+        let app_data = tempdir().unwrap();
+        let runtime = ProxyCrab::open(app_data.path(), Arc::new(LogBuffer::default())).unwrap();
+        let manager = MitmManager::new(runtime);
+        let (permissions, recorded) = recording_permissions(None);
+        let app = router(manager, permissions);
+
+        // Fixture: one project, one request-library entry, one env set with
+        // secrets, and a workflow referencing the entry while carrying scripts
+        // and secret variables.
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::POST,
+            "/api/flow-projects",
+            Some(r#"{"name":"demo"}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let project_id = payload["data"]["id"].as_str().unwrap().to_owned();
+
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::POST,
+            "/api/request-library",
+            Some(
+                r#"{"har":{"log":{"entries":[{"request":{"method":"GET","url":"https://api.example.com/v1/ping"}}]}},"name":"ping"}"#,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let request_id = payload["data"]["id"].as_str().unwrap().to_owned();
+
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::POST,
+            "/api/env-sets",
+            Some(
+                r#"{"name":"dev","values":{"baseUrl":"http://localhost"},"secretValues":{"password":"hunter2"}}"#,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let env_set_id = payload["data"]["id"].as_str().unwrap().to_owned();
+
+        let workflow_body = json!({
+            "projectId": project_id,
+            "name": "结算链路",
+            "description": "导入导出往返",
+            "variables": {"env": "dev"},
+            "secretVariables": {"token": "pk-live-9999"},
+            "nodes": [
+                {"id": "s1", "type": "start", "position": {"x": 0, "y": 0}, "config": {}},
+                {"id": "n1", "type": "httpReplay", "position": {"x": 1, "y": 2}, "config": {
+                    "requestId": request_id,
+                    "preProcess": "return input",
+                    "postProcess": "return response",
+                    "override": {"url": "http://api.test/{{ node.s1.id }}"}
+                }},
+                {"id": "n2", "type": "condition", "position": {"x": 3, "y": 4}, "config": {
+                    "expression": "input.ok === true",
+                    "trueTargets": ["n1"],
+                    "falseTargets": ["s1"]
+                }}
+            ],
+            "edges": [
+                {"id": "e1", "source": "s1", "target": "n1"},
+                {"id": "e2", "source": "n2", "target": "n1", "sourceHandle": "true"}
+            ]
+        })
+        .to_string();
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::POST,
+            "/api/workflows",
+            Some(&workflow_body),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let workflow_id = payload["data"]["id"].as_str().unwrap().to_owned();
+
+        // Export: the raw envelope document (JSON download), with every secret
+        // value stripped but ordinary data carried along.
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri(format!("/api/workflows/export?ids={workflow_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()["content-disposition"],
+            "attachment; filename=\"reqflow-workflows.json\""
+        );
+        let envelope_bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let envelope_text = String::from_utf8(envelope_bytes.to_vec()).unwrap();
+        assert!(!envelope_text.contains("pk-live-9999"));
+        assert!(!envelope_text.contains("hunter2"));
+        let envelope: Value = serde_json::from_str(&envelope_text).unwrap();
+        assert_eq!(envelope["format"], "reqflow-workflow");
+        assert_eq!(envelope["version"], 1);
+        assert_eq!(envelope["workflows"].as_array().unwrap().len(), 1);
+        assert_eq!(envelope["workflows"][0]["id"], workflow_id.as_str());
+        assert_eq!(
+            envelope["workflows"][0]["secretVariables"]["token"],
+            "",
+            "secret variable values are blanked, names kept"
+        );
+        assert_eq!(envelope["requests"].as_array().unwrap().len(), 1);
+        assert_eq!(envelope["requests"][0]["id"], request_id.as_str());
+        assert_eq!(envelope["envSets"].as_array().unwrap().len(), 1);
+        assert_eq!(envelope["envSets"][0]["id"], env_set_id.as_str());
+        assert_eq!(
+            envelope["envSets"][0]["secretValues"],
+            json!({}),
+            "the env-set secret table is removed entirely"
+        );
+        assert_eq!(
+            envelope["envSets"][0]["values"]["baseUrl"],
+            "http://localhost"
+        );
+
+        // Duplicate ids are carried once; a missing id is a plain 404; an
+        // empty selection is a bad request.
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::GET,
+            &format!("/api/workflows/export?ids={workflow_id},{workflow_id}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(payload["workflows"].as_array().unwrap().len(), 1);
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::GET,
+            "/api/workflows/export?ids=wf-missing",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(payload["error"]["code"], "not_found");
+        let (status, payload) = flow_request(app.clone(), Method::GET, "/api/workflows/export", None)
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(payload["error"]["code"], "bad_request");
+
+        // Import file-level failures are bad requests.
+        for malformed in [
+            r#"{"file":"a string"}"#,
+            r#"{"file":{"format":"other","version":1,"workflows":[]}}"#,
+            r#"{"file":{"format":"reqflow-workflow","version":9,"workflows":[{}]}}"#,
+            r#"{"file":{"format":"reqflow-workflow","version":1,"workflows":[]},"projectId":""}"#,
+        ] {
+            let (status, payload) = flow_request(
+                app.clone(),
+                Method::POST,
+                "/api/workflows/import",
+                Some(malformed),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{malformed}");
+            assert_eq!(payload["error"]["code"], "bad_request", "{malformed}");
+        }
+
+        // Remove the original so the import rebuilds it under the same name.
+        let (status, _) = flow_request(
+            app.clone(),
+            Method::DELETE,
+            &format!("/api/workflows/{workflow_id}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        // Import #1, no confirmScripts: the scripts are denied by default.
+        let import_body = json!({"file": envelope, "projectId": project_id}).to_string();
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::POST,
+            "/api/workflows/import",
+            Some(&import_body),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{payload}");
+        let data = &payload["data"];
+        assert_eq!(data["imported"].as_array().unwrap().len(), 1);
+        assert_eq!(data["skipped"].as_array().unwrap().len(), 0);
+        assert_eq!(data["imported"][0]["index"], 0);
+        assert_eq!(data["imported"][0]["name"], "结算链路");
+        let rebuilt_id = data["imported"][0]["id"].as_str().unwrap().to_owned();
+        assert_ne!(rebuilt_id, workflow_id);
+        // Extension adjudication: both entries already exist, so both are
+        // skipped with a reason and nothing is overwritten.
+        assert_eq!(data["requests"]["imported"], 0);
+        assert_eq!(data["requests"]["skipped"][0]["id"], request_id.as_str());
+        assert!(data["requests"]["skipped"][0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("请求库条目已存在"));
+        assert_eq!(data["envSets"]["imported"], 0);
+        assert_eq!(data["envSets"]["skipped"][0]["id"], env_set_id.as_str());
+
+        // The rebuilt workflow keeps graph, variables and the request
+        // reference, regenerates all ids, and carries no scripts.
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::GET,
+            &format!("/api/workflows/{rebuilt_id}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let rebuilt = &payload["data"];
+        assert_eq!(rebuilt["name"], "结算链路");
+        assert_eq!(rebuilt["projectId"], project_id.as_str());
+        assert_eq!(rebuilt["variables"]["env"], "dev");
+        assert_eq!(
+            rebuilt["secretVariables"]["token"],
+            "",
+            "imported secret variables stay blank placeholders"
+        );
+        let nodes = rebuilt["nodes"].as_array().unwrap();
+        assert_eq!(nodes.len(), 3);
+        assert_eq!(rebuilt["edges"].as_array().unwrap().len(), 2);
+        assert_ne!(nodes[1]["id"], "n1");
+        assert_eq!(nodes[1]["config"]["requestId"], request_id.as_str());
+        assert_eq!(nodes[1]["config"].get("preProcess"), None);
+        assert_eq!(nodes[1]["config"].get("postProcess"), None);
+        assert_eq!(nodes[2]["config"].get("expression"), None);
+        // The template reference points at the regenerated token, not the old
+        // node id.
+        let override_url = nodes[1]["config"]["override"]["url"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let token = override_url
+            .strip_prefix("http://api.test/{{ node.")
+            .and_then(|rest| rest.strip_suffix(".id }}"))
+            .unwrap_or_default();
+        assert!(
+            !token.is_empty() && token != "s1",
+            "template reference remapped: {override_url}"
+        );
+
+        // Import #2 with an explicit confirmation list: exactly the confirmed
+        // script survives, the rest is still cleared, and the name dedupes.
+        let envelope: Value = serde_json::from_str(&envelope_text).unwrap();
+        let import_body = json!({
+            "file": envelope,
+            "projectId": project_id,
+            "confirmScripts": true,
+            "confirmedScripts": ["0:1:preProcess"]
+        })
+        .to_string();
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::POST,
+            "/api/workflows/import",
+            Some(&import_body),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{payload}");
+        let data = &payload["data"];
+        let confirmed_id = data["imported"][0]["id"].as_str().unwrap().to_owned();
+        assert_eq!(data["imported"][0]["name"], "结算链路 (导入 2)");
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::GET,
+            &format!("/api/workflows/{confirmed_id}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let nodes = payload["data"]["nodes"].as_array().unwrap();
+        assert_eq!(nodes[1]["config"]["preProcess"], "return input");
+        assert_eq!(nodes[1]["config"].get("postProcess"), None);
+        assert_eq!(nodes[2]["config"].get("expression"), None);
+
+        // Per-workflow shape issues skip the broken workflow and report the
+        // reasons without failing the request.
+        let envelope: Value = serde_json::from_str(&envelope_text).unwrap();
+        let mut broken = envelope.clone();
+        broken["workflows"] = json!([{"name": "坏流程", "nodes": "nope", "edges": []}]);
+        let import_body = json!({"file": broken, "projectId": project_id}).to_string();
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::POST,
+            "/api/workflows/import",
+            Some(&import_body),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let data = &payload["data"];
+        assert_eq!(data["imported"].as_array().unwrap().len(), 0);
+        let skipped = data["skipped"].as_array().unwrap();
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0]["index"], 0);
+        assert_eq!(skipped[0]["name"], "坏流程");
+        assert!(skipped[0]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue.as_str().unwrap().contains("nodes 必须是数组")));
+
+        // Permission checks resolved the concrete transfer actions.
+        let recorded_ids: Vec<&'static str> =
+            recorded.lock().unwrap().iter().map(|item| item.id).collect();
+        assert!(recorded_ids.contains(&"GET /api/workflows/export"));
+        assert!(recorded_ids.contains(&"POST /api/workflows/import"));
+    }
+
+    #[tokio::test]
     async fn duplicate_authorization_headers_are_rejected_before_permission_check() {
         let app_data = tempdir().unwrap();
         let runtime = ProxyCrab::open(app_data.path(), Arc::new(LogBuffer::default())).unwrap();
