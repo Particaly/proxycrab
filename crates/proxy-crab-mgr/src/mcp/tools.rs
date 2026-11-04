@@ -29,7 +29,10 @@ use proxy_crab_mitm::{
 };
 
 use crate::{
-    dto::{ErrorCode, FlowRunListQuery, LogIdsRequest, ManagerError, SessionQuery},
+    dto::{
+        ErrorCode, FlowRunListQuery, IngestCaptureRequest, LogIdsRequest, ManagerError,
+        RequestLibraryQuery, SessionQuery,
+    },
     manager::ProxyCrabManager,
     permission::{
         ManagementCredential, PermissionAction, PermissionDenied, PermissionDeniedStatus,
@@ -158,6 +161,55 @@ const REGISTRY: &[ToolDescriptor] = &[
                 "integer",
                 "Optional Session owning the log; defaults to the active one.",
             ),
+        ],
+    },
+    /* ---- 请求库 ---- */
+    ToolDescriptor {
+        name: "request_library_list",
+        description: "List request library entries, mirroring GET /api/request-library.",
+        route: ("GET", "/api/request-library"),
+        tier: ToolTier::Read,
+        params: &[
+            (
+                "query",
+                "string",
+                "Case-insensitive text matched against entry name and first request URL.",
+            ),
+            (
+                "tags",
+                "string",
+                "Comma-separated tag list; entries must carry every requested tag.",
+            ),
+            ("source", "string", "Filter by entry source."),
+            ("limit", "integer", "Max entries to return."),
+            ("offset", "integer", "Entries to skip."),
+        ],
+    },
+    ToolDescriptor {
+        name: "request_library_detail",
+        description: "Fetch one request library entry, mirroring GET /api/request-library/{id}.",
+        route: ("GET", "/api/request-library/{id}"),
+        tier: ToolTier::Read,
+        params: &[("id", "string", "Request library entry id.")],
+    },
+    ToolDescriptor {
+        name: "request_library_from_capture",
+        description: "Ingest one capture into the request library, mirroring POST /api/request-library/from-capture.",
+        route: ("POST", "/api/request-library/from-capture"),
+        tier: ToolTier::Write,
+        params: &[
+            ("capture_id", "integer", "Capture (log) id to ingest."),
+            (
+                "session_id",
+                "integer",
+                "Optional Session owning the capture; defaults to the active one.",
+            ),
+            (
+                "name",
+                "string",
+                "Optional entry name; defaults to METHOD host+path.",
+            ),
+            ("tags", "array", "Optional tags assigned to the new entry."),
         ],
     },
     /* ---- 运行 ---- */
@@ -392,6 +444,19 @@ async fn execute(
                 .map_err(|_| ManagerError::new(ErrorCode::BodyReadFailed, "read capture body failed"))?;
             serialize_result(payload)
         }
+        /* ---- 请求库 ---- */
+        "request_library_list" => {
+            let query: RequestLibraryQuery = parse_arguments(arguments)?;
+            serialize_result(manager.request_library_page(query).await?)
+        }
+        "request_library_detail" => {
+            let id = path_argument(arguments, "id")?;
+            serialize_result(manager.request_library_entry(id).await?)
+        }
+        "request_library_from_capture" => {
+            let request: IngestCaptureRequest = parse_arguments(arguments)?;
+            serialize_result(manager.ingest_request_from_capture(request).await?)
+        }
         #[cfg(test)]
         "test_slow_tool" => Ok(slow_tool_stub::run().await),
         // lookup 已把执行器与注册表对齐；此分支不可达。
@@ -534,7 +599,7 @@ mod tests {
     fn tools_list_envelope_declares_the_curated_surface() {
         let envelope = list_envelope(&McpTiers::default());
         let tools = envelope["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 5);
+        assert_eq!(tools.len(), 7);
         let runs_list = tools
             .iter()
             .find(|tool| tool["name"] == "workflow_runs_list")
@@ -582,7 +647,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            5
+            7
         );
         // 读档关闭：tools/list 不再出现该类别工具。
         let read_off = McpTiers {
