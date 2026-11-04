@@ -1381,6 +1381,71 @@ from the permission audit preview. Returns `{"ok":true,"value":…,"warnings":[�
 `{"ok":false,"error":{"kind":"syntax"|"blocked"|"runtime"|"timeout"|"invalid-return","message":"…"}}`
 (`message` is user-readable Chinese; VM budget exhaustion reports as `timeout`).
 
+### `GET /api/workflows/export?ids={id}[,{id}…]`
+
+Workflow transfer export (plan Task 23, default `allow`). `ids` is a required comma-separated
+workflow id list; unknown ids resolve to `404 not_found`, duplicate ids are carried once. The
+response is the raw export document — a JSON download (`Content-Disposition: attachment;
+filename="reqflow-workflows.json"`), not the management `{ok,data}` wrapper:
+
+```json
+{
+  "format": "reqflow-workflow",
+  "version": 1,
+  "exportedAt": 1793860000000,
+  "workflows": [Workflow],
+  "requests": [RequestLibraryEntry],
+  "envSets": [EnvVariableSet]
+}
+```
+
+`workflows` are the stored definitions with every secret variable value blanked (names are kept,
+values become empty strings). `requests` carries the request-library entries the workflows
+reference (`config.requestId`) verbatim; `envSets` lists every workspace env set with its whole
+`secretValues` table removed. `requests` and `envSets` are omitted when empty.
+
+### `POST /api/workflows/import`
+
+Imports one export envelope (plan Task 23, default `approval`). Body:
+
+```json
+{
+  "file": {"format": "reqflow-workflow", "version": 1, "workflows": []},
+  "projectId": "proj-A1b2C3d4E5f6G7h8",
+  "confirmScripts": false,
+  "confirmedScripts": ["0:0:preProcess"]
+}
+```
+
+`file` is the envelope document as returned by the export endpoint; `projectId` names the target
+project of the imported copies (required, not checked for existence). File-level failures return
+`400 bad_request` (not JSON, wrong `format`, unsupported `version`, no workflow data).
+Per-workflow shape issues skip that workflow instead of failing the whole import.
+
+Scripts follow the confirm-scripts security semantics (ReqFlow M19): executable scripts
+(`preProcess`/`postProcess`/`expression`) are denied unless explicitly confirmed. Without
+`confirmScripts` (or with `false`) every collected script is cleared from the imported copy; with
+`confirmScripts: true`, only the scripts listed in `confirmedScripts` are kept verbatim — the key
+format is `workflowIndex:nodeIndex:kind` (indices into the envelope's `workflows` and the
+workflow's `nodes`), everything not listed is still cleared. Imported workflows get fully
+regenerated node ids, refIds and edge ids; template references and bare-id fields are remapped to
+the new ids; a name that already exists gets a `(导入 N)` suffix.
+
+The envelope's extension fields are adjudicated conservatively: a `requests`/`envSets` entry whose
+id already exists is skipped with a reported reason and existing entries are never overwritten; a
+new id is stored verbatim (keeping the imported workflows' `requestId` references resolvable).
+Imported env sets carry no secret values (the export stripped the table). The response reports the
+outcome:
+
+```json
+{
+  "imported": [{"index": 0, "id": "wf-…", "name": "结算链路"}],
+  "skipped": [{"index": 1, "name": "坏流程", "issues": ["…"]}],
+  "requests": {"imported": 1, "skipped": [{"id": "req-1", "reason": "请求库条目已存在，跳过导入：req-1"}]},
+  "envSets": {"imported": 0, "skipped": []}
+}
+```
+
 ## Errors and lifecycle notes
 
 HTTP status mapping:

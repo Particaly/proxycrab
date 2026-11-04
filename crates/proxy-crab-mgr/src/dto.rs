@@ -862,3 +862,84 @@ pub struct FlowScriptDryRunRequest {
     #[serde(default)]
     pub sample_response: Option<serde_json::Value>,
 }
+
+/* ---- Workflow transfer (plan Task 23: import/export) ---- */
+
+/// Workflow export query: `ids` is a required comma-separated list of workflow
+/// ids (`?ids=wf-a,wf-b`); unknown ids resolve to `404 not_found`.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowExportQuery {
+    pub ids: Option<String>,
+}
+
+/// Import one workflow export envelope (plan Task 23). `file` is the raw
+/// envelope object (`format`/`version`/`workflows`/`requests`/`envSets`);
+/// `projectId` names the target project of the imported copies (required,
+/// not checked for existence — same convention as `POST /api/workflows`).
+///
+/// Script review follows the M19 confirm-scripts semantics: without
+/// `confirmScripts` every collected script is cleared from the imported copy;
+/// with it, only the scripts listed in `confirmedScripts` (keys shaped
+/// `workflowIndex:nodeIndex:kind`, kind one of `preProcess`/`postProcess`/
+/// `expression`) are kept verbatim — everything else is still cleared.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowImportRequest {
+    pub file: serde_json::Value,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub confirm_scripts: bool,
+    #[serde(default)]
+    pub confirmed_scripts: Vec<String>,
+}
+
+/// One successfully imported workflow copy (`index` is the position of the
+/// workflow inside the envelope's `workflows` array).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowImportCreated {
+    pub index: usize,
+    pub id: String,
+    pub name: String,
+}
+
+/// One workflow rejected by the import shape validation; the copy is not
+/// created and the issues list the reasons.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowImportSkipped {
+    pub index: usize,
+    pub name: String,
+    pub issues: Vec<String>,
+}
+
+/// Adjudication outcome of one envelope extension family (`requests` /
+/// `envSets`): existing entries are never overwritten — an id conflict skips
+/// the entry and reports the reason; a new id is stored verbatim.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowImportExtensionOutcome {
+    pub imported: usize,
+    pub skipped: Vec<WorkflowImportExtensionSkipped>,
+}
+
+/// One skipped extension entry and why.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowImportExtensionSkipped {
+    pub id: String,
+    pub reason: String,
+}
+
+/// Import outcome: created copies, rejected workflows with their issues, and
+/// the extension-field adjudication per family.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowImportResult {
+    pub imported: Vec<WorkflowImportCreated>,
+    pub skipped: Vec<WorkflowImportSkipped>,
+    pub requests: WorkflowImportExtensionOutcome,
+    pub env_sets: WorkflowImportExtensionOutcome,
+}

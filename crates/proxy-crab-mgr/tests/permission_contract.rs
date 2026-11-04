@@ -20,7 +20,7 @@ fn permission_catalog_contains_every_unique_route_action() {
         .map(|action| action.id)
         .collect::<BTreeSet<_>>();
 
-    assert_eq!(actions.len(), 108);
+    assert_eq!(actions.len(), 110);
     assert_eq!(ids.len(), actions.len());
     assert!(
         actions
@@ -83,6 +83,7 @@ fn permission_catalog_has_the_confirmed_default_matrix() {
         "GET /api/system-logs",
         "GET /api/workflows",
         "GET /api/workflows/{id}",
+        "GET /api/workflows/export",
         "POST /api/filter-scripts/{name}/debug",
         "POST /api/logs/ids",
         "POST /api/logs/views",
@@ -135,6 +136,7 @@ fn permission_catalog_has_the_confirmed_default_matrix() {
         "POST /api/flow-projects",
         "POST /api/flow/script/dry-run",
         "POST /api/workflows",
+        "POST /api/workflows/import",
         "PUT /api/flow-projects/{id}",
         "PUT /api/workflows/{id}",
     ]);
@@ -236,6 +238,20 @@ fn permission_lookup_uses_both_method_and_route_template() {
     );
     assert_eq!(
         find_api_action("PUT", "/api/workflows/{id}")
+            .unwrap()
+            .default_mode,
+        PermissionMode::Approval
+    );
+    // Workflow transfer (plan Task 23): export is a pure read of stored
+    // definitions; import creates definitions and defaults to approval.
+    assert_eq!(
+        find_api_action("GET", "/api/workflows/export")
+            .unwrap()
+            .default_mode,
+        PermissionMode::Allow
+    );
+    assert_eq!(
+        find_api_action("POST", "/api/workflows/import")
             .unwrap()
             .default_mode,
         PermissionMode::Approval

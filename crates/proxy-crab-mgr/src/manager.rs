@@ -13,9 +13,10 @@ use proxy_crab_mitm::{
         env_sets::{
             self, EnvGlobalVariables, mask_env_set, mask_globals, restore_masked_secret_values,
         },
-        model::{Project, Workflow, WORKFLOW_SCHEMA_VERSION},
+        model::{Project, Workflow, WORKFLOW_SCHEMA_VERSION, generate_ref_id},
         request_library::{CapturedRequest, RequestLibraryEntry, RequestSource},
         store::{EnvVariableSet, FlowStore, generate_flow_id},
+        transfer,
         validate::{ValidationIssue, validate_workflow_graph},
     },
     lua::{CaptureBodyAccess, ColumnEvaluator, FilterEvaluator},
@@ -57,8 +58,9 @@ use crate::{
         SessionInterceptorItem, SessionInterceptorsPayload, SessionsPayload,
         SessionViewPayload, SystemLogsQuery, UpdateAgentsPresetRequest,
         UpdateRequestLibraryRequest, UpdateScriptRequest, UpdateSessionRequest,
-        WorkflowCreateRequest, WorkflowListQuery, WorkflowPage, WorkflowUpdateRequest,
-        WorkflowValidationIssue
+        WorkflowCreateRequest, WorkflowImportCreated, WorkflowImportExtensionSkipped,
+        WorkflowImportRequest, WorkflowImportResult, WorkflowImportSkipped, WorkflowListQuery,
+        WorkflowPage, WorkflowUpdateRequest, WorkflowValidationIssue,
     },
 };
 use tokio::sync::{Semaphore, watch};
@@ -311,6 +313,20 @@ pub trait ProxyCrabManager: Send + Sync {
     ) -> ManagerResult<Workflow>;
     async fn delete_workflow(&self, id: String) -> ManagerResult<()>;
     async fn validate_workflow(&self, id: String) -> ManagerResult<Vec<WorkflowValidationIssue>>;
+    /// Build the workflow export envelope for the given ids (plan Task 23):
+    /// secret variable values are blanked, referenced request-library entries
+    /// are carried along, env sets lose their whole secret table.
+    async fn export_workflows(
+        &self,
+        ids: Vec<String>,
+    ) -> ManagerResult<transfer::WorkflowExportFile>;
+    /// Import one workflow export envelope (plan Task 23): shape validation,
+    /// confirm-scripts semantics, name dedupe and id remapping happen before
+    /// anything is written; envelope extension entries never overwrite.
+    async fn import_workflows(
+        &self,
+        request: WorkflowImportRequest,
+    ) -> ManagerResult<WorkflowImportResult>;
     async fn flow_script_dry_run(
         &self,
         request: FlowScriptDryRunRequest,
@@ -2335,6 +2351,204 @@ impl ProxyCrabManager for MitmManager {
             let workflow = require_workflow(&flow_root, &id)?;
             let issues = validate_workflow_graph(&workflow.nodes, &workflow.edges);
             Ok(issues.into_iter().map(validation_issue).collect())
+        })
+        .await
+    }
+
+    /// 构造工作流导出信封（计划 Task 23）：逐 id 读取（缺失即 `404`），流程
+    /// 剔除 secret 变量值（名留值空），带出流程引用到的请求库条目，环境变量
+    /// 集剔除整张 secret 表；序列化为下载文件由 HTTP 层完成。
+    async fn export_workflows(
+        &self,
+        ids: Vec<String>,
+    ) -> ManagerResult<transfer::WorkflowExportFile> {
+        if ids.is_empty() {
+            return Err(ManagerError::bad_request(
+                "workflow export requires at least one workflow id",
+            ));
+        }
+        let flow_root = self.flow_root();
+        self.run_blocking("workflow export", move || {
+            let store = FlowStore::open(&flow_root).map_err(map_flow_error)?;
+            let mut workflows = Vec::with_capacity(ids.len());
+            let mut seen = BTreeSet::new();
+            for id in &ids {
+                // 重复 id 只带出一次；缺失 id 整体 404（显式导出不该静默截断）。
+                if seen.insert(id.clone()) {
+                    let workflow = store
+                        .get_workflow(id)
+                        .map_err(map_flow_error)?
+                        .ok_or_else(|| ManagerError::not_found(format!("workflow {id} not found")))?;
+                    workflows.push(workflow);
+                }
+            }
+            let library = store.list_requests().map_err(map_flow_error)?;
+            let env_sets = store.list_env_sets().map_err(map_flow_error)?;
+            Ok(transfer::build_workflow_export_file(
+                &workflows,
+                &transfer::collect_referenced_requests(&workflows, &library),
+                &env_sets,
+                now_millis(),
+            ))
+        })
+        .await
+    }
+
+    /// 导入一份工作流导出信封（计划 Task 23）。写库前完成全部裁决：文件级
+    /// 解析与逐流程形状校验（不通过的流程记 issues 跳过）、confirmScripts
+    /// 脚本审查（缺省拒绝，确认集合之外全部置空）、重名消解（`(导入 N)`
+    /// 后缀）与 id / refId 全量重映射；信封扩展字段（requests / envSets）
+    /// 保守入库——id 冲突记原因跳过，绝不覆盖既有条目。
+    async fn import_workflows(
+        &self,
+        request: WorkflowImportRequest,
+    ) -> ManagerResult<WorkflowImportResult> {
+        let WorkflowImportRequest {
+            file,
+            project_id,
+            confirm_scripts,
+            confirmed_scripts,
+        } = request;
+        let project_id = project_id.unwrap_or_default();
+        if project_id.trim().is_empty() {
+            return Err(ManagerError::bad_request(
+                "workflow import requires a target projectId",
+            ));
+        }
+        let text = file.to_string();
+        // 信封扩展字段按强类型读出；请求库 / 环境集条目形状非法是客户端
+        // 错误（流程本身另有逐条 issues 通道，不做整体硬失败）。
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Extensions {
+            #[serde(default)]
+            requests: Vec<RequestLibraryEntry>,
+            #[serde(default)]
+            env_sets: Vec<EnvVariableSet>,
+        }
+        let extensions: Extensions = serde_json::from_value(file).map_err(|error| {
+            ManagerError::bad_request(format!("导出文件扩展字段形状非法：{error}"))
+        })?;
+        let runtime = self.runtime.clone();
+        self.run_blocking("workflow import", move || {
+            let mut parsed =
+                transfer::parse_workflow_import(&text).map_err(ManagerError::bad_request)?;
+
+            // 脚本逐条审查（M19 口径）：确认集合之外全部置空。未携带确认
+            // （confirmScripts 缺省 false）时 confirmed 为空，等于全部拒绝。
+            let mut confirmed: BTreeSet<String> = BTreeSet::new();
+            if confirm_scripts {
+                confirmed.extend(confirmed_scripts);
+            }
+            let unconfirmed: BTreeSet<String> = transfer::collect_imported_scripts(&parsed)
+                .into_iter()
+                .map(|script| {
+                    transfer::imported_script_key(
+                        script.workflow_index,
+                        script.node_index,
+                        script.kind,
+                    )
+                })
+                .filter(|key| !confirmed.contains(key))
+                .collect();
+            for (index, workflow) in parsed.iter_mut().enumerate() {
+                transfer::clear_unconfirmed_scripts(workflow, index, &unconfirmed);
+            }
+
+            let store = flow_store(&runtime)?;
+            let mut result = WorkflowImportResult::default();
+            let mut taken_names: BTreeSet<String> = store
+                .list_workflows()
+                .map_err(map_error)?
+                .into_iter()
+                .map(|workflow| workflow.name)
+                .collect();
+
+            // 预生成重映射阶段要消耗的 id 池（每节点一个 + 每连线一个），
+            // 让 generate_flow_id 的失败在写库前以普通 500 呈现。
+            let mut pending_ids = Vec::new();
+            for workflow in &parsed {
+                if let Some(data) = workflow.data.as_ref() {
+                    for _ in 0..data.nodes.len() + data.edges.len() {
+                        pending_ids.push(generate_flow_id("wf").map_err(map_error)?);
+                    }
+                }
+            }
+            let mut pending_ids = pending_ids.into_iter();
+            let mut new_id = || pending_ids.next().unwrap_or_default();
+            let mut new_ref_id = |taken: &BTreeSet<String>| generate_ref_id(taken);
+
+            for (index, workflow) in parsed.iter().enumerate() {
+                let Some(_) = workflow.data.as_ref() else {
+                    result.skipped.push(WorkflowImportSkipped {
+                        index,
+                        name: workflow.name.clone(),
+                        issues: workflow.issues.clone(),
+                    });
+                    continue;
+                };
+                let name = transfer::dedupe_workflow_name(&workflow.name, &taken_names);
+                let item = transfer::remap_imported_workflow(workflow, &mut new_id, &mut new_ref_id)
+                    .map_err(ManagerError::internal)?;
+                let now = unix_millis();
+                let doc = Workflow {
+                    id: generate_flow_id("wf").map_err(map_error)?,
+                    project_id: project_id.clone(),
+                    name,
+                    description: item.description,
+                    nodes: item.nodes,
+                    edges: item.edges,
+                    variables: item.variables,
+                    secret_variables: item.secret_variables,
+                    schema_version: WORKFLOW_SCHEMA_VERSION,
+                    created_at: now,
+                    updated_at: now,
+                };
+                store.put_workflow(&doc).map_err(map_error)?;
+                taken_names.insert(doc.name.clone());
+                result.imported.push(WorkflowImportCreated {
+                    index,
+                    id: doc.id.clone(),
+                    name: doc.name.clone(),
+                });
+            }
+
+            // 信封扩展字段裁决：既有条目绝不覆盖——id 冲突跳过并报告原因。
+            // 请求库条目新 id 原样入库（导入流程的 requestId 引用它，原样
+            // 入库才保持引用可解析）；环境变量集导入物已无 secret 表。
+            for entry in &extensions.requests {
+                let exists = store
+                    .get_request(&entry.id)
+                    .map_err(map_error)?
+                    .is_some();
+                if exists {
+                    result.requests.skipped.push(WorkflowImportExtensionSkipped {
+                        id: entry.id.clone(),
+                        reason: format!("请求库条目已存在，跳过导入：{}", entry.id),
+                    });
+                } else {
+                    store.put_request(entry).map_err(map_error)?;
+                    result.requests.imported += 1;
+                }
+            }
+            let env_set_ids: BTreeSet<String> = store
+                .list_env_sets()
+                .map_err(map_error)?
+                .into_iter()
+                .map(|set| set.id)
+                .collect();
+            for set in &extensions.env_sets {
+                if env_set_ids.contains(&set.id) {
+                    result.env_sets.skipped.push(WorkflowImportExtensionSkipped {
+                        id: set.id.clone(),
+                        reason: format!("环境变量集已存在，跳过导入：{}", set.id),
+                    });
+                } else {
+                    store.save_env_set(set).map_err(map_error)?;
+                    result.env_sets.imported += 1;
+                }
+            }
+            Ok(result)
         })
         .await
     }
