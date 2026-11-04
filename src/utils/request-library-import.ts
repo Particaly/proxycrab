@@ -654,7 +654,7 @@ export function parseCurlCommand(input: string): CurlImportResult {
 }
 
 /* ------------------------------------------------------------------ *
- * 条目组装（HAR / Postman 两条路径共用）
+ * 条目组装（cURL / HAR / Postman 三条路径共用）
  * ------------------------------------------------------------------ */
 
 /** 条目组装输入：请求侧字段 + 可选响应摘要与时间信息。 */
@@ -724,6 +724,60 @@ export function buildImportRequest(
     tags: [...tags],
     origin: parseUrlOrigin(item.url),
   };
+}
+
+/** mimeType 是否为表单系（urlencoded / multipart，HAR 惯例这两类带 params）。 */
+function isFormMimeType(mimeType: string): boolean {
+  const lower = mimeType.toLowerCase();
+  return (
+    lower.startsWith("application/x-www-form-urlencoded") || lower.startsWith("multipart/form-data")
+  );
+}
+
+/** 表单体 → HAR params 键值对（& 分段、first '=' 拆键值；解码失败保留原文）。 */
+function parseFormParams(body: string): RequestLibraryHarPair[] {
+  if (body === "") return [];
+  return body.split("&").map((pair) => {
+    const eq = pair.indexOf("=");
+    if (eq === -1) return { name: pair, value: "" };
+    const name = pair.slice(0, eq);
+    const rawValue = pair.slice(eq + 1);
+    try {
+      return { name, value: decodeURIComponent(rawValue) };
+    } catch {
+      return { name, value: rawValue };
+    }
+  });
+}
+
+/**
+ * cURL 解析产物 → 可入库条目（纯函数）。请求体过 64 KiB 截断（与 HAR 导入同一
+ * 策略，防御粘贴超大 body）；表单系 mimeType 补 params 键值对供键值表展示；
+ * 无响应交换（response 不携带），startedDateTime / time 不注入（入库时刻由
+ * 后端 createdAt 承担）。
+ */
+export function buildCurlItem(request: CurlParsedRequest): ImportRequestItem {
+  const safeBody =
+    request.body === undefined
+      ? undefined
+      : truncateUtf8Safe(request.body, IMPORT_BODY_MAX_BYTES).text;
+  const mimeType = request.mimeType ?? "";
+  const postData: RequestLibraryHarPostData | undefined =
+    safeBody === undefined
+      ? undefined
+      : {
+          mimeType,
+          ...(isFormMimeType(mimeType) ? { params: parseFormParams(safeBody) } : {}),
+          text: safeBody,
+        };
+  return buildItem({
+    method: request.method,
+    url: request.url,
+    headers: request.headers.map((header) => ({ ...header })),
+    queryString: request.queryString.map((pair) => ({ ...pair })),
+    cookies: request.cookies.length > 0 ? request.cookies.map((cookie) => ({ ...cookie })) : undefined,
+    postData,
+  });
 }
 
 /* ------------------------------------------------------------------ *

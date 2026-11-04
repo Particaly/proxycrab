@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   IMPORT_BODY_MAX_BYTES,
+  buildCurlItem,
   buildDefaultRequestName,
   filterDuplicateItems,
   importDedupKey,
@@ -523,6 +524,42 @@ describe("去重策略", () => {
     const { kept, duplicates } = filterDuplicateItems(items, new Set(["GET https://a.dev/same"]));
     expect(kept.map((entry) => entry.url)).toEqual(["https://a.dev/new"]);
     expect(duplicates.map((entry) => entry.url)).toEqual(["https://a.dev/same"]);
+  });
+});
+
+describe("buildCurlItem", () => {
+  it("JSON body：postData 带 mimeType 与原文；无响应交换", () => {
+    const parsed = parseCurlCommand(
+      "curl -X POST 'https://api.example.com:8443/v1/orders?dry=1' -H 'Content-Type: application/json' -d '{\"sku\":\"A-1\"}'",
+    );
+    if (!parsed.ok) throw new Error("解析应成功");
+    const built = buildCurlItem(parsed.request);
+    expect(built.method).toBe("POST");
+    expect(built.status).toBe(-1);
+    expect(built.entry.response).toBeUndefined();
+    expect(built.entry.request.headers).toEqual([{ name: "Content-Type", value: "application/json" }]);
+    expect(built.entry.request.queryString).toEqual([{ name: "dry", value: "1" }]);
+    expect(built.entry.request.postData).toEqual({ mimeType: "application/json", text: '{"sku":"A-1"}' });
+  });
+
+  it("表单体补 params 键值对（URL 解码后的展示形态）；Cookie 透传", () => {
+    const parsed = parseCurlCommand("curl -b 'sid=abc' -d 'a=1&b=x%20y' https://a.dev/submit");
+    if (!parsed.ok) throw new Error("解析应成功");
+    const built = buildCurlItem(parsed.request);
+    expect(built.entry.request.postData?.mimeType).toBe("application/x-www-form-urlencoded");
+    expect(built.entry.request.postData?.params).toEqual([
+      { name: "a", value: "1" },
+      { name: "b", value: "x y" },
+    ]);
+    expect(built.entry.request.cookies).toEqual([{ name: "sid", value: "abc" }]);
+  });
+
+  it("无 body 时不携带 postData 与 cookies 字段", () => {
+    const parsed = parseCurlCommand("curl https://a.dev");
+    if (!parsed.ok) throw new Error("解析应成功");
+    const built = buildCurlItem(parsed.request);
+    expect(built.entry.request.postData).toBeUndefined();
+    expect(built.entry.request.cookies).toBeUndefined();
   });
 });
 
