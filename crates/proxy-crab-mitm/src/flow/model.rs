@@ -763,7 +763,8 @@ fn remap_value_node_refs(
 }
 
 /// 改写一个节点 config 中全部字符串值的模板引用（经 JSON 值往返）。
-fn remap_node_config_refs(
+/// 供读时迁移与导入重映射共用（transfer.rs 的映射表为「旧 token → 新 refId」）。
+pub(crate) fn remap_node_config_refs(
     config: &NodeConfig,
     ref_id_by_node_id: &BTreeMap<String, String>,
 ) -> NodeConfig {
