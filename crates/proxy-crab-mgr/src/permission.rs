@@ -278,6 +278,13 @@ pub static API_ACTIONS: &[ApiAction] = &[
     // each tool runs a second check against its mapped route's action
     // (Task 24 Step 3); both checks must pass, so the stricter tier wins.
     action!("POST", "/mcp", Allow),
+    // MCP exposure tiers (plan Task 25 Step 2): reading the switches is
+    // read-class (`allow`); changing them widens what MCP clients may do, so
+    // the write defaults to `approval` like the other posture-changing
+    // settings. Tier gating inside `tools/call` stacks on the endpoint and
+    // mapped-route checks — the stricter of the three always wins.
+    action!("GET", "/api/mcp-tiers", Allow),
+    action!("PUT", "/api/mcp-tiers", Approval),
 ];
 
 pub const OBSOLETE_API_ACTION_IDS: &[&str] = &[

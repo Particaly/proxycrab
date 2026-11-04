@@ -1723,11 +1723,18 @@ Use `scripts/bundle-import.mjs --file bundle.zip --accepted-intent-ids '["sessio
 
 ## MCP endpoint
 
-`POST /mcp` speaks JSON-RPC 2.0 (stateless, one request/response per call, no MCP SDK envelope). Authentication matches the `/api` routes: trusted local callers may omit `Authorization`; otherwise send exactly one `Authorization: Bearer <key>`. The endpoint itself is the permission action `POST /mcp` (default `allow`); per-tool authorization is a later slice. Bodies are capped at 1 MiB.
+`POST /mcp` speaks JSON-RPC 2.0 (stateless, one request/response per call, no MCP SDK envelope). Authentication matches the `/api` routes: trusted local callers may omit `Authorization`; otherwise send exactly one `Authorization: Bearer <key>`. The endpoint itself is the permission action `POST /mcp` (default `allow`). Bodies are capped at 1 MiB.
 
 MCP envelopes are raw JSON-RPC — `{jsonrpc:"2.0", id, result}` or `{jsonrpc:"2.0", id, error:{code,message}}` — never wrapped in the management `{ok,data}`/`{ok,error}` contract. Error codes follow JSON-RPC/MCP convention: `-32700` unparsable JSON (id is `null`), `-32600` invalid envelope, `-32601` unknown method, `-32602` invalid params, `-32603` internal. Messages without an `id` are notifications and get `202 Accepted` with no body.
 
-Methods: `initialize` (required first call) negotiates the protocol version — supported client versions `2024-11-05`, `2025-03-26`, `2025-06-18` are echoed verbatim; `latest`, missing, or unsupported versions fall back to `2025-06-18`. The result declares `capabilities.tools` and `serverInfo:{name:"proxy-crab",version}`. `tools/list` currently returns an empty `tools` array (curated surface pending). `tools/call` with `params.name` returns, for every tool name in this slice, the MCP tool-level failure shape — HTTP 200 with `result:{content:[{type:"text",text:...}],isError:true}` — instead of a protocol error; omitting an empty `name` is `-32602`.
+Methods: `initialize` (required first call) negotiates the protocol version — supported client versions `2024-11-05`, `2025-03-26`, `2025-06-18` are echoed verbatim; `latest`, missing, or unsupported versions fall back to `2025-06-18`. The result declares `capabilities.tools` and `serverInfo:{name:"proxy-crab",version}`. `tools/list` returns the curated registry (first entry `workflow_runs_list`, mirroring `GET /api/flow/runs`), filtered by the MCP exposure tiers (see below). `tools/call` with `params.name` runs per-tool authorization against the mapped route's permission action, then executes with a 30s timeout and a process-wide 4-call in-flight cap; denials, tier shutdown and failures come back as the MCP tool-level failure shape — HTTP 200 with `result:{content:[{type:"text",text:...}],isError:true}` — instead of a protocol error; omitting an empty `name` is `-32602`.
+
+## MCP exposure tiers
+
+The curated tool surface is gated by three workspace switches persisted at `<workspace>/flow/mcp-tools.json` — read / write / execute, defaults on / off / off. `tools/list` only lists tools whose tier switch is on; `tools/call` hard-rejects a disabled tier with a tool-level error (`tool '<name>': 该工具类别的 MCP 档位已关闭`) even when the tool is addressed by name. The tier gate stacks on the endpoint check and the mapped-route check — the stricter of the three wins.
+
+- `GET /api/mcp-tiers` (default `allow`) → `{ok,data:{read,write,execute}}` booleans.
+- `PUT /api/mcp-tiers` (default `approval`) with body `{read,write,execute}` replaces all three switches and returns the stored value.
 
 ### `POST /mcp` example
 

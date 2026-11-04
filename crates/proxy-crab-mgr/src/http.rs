@@ -28,6 +28,7 @@ use futures::{StreamExt, stream};
 use proxy_crab_mitm::model::{InterceptorKind, InterceptorScriptContent, SessionFilter};
 use proxy_crab_mitm::storage::{BodySide, BodySource, BodySourceData};
 use proxy_crab_mitm::flow::run::FlowRunEvent;
+use proxy_crab_mitm::flow::mcp_tiers::McpTiers;
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, BufReader};
@@ -489,6 +490,9 @@ fn router_with_changes_and_extra(
         )
         .route("/api/env-globals", put(replace_env_globals))
         .route("/api/env-write-back", post(env_write_back))
+        /* MCP exposure tiers (plan Task 25 Step 2): read (allow) and write
+        (approval, like other posture-changing settings). */
+        .route("/api/mcp-tiers", get(get_mcp_tiers).put(replace_mcp_tiers))
         .route(
             "/api/system-logs",
             get(system_logs).delete(clear_system_logs),
@@ -1824,6 +1828,19 @@ async fn import_workflows(
 
 async fn env_sets(State(manager): State<ManagerState>) -> ApiResult {
     success(manager.env_sets().await?)
+}
+
+/* ---- MCP exposure tiers (plan Task 25 Step 2) ---- */
+
+async fn get_mcp_tiers(State(manager): State<ManagerState>) -> ApiResult {
+    success(manager.mcp_tiers().await?)
+}
+
+async fn replace_mcp_tiers(
+    State(manager): State<ManagerState>,
+    ApiJson(tiers): ApiJson<McpTiers>,
+) -> ApiResult {
+    success(manager.replace_mcp_tiers(tiers).await?)
 }
 
 async fn create_env_set(

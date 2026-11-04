@@ -145,6 +145,8 @@ export const ACTION_META: Readonly<Record<string, PermissionActionMeta>> = {
   "GET /api/flow/runs/{id}": { label: "读取工作流运行详情", impact: "read" },
   "POST /api/flow/runs/{id}/cancel": { label: "取消工作流运行", impact: "write" },
   "POST /api/flow/script/dry-run": { label: "试跑流程脚本", impact: "write" },
+  "GET /api/mcp-tiers": { label: "读取 MCP 暴露档位", impact: "read" },
+  "PUT /api/mcp-tiers": { label: "更新 MCP 暴露档位", impact: "write" },
   "POST /mcp": { label: "MCP 工具端点（JSON-RPC）", impact: "read" },
 };
 
@@ -200,7 +202,7 @@ export const FUNCTION_GROUPS: FunctionGroupDef[] = [
     prefixes: ["/api/flow-projects", "/api/workflows", "/api/flow/script", "/api/flow/runs"],
   },
   { key: "system_logs", label: "系统日志", prefixes: ["/api/system-logs"] },
-  { key: "mcp", label: "MCP 端点", prefixes: ["/mcp"] },
+  { key: "mcp", label: "MCP 端点", prefixes: ["/mcp", "/api/mcp-tiers"] },
 ];
 
 export const OTHER_GROUP = { key: "other", label: "其他" } as const;
