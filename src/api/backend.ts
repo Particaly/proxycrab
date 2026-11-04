@@ -82,6 +82,9 @@ import type {
   SkillSaveResult,
   UpdateScriptRequest,
   Workflow,
+  WorkflowExportEnvelope,
+  WorkflowImportRequest,
+  WorkflowImportResult,
   WorkflowValidationResult,
   WorkflowsPage,
   UpdateAgentsPresetRequest,
@@ -155,6 +158,10 @@ export interface Backend {
     saveWorkflowGraph(id: string, request: SaveWorkflowGraphRequest): Promise<Workflow>;
     deleteWorkflow(id: string): Promise<void>;
     validateWorkflow(id: string): Promise<WorkflowValidationResult>;
+    /** 导出工作流信封（原始文档，非 `{ok,data}` 包装；secret 值已置空）。 */
+    exportWorkflows(ids: string[]): Promise<WorkflowExportEnvelope>;
+    /** 导入信封：confirm-scripts 语义裁决脚本，现有请求库/环境集条目永不覆盖。 */
+    importWorkflows(request: WorkflowImportRequest): Promise<WorkflowImportResult>;
   };
   /**
    * 流程 pre/post 脚本试跑（计划 Task 18）：在服务端 flow 引擎载荷里以一次性

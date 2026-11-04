@@ -829,6 +829,61 @@ export interface WorkflowValidationIssue {
 export interface WorkflowValidationResult {
   issues: WorkflowValidationIssue[];
 }
+
+/* ---- Workflow transfer（计划 Task 23；crates/proxy-crab-mitm/src/flow/transfer.rs）---- */
+
+/** 工作流导出信封：`GET /api/workflows/export` 的原始文档（非 `{ok,data}` 包装）。 */
+export interface WorkflowExportEnvelope {
+  format: string;
+  version: number;
+  exportedAt: number;
+  /** 存储定义副本；secret 变量值已置空（名称保留）。 */
+  workflows: Workflow[];
+  /** 流程引用的请求库条目原文；空时省略。 */
+  requests?: RequestLibraryEntry[];
+  /** 全部环境变量集（整张 secretValues 表已剥除）；空时省略。 */
+  envSets?: EnvVariableSet[];
+}
+
+/** 导入请求体：`file` 为信封原文；脚本按 confirm-scripts 语义逐条裁决。 */
+export interface WorkflowImportRequest {
+  file: WorkflowExportEnvelope;
+  /** 导入副本的目标项目 id（必填，不校验存在性）。 */
+  projectId: string;
+  /** true 时仅 `confirmedScripts` 列出的脚本原样保留；缺省/false 时全部脚本置空。 */
+  confirmScripts?: boolean;
+  /** 保留脚本的键（`workflowIndex:nodeIndex:kind`），kind ∈ preProcess/postProcess/expression。 */
+  confirmedScripts?: string[];
+}
+
+/** 一条导入成功的流程副本（index 为信封 workflows 数组下标）。 */
+export interface WorkflowImportCreated {
+  index: number;
+  id: string;
+  name: string;
+}
+
+/** 一条被形状校验跳过的流程及其问题清单（不创建副本）。 */
+export interface WorkflowImportSkipped {
+  index: number;
+  name: string;
+  issues: string[];
+}
+
+/** 信封扩展字段（requests/envSets）一族裁决结果：现有条目永不覆盖，新 id 原样入库。 */
+export interface WorkflowImportExtensionOutcome {
+  imported: number;
+  skipped: { id: string; reason: string }[];
+}
+
+/** 导入结果：成功/跳过流程 + 扩展字段逐族裁决。 */
+export interface WorkflowImportResult {
+  imported: WorkflowImportCreated[];
+  skipped: WorkflowImportSkipped[];
+  requests: WorkflowImportExtensionOutcome;
+  envSets: WorkflowImportExtensionOutcome;
+}
+
 export interface RequestLibraryPage {
   entries: RequestLibraryEntry[];
   total: number;

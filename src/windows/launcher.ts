@@ -26,6 +26,7 @@ import SkillManagerWindow from "./SkillManagerWindow.vue";
 import RoutingManagerWindow from "./RoutingManagerWindow.vue";
 import EnvSetsWindow from "./EnvSetsWindow.vue";
 import WorkflowEditorWindow from "./WorkflowEditorWindow.vue";
+import WorkflowTransferWindow from "./WorkflowTransferWindow.vue";
 import RequestLibraryWindow from "./RequestLibraryWindow.vue";
 import BypassWindow from "./BypassWindow.vue";
 import BreakpointListWindow from "./BreakpointListWindow.vue";
@@ -368,6 +369,17 @@ export function openWorkflowEditor(): void {
     component: WorkflowEditorWindow,
     width: 1180,
     height: 720,
+  });
+}
+
+/** 工作流导入导出；后端未提供 workflows 能力时不打开入口。 */
+export function openWorkflowTransfer(): void {
+  if (!getBackend().workflows) return;
+  windowsStore.open("workflow-transfer", {
+    title: "工作流导入导出",
+    component: WorkflowTransferWindow,
+    width: 820,
+    height: 600,
   });
 }
 /** 请求库；后端未提供 requestLibrary 能力时不打开入口。 */
