@@ -7,6 +7,8 @@
 //!   `bodyRef` (created lazily; owned by [`super::request_library`])
 //! - `flow/workflows/{id}.json` — workflow definitions, one file per workflow
 //! - `flow/env-sets.json` — versioned envelope of environment variable sets
+//! - `flow/mcp-tools.json` — versioned envelope of the MCP exposure tiers
+//!   (plan Task 25 Step 2; owned by [`crate::flow::mcp_tiers`])
 //! - `flow/runs.db` — run record database; created by the run record storage on
 //!   first use, never pre-created as an empty file
 //!
