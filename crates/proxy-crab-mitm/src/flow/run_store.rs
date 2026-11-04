@@ -182,7 +182,25 @@ impl RunStore {
     }
 
     /// Upsert one node checkpoint (last write wins per `(run_id, node_id)`).
+    ///
+    /// Volume gate (plan Task 21 Step 2 / W5): before the row is written the
+    /// record is serialized to its JSON form and passed through
+    /// `cap_node_run_object`, so `input` / `output` / `iterations` each stay
+    /// within [`SNAPSHOT_MAX_BYTES`]. `None` fields are omitted by
+    /// `skip_serializing_if` and skipped by the cap's null filter alike — the
+    /// serialize round-trip is shape-stable (covered by tests).
     pub fn upsert_node_run(&self, node: &FlowNodeRunRecord) -> Result<()> {
+        let capped = super::run_record::cap_node_run_object(
+            &serde_json::to_value(node).context("serialize node run for volume cap")?,
+            super::run_record::SNAPSHOT_MAX_BYTES,
+            &node.node_id,
+        );
+        let snapshot = |key: &str| -> Option<String> {
+            capped
+                .get(key)
+                .filter(|value| !value.is_null())
+                .map(JsonValue::to_string)
+        };
         self.connection().execute(
             "INSERT INTO flow_node_runs (run_id, node_id, status, input, output, error,
                                          started_at, duration_ms, iterations, updated_at)
@@ -200,12 +218,12 @@ impl RunStore {
                 node.run_id,
                 node.node_id,
                 node.status,
-                node.input.as_ref().map(JsonValue::to_string),
-                node.output.as_ref().map(JsonValue::to_string),
+                snapshot("input"),
+                snapshot("output"),
                 node.error,
                 node.started_at.map(|value| value as i64),
                 node.duration_ms.map(|value| value as i64),
-                node.iterations.as_ref().map(JsonValue::to_string),
+                snapshot("iterations"),
                 node.updated_at as i64,
             ],
         )?;
