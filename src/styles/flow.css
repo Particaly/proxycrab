@@ -192,6 +192,75 @@
   color: #fff;
 }
 
+/* ---------- 只读运行画布的节点运行态（RunGraphView 注入 data.runState） ---------- */
+
+/* 状态描边（覆盖类型色描边；cancelled / skipped / 中断停留共用的中性档） */
+.flow-node.flow-node-run-success {
+  border-color: color-mix(in srgb, var(--success) 80%, transparent);
+}
+.flow-node.flow-node-run-failed {
+  border-color: var(--danger);
+}
+.flow-node.flow-node-run-neutral {
+  border-color: var(--border-strong);
+  opacity: 0.72;
+}
+.flow-node.flow-node-run-running {
+  border-color: var(--accent);
+  animation: flow-run-pulse 1.2s ease-in-out infinite;
+}
+@keyframes flow-run-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 45%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 18%, transparent);
+  }
+}
+
+/* ✓ / ✗ 状态角标（与问题徽标同位；运行画布无校验问题，不冲突） */
+.flow-node-run-mark {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--success);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 15px;
+  text-align: center;
+  cursor: help;
+}
+.flow-node-run-mark.failed {
+  background: var(--danger);
+}
+
+/* 循环节点的迭代进度行（节点卡内追加行，卡片随之增高） */
+.flow-node-iterations {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  color: var(--accent);
+}
+
+/* 运行中边的流动动画（RunGraphView 按 withEdgeRunClasses 注入类名） */
+.flow-canvas .vue-flow__edge.flow-edge-running .vue-flow__edge-path {
+  stroke: var(--accent);
+  stroke-dasharray: 6 4;
+  animation: flow-edge-dash 0.6s linear infinite;
+}
+@keyframes flow-edge-dash {
+  to {
+    stroke-dashoffset: -10;
+  }
+}
+
 /* ---------- 行内重命名输入框 ---------- */
 
 .flow-node-name-input {

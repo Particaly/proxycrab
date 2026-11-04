@@ -28,6 +28,9 @@ import type {
   EnvWriteBackResult,
   FlowScriptDryRunRequest,
   FlowScriptDryRunResult,
+  FlowRunDetail,
+  FlowRunListQuery,
+  FlowRunPage,
   ExecuteTemporaryScriptRequest,
   ExtendBreakpointRequest,
   FlowProject,
@@ -543,6 +546,15 @@ export function createHttpBackend(
     },
     flowScriptDryRun: (request: FlowScriptDryRunRequest) =>
       call<FlowScriptDryRunResult>("/api/flow/script/dry-run", json("POST", request)),
+    flowRuns: {
+      list: (filter: FlowRunListQuery) =>
+        call<FlowRunPage>(query("/api/flow/runs", filter as unknown as Record<string, unknown>)),
+      get: (id: string) =>
+        call<FlowRunDetail>(`/api/flow/runs/${encodeURIComponent(id)}`),
+      cancel: async (id: string) => {
+        await call(`/api/flow/runs/${encodeURIComponent(id)}/cancel`, json("POST"));
+      },
+    },
     getSystemLogs: (requestValue: SystemLogsQuery) =>
       call(query("/api/system-logs", requestValue as unknown as Record<string, unknown>)),
     clearSystemLogs: () => call("/api/system-logs", json("DELETE")),

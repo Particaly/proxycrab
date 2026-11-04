@@ -28,6 +28,9 @@ import type {
   EnvWriteBackResult,
   FlowScriptDryRunRequest,
   FlowScriptDryRunResult,
+  FlowRunDetail,
+  FlowRunListQuery,
+  FlowRunPage,
   ExecuteTemporaryScriptRequest,
   ExtendBreakpointRequest,
   FlowProject,
@@ -169,6 +172,16 @@ export interface Backend {
    * 「试跑」入口。
    */
   flowScriptDryRun?(request: FlowScriptDryRunRequest): Promise<FlowScriptDryRunResult>;
+  /**
+   * 流程运行记录（计划 Task 19）：分页列表 / 详情（run 主记录 + 逐节点
+   * checkpoint）/ 取消进行中的运行。未实现时 UI 不展示「运行记录」入口。
+   */
+  readonly flowRuns?: {
+    list(query: FlowRunListQuery): Promise<FlowRunPage>;
+    get(id: string): Promise<FlowRunDetail>;
+    /** 取消进行中的运行；运行已结算（或不存在）时报 not_found。 */
+    cancel(id: string): Promise<void>;
+  };
   readonly host?: HostOperations;
   /**
    * 工作区级请求库（请求重放工作流的请求来源）。未实现时 UI 不展示

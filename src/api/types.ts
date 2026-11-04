@@ -884,6 +884,91 @@ export interface WorkflowImportResult {
   envSets: WorkflowImportExtensionOutcome;
 }
 
+/* ---- Flow runs（计划 Task 19；crates/proxy-crab-mitm/src/flow/run_store.rs）---- */
+
+/** 运行状态（Rust `FlowRunRecord.status` 字面量；interrupted 为重启扫描收敛的孤儿终态）。 */
+export type FlowRunStatus = "running" | "success" | "failed" | "cancelled" | "interrupted";
+
+/** 节点执行状态（引擎 NodeRun.status；cancelled 为运行取消时已开始未跑完的结算态）。 */
+export type FlowNodeRunStatus = "running" | "success" | "failed" | "cancelled" | "skipped";
+
+/** 一次流程运行的记录头（`GET /api/flow/runs` 列表项与详情的 run 主体）。 */
+export interface FlowRunRecord {
+  id: string;
+  workflowId: string;
+  /** 记录落库时的流程名快照（流程已删除仍保留展示名）。 */
+  workflowName: string;
+  /** 触发方式（当前仅 manual；预留 debug 等取值）。 */
+  trigger: string;
+  status: FlowRunStatus;
+  /** 回放目标 Session；早期记录可能缺省。 */
+  sessionId?: number;
+  startedAt: number;
+  finishedAt?: number;
+  error?: string;
+  /**
+   * 运行创建时刻的图快照（节点 config 已剥离 pinnedOutput）；超 256KB 时降级为
+   * 仅节点/连线骨架（顶层 `truncated: true`）。快照特性之前的旧记录缺省。
+   */
+  graphSnapshot?: unknown;
+}
+
+/** 循环节点单轮迭代明细（引擎 LoopIterationRecord 同形）。 */
+export interface FlowLoopIterationRecord {
+  index: number;
+  item: unknown;
+  status: "success" | "failed" | "cancelled";
+  output: unknown;
+  startedAt: number;
+  durationMs: number;
+  error?: string;
+}
+
+/** 循环节点逐迭代进度与明细（引擎 LoopIterationsSummary 同形）。 */
+export interface FlowLoopIterationsSummary {
+  total: number;
+  done: number;
+  capped: boolean;
+  records: FlowLoopIterationRecord[];
+  truncated: boolean;
+}
+
+/** 单节点的执行 checkpoint（运行中实时 upsert，终态后不再变化）。 */
+export interface FlowNodeRunRecord {
+  runId: string;
+  nodeId: string;
+  status: FlowNodeRunStatus;
+  /** 上游输出聚合的入参（超 256KB 时为 `{ __truncated, preview, originalBytes }` 包装）。 */
+  input?: unknown;
+  /** 节点返回值（同上截断包装口径）。 */
+  output?: unknown;
+  error?: string;
+  startedAt?: number;
+  durationMs?: number;
+  /** 循环节点的逐迭代明细；其余节点 / 旧记录缺省。 */
+  iterations?: FlowLoopIterationsSummary | null;
+  updatedAt: number;
+}
+
+/** 运行详情：flatten 的 run 主记录 + 逐节点 checkpoint 列表。 */
+export interface FlowRunDetail extends FlowRunRecord {
+  nodeRuns: FlowNodeRunRecord[];
+}
+
+/** 运行分页列表。 */
+export interface FlowRunPage {
+  runs: FlowRunRecord[];
+  total: number;
+}
+
+/** 运行列表筛选：workflowId / status 缺省表示不过滤；offset 按条数分页。 */
+export interface FlowRunListQuery {
+  workflowId?: string;
+  status?: FlowRunStatus;
+  limit?: number;
+  offset?: number;
+}
+
 export interface RequestLibraryPage {
   entries: RequestLibraryEntry[];
   total: number;

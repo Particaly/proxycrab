@@ -1,5 +1,6 @@
 <script lang="ts">
 import type { InjectionKey } from "vue";
+import type { RunNodeVisualState } from "./run-view";
 
 /**
  * 节点重命名的注入键（Canvas provide，NodeShell inject）：双击节点名进入
@@ -16,6 +17,7 @@ import type { NodeProps } from "@vue-flow/core";
 import type { WorkflowNode } from "../../api/types";
 import { getWorkflowNodeMeta, nodeBadge, nodeSummary } from "./node-meta";
 import { badgeIssues, type NodeIssue } from "./node-issue-badge";
+import { formatLoopIterationProgress } from "./run-view";
 
 /**
  * 画布节点自绘壳（9 类节点共用）：文案 / 强调色 / 摘要 / 角标取自
@@ -23,10 +25,12 @@ import { badgeIssues, type NodeIssue } from "./node-issue-badge";
  * 便签无手柄且以 config.color 为底色。不引入 Vue Flow 默认主题。
  * data.issues 为窗口合并后的节点粒度校验问题（视图层旁路注入，见
  * graph-model.toFlowNodes），据此渲染常驻问题徽标（error 红 / warning 琥珀）。
- * 节点名双击进入行内编辑（Enter / 失焦提交、Esc 取消），经 NODE_RENAME_KEY
- * 上抛画布 → 窗口落 domain 节点 label。
+ * data.runState 为只读运行画布的节点运行态（视图层旁路注入，见
+ * RunGraphView；编辑器画布恒缺省 → 零影响），据此渲染状态描边 / ✓✗ 角标 /
+ * 循环迭代进度行。节点名双击进入行内编辑（Enter / 失焦提交、Esc 取消），
+ * 经 NODE_RENAME_KEY 上抛画布 → 窗口落 domain 节点 label。
  */
-const props = defineProps<NodeProps<{ node: WorkflowNode; issues: NodeIssue[] }>>();
+const props = defineProps<NodeProps<{ node: WorkflowNode; issues: NodeIssue[]; runState?: RunNodeVisualState }>>();
 
 const renameNode = inject(NODE_RENAME_KEY, null);
 
@@ -42,6 +46,49 @@ const badge = computed(() => nodeBadge(node.value));
 /** 徽标展示问题（info 级语义披露不进徽标，仅窗口校验面板展示）。 */
 const issues = computed(() => badgeIssues(props.data.issues ?? []));
 const hasError = computed(() => issues.value.some((issue) => issue.level === "error"));
+
+/** 运行态（编辑器画布恒为 undefined）。 */
+const runState = computed(() => props.data.runState);
+
+/** 运行态根类名（描边配色见 flow.css；无运行态时返回 null 保持常态）。 */
+const runStateClass = computed(() => {
+  const state = runState.value;
+  if (state === undefined) return null;
+  switch (state.status) {
+    case "running":
+      return "flow-node-run-running";
+    case "success":
+      return "flow-node-run-success";
+    case "failed":
+      return "flow-node-run-failed";
+    default:
+      // cancelled / skipped（含中断运行里停留的 running 中性档）共用灰色档
+      return "flow-node-run-neutral";
+  }
+});
+
+/** 运行态角标（✓ / ✗ / 循环字符）；无角标语义时返回 null。 */
+const runMark = computed(() => {
+  const state = runState.value;
+  if (state === undefined) return null;
+  switch (state.status) {
+    case "success":
+      return "✓";
+    case "failed":
+      return "✗";
+    default:
+      return null;
+  }
+});
+
+/** 循环迭代进度行（仅循环节点携带进度时渲染）。 */
+const runIterations = computed(() => {
+  const state = runState.value;
+  if (state === undefined || state.iterationsDone === undefined || state.iterationsTotal === undefined) {
+    return null;
+  }
+  return formatLoopIterationProgress(state.iterationsDone, state.iterationsTotal, state.iterationsCapped === true);
+});
 
 /** 便签底色：config.color 为合法 HEX 时生效，否则用默认便签黄。 */
 const stickyColor = computed(() => {
@@ -78,7 +125,11 @@ function commitRename(): void {
     class="flow-node"
     :class="[
       `flow-node-${meta.type}`,
-      { 'flow-node-selected': props.selected, 'flow-node-sticky': meta.handles === 'none' },
+      {
+        'flow-node-selected': props.selected,
+        'flow-node-sticky': meta.handles === 'none',
+        [runStateClass ?? '']: runStateClass !== null,
+      },
     ]"
     :style="meta.handles === 'none' ? { background: stickyColor } : { '--node-color': meta.color }"
   >
@@ -89,6 +140,14 @@ function commitRename(): void {
       :title="issues.map((issue) => issue.message).join('\n')"
     >
       {{ issues.length }}
+    </span>
+    <span
+      v-else-if="runMark !== null"
+      class="flow-node-run-mark"
+      :class="{ failed: runState?.status === 'failed' }"
+      :title="runState?.error ?? (runState?.status === 'success' ? '执行成功' : undefined)"
+    >
+      {{ runMark }}
     </span>
     <div class="flow-node-head">
       <span v-if="meta.handles !== 'none'" class="flow-node-dot" aria-hidden="true" />
@@ -108,7 +167,7 @@ function commitRename(): void {
       <span
         v-else
         class="flow-node-name"
-        :title="`${label}（双击重命名）`"
+        :title="renameNode === null ? label : `${label}（双击重命名）`"
         @dblclick.stop="startRename"
       >
         {{ label }}
@@ -116,6 +175,9 @@ function commitRename(): void {
       <span v-if="badge !== undefined" class="flow-node-badge mono">{{ badge }}</span>
     </div>
     <div class="flow-node-summary mono" :title="summary">{{ summary }}</div>
+    <div v-if="runIterations !== null" class="flow-node-iterations mono" :title="runIterations">
+      {{ runIterations }}
+    </div>
 
     <!-- 入边手柄：仅处理节点（开始只有出边，便签不可连线） -->
     <Handle
