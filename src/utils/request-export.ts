@@ -78,6 +78,8 @@ export type RequestExportFormatId = "curl" | "har" | "postman" | "fetch" | "axio
 /** 导出格式元信息（UI 菜单与交付方式判定共用） */
 export interface RequestExportFormat {
   id: RequestExportFormatId;
+  /** UI 菜单项文案 */
+  label: string;
   /** 交付方式：copy = 生成后复制到剪贴板；download = 生成后保存/下载文件 */
   kind: "copy" | "download";
   /** 文件扩展名（kind='download' 时使用；copy 格式为 null） */
@@ -86,12 +88,17 @@ export interface RequestExportFormat {
 
 /** 六种导出格式清单（顺序即 UI 展示顺序：三种数据交换格式 + 三种代码生成） */
 export const REQUEST_EXPORT_FORMATS: readonly RequestExportFormat[] = [
-  { id: "curl", kind: "copy", extension: null },
-  { id: "har", kind: "download", extension: "har" },
-  { id: "postman", kind: "download", extension: "postman_collection.json" },
-  { id: "fetch", kind: "copy", extension: null },
-  { id: "axios", kind: "copy", extension: null },
-  { id: "python", kind: "copy", extension: null },
+  { id: "curl", label: "cURL 命令", kind: "copy", extension: null },
+  { id: "har", label: "HAR 文件", kind: "download", extension: "har" },
+  {
+    id: "postman",
+    label: "Postman Collection",
+    kind: "download",
+    extension: "postman_collection.json",
+  },
+  { id: "fetch", label: "fetch 代码", kind: "copy", extension: null },
+  { id: "axios", label: "axios 代码", kind: "copy", extension: null },
+  { id: "python", label: "Python requests 代码", kind: "copy", extension: null },
 ];
 
 /* ------------------------------------------------------------------ *
