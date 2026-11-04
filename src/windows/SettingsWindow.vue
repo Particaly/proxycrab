@@ -13,6 +13,7 @@ import type {
   ApiActionView,
   HttpApiChange,
   HttpServiceStatus,
+  McpAuditEntry,
   McpTiers,
   PermissionIdentitySummary,
   PermissionMode,
@@ -252,6 +253,23 @@ async function setMcpTier(key: keyof McpTiers, value: boolean): Promise<void> {
   }
 }
 
+// MCP 调用审计（plan Task 25 Step 4）：最近工具调用记录只读展示，seq 倒序。
+const mcpAuditEntries = ref<McpAuditEntry[] | null>(null);
+const loadingMcpAudit = ref(false);
+
+/** 读取 MCP 调用审计最近记录（缺省最近 100 条）；能力缺失时整个分区不展示。 */
+async function refreshMcpAudit(): Promise<void> {
+  if (!backend.mcpAudit || loadingMcpAudit.value) return;
+  loadingMcpAudit.value = true;
+  try {
+    mcpAuditEntries.value = (await backend.mcpAudit.list()).entries;
+  } catch (error) {
+    reportError(error, "获取 MCP 调用审计失败");
+  } finally {
+    loadingMcpAudit.value = false;
+  }
+}
+
 async function savePermissions(): Promise<void> {
   if (!selectedIdentityId.value || !permissionDirty.value || savingPermissions.value) return;
   savingPermissions.value = true;
@@ -327,7 +345,7 @@ onMounted(() => {
   windowsStore.registerCloseGuard(WINDOW_ID, confirmDiscardCurrentPage);
   window.addEventListener(HTTP_API_CHANGE_EVENT, onHttpApiChange);
   window.addEventListener("keydown", onKeydown);
-  void Promise.all([refreshWorkspace(), refreshManagement(), refreshMcpTiers()]);
+  void Promise.all([refreshWorkspace(), refreshManagement(), refreshMcpTiers(), refreshMcpAudit()]);
 });
 
 onBeforeUnmount(() => {
@@ -530,6 +548,46 @@ onBeforeUnmount(() => {
             <p class="mcp-tier-hint">
               当前暴露 {{ mcpToolCount ?? "—" }} 个工具；执行档关闭时运行类工具不可用。修改档位需审批确认。
             </p>
+          </section>
+
+          <section
+            v-if="backend.mcpAudit && mcpAuditEntries"
+            class="settings-section mcp-audit-section"
+          >
+            <div class="mcp-audit-heading">
+              <h3>MCP 调用审计</h3>
+              <button class="btn compact" :disabled="loadingMcpAudit" @click="refreshMcpAudit">
+                {{ loadingMcpAudit ? "刷新中…" : "刷新" }}
+              </button>
+            </div>
+            <p v-if="mcpAuditEntries.length === 0" class="mcp-audit-empty">暂无调用记录</p>
+            <div v-else class="mcp-audit-table">
+              <div class="mcp-audit-row mcp-audit-head" aria-hidden="true">
+                <span>时间</span>
+                <span>工具</span>
+                <span>身份</span>
+                <span>结果</span>
+                <span>决策</span>
+                <span>详情</span>
+              </div>
+              <div v-for="entry in mcpAuditEntries" :key="entry.seq" class="mcp-audit-row">
+                <span class="mcp-audit-time">{{ formatDateTime(entry.timestampMs) }}</span>
+                <span class="mcp-audit-ellipsis mcp-audit-tool" :title="entry.tool">{{
+                  entry.tool
+                }}</span>
+                <span class="mcp-audit-ellipsis" :title="entry.identity">{{ entry.identity }}</span>
+                <span class="badge" :class="`outcome-${entry.outcome}`">{{ entry.outcome }}</span>
+                <span class="badge" :class="`decision-${entry.decision}`">{{
+                  entry.decision
+                }}</span>
+                <span
+                  class="mcp-audit-ellipsis"
+                  :title="entry.reason || entry.argumentsSummary || '—'"
+                  >{{ entry.reason || entry.argumentsSummary || "—" }}</span
+                >
+              </div>
+            </div>
+            <p class="mcp-tier-hint">仅保留最近 500 条</p>
           </section>
         </template>
       </template>
@@ -851,5 +909,63 @@ onBeforeUnmount(() => {
   margin: 7px 0 0;
   color: var(--text-faint);
   font-size: 10px;
+}
+.mcp-audit-section {
+  padding-top: 14px;
+}
+.mcp-audit-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.mcp-audit-table {
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+.mcp-audit-row {
+  display: grid;
+  grid-template-columns: 110px minmax(40px, 1.1fr) minmax(40px, 0.9fr) 44px 56px minmax(0, 1.4fr);
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  font-size: 11px;
+}
+.mcp-audit-row + .mcp-audit-row {
+  border-top: 1px solid var(--border);
+}
+.mcp-audit-head {
+  color: var(--text-faint);
+  font-size: 10px;
+  background: var(--stripe);
+}
+.mcp-audit-time {
+  color: var(--text-secondary);
+  font: 10px var(--font-mono);
+}
+.mcp-audit-tool {
+  font-family: var(--font-mono);
+}
+.mcp-audit-ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.badge.outcome-ok {
+  color: var(--success);
+}
+.badge.outcome-denied {
+  color: var(--warning);
+}
+.badge.outcome-error,
+.badge.decision-denied {
+  color: var(--danger);
+}
+.mcp-audit-empty {
+  margin: 10px 0 0;
+  color: var(--text-faint);
+  font-size: 11px;
 }
 </style>
