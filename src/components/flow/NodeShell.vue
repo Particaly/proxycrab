@@ -4,13 +4,16 @@ import { Handle, Position } from "@vue-flow/core";
 import type { NodeProps } from "@vue-flow/core";
 import type { WorkflowNode } from "../../api/types";
 import { getWorkflowNodeMeta, nodeBadge, nodeSummary } from "./node-meta";
+import { badgeIssues, type NodeIssue } from "./node-issue-badge";
 
 /**
  * 画布节点自绘壳（9 类节点共用）：文案 / 强调色 / 摘要 / 角标取自
  * node-meta 注册表，手柄布局按类型落位；条件分支渲染真 / 假双出口，
  * 便签无手柄且以 config.color 为底色。不引入 Vue Flow 默认主题。
+ * data.issues 为窗口合并后的节点粒度校验问题（视图层旁路注入，见
+ * graph-model.toFlowNodes），据此渲染常驻问题徽标（error 红 / warning 琥珀）。
  */
-const props = defineProps<NodeProps<{ node: WorkflowNode }>>();
+const props = defineProps<NodeProps<{ node: WorkflowNode; issues: NodeIssue[] }>>();
 
 const node = computed(() => props.data.node);
 const meta = computed(() => getWorkflowNodeMeta(node.value.type));
@@ -20,6 +23,10 @@ const label = computed(() => {
 });
 const summary = computed(() => nodeSummary(node.value));
 const badge = computed(() => nodeBadge(node.value));
+
+/** 徽标展示问题（info 级语义披露不进徽标，仅窗口校验面板展示）。 */
+const issues = computed(() => badgeIssues(props.data.issues ?? []));
+const hasError = computed(() => issues.value.some((issue) => issue.level === "error"));
 
 /** 便签底色：config.color 为合法 HEX 时生效，否则用默认便签黄。 */
 const stickyColor = computed(() => {
@@ -37,6 +44,14 @@ const stickyColor = computed(() => {
     ]"
     :style="meta.handles === 'none' ? { background: stickyColor } : { '--node-color': meta.color }"
   >
+    <span
+      v-if="issues.length > 0"
+      class="flow-node-issue nodrag nopan"
+      :class="{ error: hasError }"
+      :title="issues.map((issue) => issue.message).join('\n')"
+    >
+      {{ issues.length }}
+    </span>
     <div class="flow-node-head">
       <span v-if="meta.handles !== 'none'" class="flow-node-dot" aria-hidden="true" />
       <span class="flow-node-name" :title="label">{{ label }}</span>
