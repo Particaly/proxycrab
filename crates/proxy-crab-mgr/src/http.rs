@@ -2283,10 +2283,17 @@ async fn mcp_endpoint(
             ));
         }
     };
+    // MCP 暴露档位随请求读取（工作区小 JSON 文件，plan Task 25 Step 2）；
+    // 读取失败降级为缺省档并告警（缺省关写/执行，fail-safe）。
+    let tiers = manager.mcp_tiers().await.unwrap_or_else(|error| {
+        tracing::warn!("degrading MCP exposure tiers to defaults: {}", error.message);
+        McpTiers::default()
+    });
     let context = mcp::tools::ToolCallContext {
         manager,
         permissions,
         credential,
+        tiers,
         permits: mcp::tools::tool_call_permits(),
     };
     let body = match axum::body::to_bytes(request.into_body(), mcp::MAX_MESSAGE_BYTES).await {

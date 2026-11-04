@@ -16,7 +16,8 @@ use serde_json::Value;
 pub const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
 
 /// 处理一次 `POST /mcp` 请求体：`tools/call` 走策展工具调用链（逐次
-/// 鉴权与超时/并发/取消边界，见 [`tools`]）；其余方法沿用信封分派。
+/// 鉴权与超时/并发/取消边界，见 [`tools`]）；`tools/list` 按调用上下文
+/// 携带的 MCP 暴露档位过滤（plan Task 25 Step 2）；其余方法沿用信封分派。
 /// 畸形信封返回协议错误应答（HTTP 200 携带 JSON-RPC error），通知类
 /// 消息返回 `None`（调用方回 202 无正文）。
 pub async fn respond(
@@ -27,6 +28,9 @@ pub async fn respond(
     match protocol::parse(body) {
         protocol::Incoming::Request(request) if request.method == "tools/call" => {
             Some(tools::call(&request, context, tool_timeout).await)
+        }
+        protocol::Incoming::Request(request) if request.method == "tools/list" => {
+            Some(protocol::success(&request.id, tools::list_envelope(&context.tiers)))
         }
         incoming => protocol::handle(incoming),
     }
