@@ -47,6 +47,7 @@ import type {
   LogDetail,
   LogIdsRequest,
   LogViewsRequest,
+  McpTiers,
   ManagerError,
   CreateRequestLibraryRequest,
   IngestCaptureRequest,
@@ -456,6 +457,29 @@ export function createHttpBackend(
         call<EnvGlobalVariables>("/api/env-globals", json("PUT", request)),
       writeBack: (request: EnvWriteBackRequest) =>
         call<EnvWriteBackResult>("/api/env-write-back", json("POST", request)),
+    },
+    mcpTiers: {
+      get: () => call<McpTiers>("/api/mcp-tiers"),
+      save: (tiers: McpTiers) => call<McpTiers>("/api/mcp-tiers", json("PUT", tiers)),
+      toolCount: async () => {
+        // MCP 应答是裸 JSON-RPC（不经 {ok,data} 包装），单独发起请求。
+        const response = await fetch(new URL("/mcp", baseUrl), {
+          method: "POST",
+          headers: {
+            Authorization: authorization(token),
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+        });
+        if (!response.ok) {
+          throw new BackendError({
+            code: `http_${response.status}`,
+            message: `HTTP ${response.status}`,
+          });
+        }
+        const envelope = (await response.json()) as { result?: { tools?: unknown[] } };
+        return envelope.result?.tools?.length ?? 0;
+      },
     },
     workflows: {
       listProjects: () => call<FlowProjectsPage>("/api/flow-projects"),
