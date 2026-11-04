@@ -385,15 +385,12 @@ fn inspect_imported_workflow(value: &Value) -> ParsedWorkflowImport {
         }
     }
 
-    let variables = inspect_imported_variables(
-        object.get("variables").filter(|value| !value.is_null()),
-        "variables",
-        &mut issues,
-    );
+    let variables =
+        inspect_imported_variables(object.get("variables"), "variables", &mut issues);
     // secret 变量表与 variables 同形校验、同通道透传（导入文件通常只含空值
     // 占位——导出侧已剔除值）。
     let secret_variables = inspect_imported_variables(
-        object.get("secretVariables").filter(|value| !value.is_null()),
+        object.get("secretVariables"),
         "secretVariables",
         &mut issues,
     );
@@ -730,5 +727,500 @@ pub fn clear_unconfirmed_scripts(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::flow::model::{
+        ConditionBranchHandle, Position, RequestOverride, VariableAssignment,
+        VariableAssignmentSource, WORKFLOW_SCHEMA_VERSION,
+    };
+    use crate::flow::request_library::{HarEntry, HarSnapshot, RequestSource};
+    use serde_json::json;
+
+    fn node(id: &str, node_type: WorkflowNodeType, config: NodeConfig) -> WorkflowNode {
+        WorkflowNode {
+            id: id.to_owned(),
+            node_type,
+            position: Position { x: 1.5, y: -2.5 },
+            config,
+            label: None,
+            ref_id: None,
+        }
+    }
+
+    fn sample_workflow() -> Workflow {
+        let mut start = node("s1", WorkflowNodeType::Start, NodeConfig::default());
+        start.ref_id = Some("aaaaa".to_owned());
+        let mut replay = node(
+            "n1",
+            WorkflowNodeType::HttpReplay,
+            NodeConfig {
+                request_id: Some("req-1".to_owned()),
+                pre_process: Some("return input".to_owned()),
+                post_process: Some("return response".to_owned()),
+                override_: Some(RequestOverride {
+                    url: Some("http://api.test/{{ node.n2.path }}?r={{ node.bbbbb.id }}".to_owned()),
+                    ..RequestOverride::default()
+                }),
+                ..NodeConfig::default()
+            },
+        );
+        replay.ref_id = Some("bbbbb".to_owned());
+        let condition = node(
+            "n2",
+            WorkflowNodeType::Condition,
+            NodeConfig {
+                expression: Some("input.ok === true".to_owned()),
+                true_targets: Some(vec!["n1".to_owned()]),
+                false_targets: Some(vec!["s1".to_owned()]),
+                ..NodeConfig::default()
+            },
+        );
+        let mut setter = node(
+            "n3",
+            WorkflowNodeType::SetVariable,
+            NodeConfig {
+                assignments: Some(vec![VariableAssignment {
+                    name: "token".to_owned(),
+                    from: VariableAssignmentSource::Node,
+                    path: Some("body.token".to_owned()),
+                    node: Some("n1".to_owned()),
+                    value: None,
+                }]),
+                ..NodeConfig::default()
+            },
+        );
+        setter.ref_id = Some("ccccc".to_owned());
+        Workflow {
+            id: "wf-1".to_owned(),
+            project_id: "proj-1".to_owned(),
+            name: "结算链路".to_owned(),
+            description: "导入导出往返样例".to_owned(),
+            nodes: vec![start, replay, condition, setter],
+            edges: vec![
+                WorkflowEdge {
+                    id: "e1".to_owned(),
+                    source: "s1".to_owned(),
+                    target: "n1".to_owned(),
+                    source_handle: None,
+                },
+                WorkflowEdge {
+                    id: "e2".to_owned(),
+                    source: "n2".to_owned(),
+                    target: "n1".to_owned(),
+                    source_handle: Some(ConditionBranchHandle::True),
+                },
+            ],
+            variables: BTreeMap::from([("env".to_owned(), "dev".to_owned())]),
+            secret_variables: BTreeMap::from([("token".to_owned(), "pk-live-9999".to_owned())]),
+            schema_version: WORKFLOW_SCHEMA_VERSION,
+            created_at: 100,
+            updated_at: 100,
+        }
+    }
+
+    fn sample_request(id: &str) -> RequestLibraryEntry {
+        RequestLibraryEntry {
+            id: id.to_owned(),
+            name: format!("GET {id}"),
+            tags: vec![],
+            source: RequestSource::Capture,
+            origin: String::new(),
+            har: HarSnapshot::single(HarEntry::new("GET", "http://api.test/a")),
+            body_ref: None,
+            created_at: 1,
+            updated_at: 1,
+        }
+    }
+
+    fn sample_env_set() -> EnvVariableSet {
+        EnvVariableSet {
+            id: "env-dev".to_owned(),
+            name: "dev".to_owned(),
+            values: BTreeMap::from([("baseUrl".to_owned(), "http://localhost".to_owned())]),
+            secret_values: BTreeMap::from([("password".to_owned(), "hunter2".to_owned())]),
+            created_at: 1,
+            updated_at: 1,
+        }
+    }
+
+    #[test]
+    fn export_envelope_strips_every_secret_value() {
+        let workflow = sample_workflow();
+        let file = build_workflow_export_file(
+            &[workflow],
+            &[sample_request("req-1")],
+            &[sample_env_set()],
+            12345,
+        );
+        assert_eq!(file.format, WORKFLOW_EXPORT_FORMAT);
+        assert_eq!(file.version, WORKFLOW_EXPORT_VERSION);
+        assert_eq!(file.exported_at, 12345);
+        assert_eq!(file.requests.len(), 1);
+        // 流程 secret 变量：名留值空；环境变量集：secret 表整表剔除。
+        assert_eq!(
+            file.workflows[0].secret_variables,
+            BTreeMap::from([("token".to_owned(), String::new())])
+        );
+        assert!(file.env_sets[0].secret_values.is_empty());
+        assert_eq!(
+            file.env_sets[0].values.get("baseUrl").map(String::as_str),
+            Some("http://localhost")
+        );
+        // 序列化文本不含任何 secret 明文（普通变量名与值不受影响）；环境变量集
+        // 的 secret 表序列化为空对象（键保留、表为空——字段非 Option，不落值即
+        // 达到剔除口径）。
+        let text = serde_json::to_string(&file).unwrap();
+        assert!(!text.contains("pk-live-9999"));
+        assert!(!text.contains("hunter2"));
+        assert!(text.contains("http://localhost"));
+        assert!(text.contains("\"secretValues\":{}"));
+    }
+
+    #[test]
+    fn strip_workflow_secrets_keeps_names_and_never_touches_input() {
+        let workflow = sample_workflow();
+        let stripped = strip_workflow_secrets_for_export(&workflow);
+        assert_eq!(
+            stripped.secret_variables,
+            BTreeMap::from([("token".to_owned(), String::new())])
+        );
+        assert_eq!(stripped.variables, workflow.variables);
+        assert_eq!(stripped.nodes, workflow.nodes);
+        // 入参不被改动。
+        assert_eq!(
+            workflow.secret_variables.get("token").map(String::as_str),
+            Some("pk-live-9999")
+        );
+    }
+
+    #[test]
+    fn referenced_requests_follow_library_order() {
+        // 样例流程只引用 req-1；库中其它条目（含前缀雷同 id）不带入，且保持库序。
+        let workflow = sample_workflow();
+        let library = vec![
+            sample_request("req-9"),
+            sample_request("req-1x"),
+            sample_request("req-1"),
+            sample_request("req-2"),
+        ];
+        let collected = collect_referenced_requests(&[workflow], &library);
+        assert_eq!(
+            collected
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["req-1"]
+        );
+    }
+
+    #[test]
+    fn export_import_remap_round_trips_definition() {
+        let workflow = sample_workflow();
+        let file = build_workflow_export_file(std::slice::from_ref(&workflow), &[], &[], 1);
+        let text = serde_json::to_string(&file).unwrap();
+        let parsed = parse_workflow_import(&text).unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert!(parsed[0].issues.is_empty(), "{:?}", parsed[0].issues);
+        assert_eq!(parsed[0].node_count, 4);
+        assert_eq!(parsed[0].edge_count, 2);
+        // 解析产物保持导入文件原文的旧 id（重映射前）。
+        let data = parsed[0].data.as_ref().unwrap();
+        assert_eq!(data.nodes[1].id, "n1");
+        assert_eq!(data.edges[1].source_handle, Some(ConditionBranchHandle::True));
+
+        let mut id_counter = 0_usize;
+        let mut new_id = || {
+            id_counter += 1;
+            format!("new-{id_counter}")
+        };
+        let ref_ids = ["raaao", "rbbbo", "rccco", "rdddo"];
+        let mut ref_counter = 0_usize;
+        let mut new_ref_id = |_taken: &BTreeSet<String>| {
+            let next = ref_ids[ref_counter];
+            ref_counter += 1;
+            next.to_owned()
+        };
+        let item = remap_imported_workflow(&parsed[0], &mut new_id, &mut new_ref_id).unwrap();
+
+        // 名称 / 描述 / 变量透传；secret 变量保持导出剔空形态。
+        assert_eq!(item.name, "结算链路");
+        assert_eq!(item.description, "导入导出往返样例");
+        assert_eq!(
+            item.variables,
+            BTreeMap::from([("env".to_owned(), "dev".to_owned())])
+        );
+        assert_eq!(
+            item.secret_variables,
+            BTreeMap::from([("token".to_owned(), String::new())])
+        );
+        // 节点 id / refId 全部重生成（不沿用来源短码），类型与位置保留。
+        let ids: Vec<&str> = item.nodes.iter().map(|node| node.id.as_str()).collect();
+        assert_eq!(ids, vec!["new-1", "new-2", "new-3", "new-4"]);
+        for (node, ref_id) in item.nodes.iter().zip(ref_ids) {
+            assert_eq!(node.ref_id.as_deref(), Some(ref_id));
+            assert!(crate::flow::model::is_valid_ref_id(ref_id));
+            assert_ne!(ref_id, "bbbbb");
+        }
+        assert_eq!(item.nodes[1].position, Position { x: 1.5, y: -2.5 });
+        // 模板引用：旧节点 id → 新节点 id、旧 refId → 新 refId。
+        assert_eq!(
+            item.nodes[1].config.override_.as_ref().unwrap().url.as_deref(),
+            Some("http://api.test/{{ node.new-3.path }}?r={{ node.rbbbo.id }}")
+        );
+        assert_eq!(
+            item.nodes[1].config.pre_process.as_deref(),
+            Some("return input")
+        );
+        // 裸 id 字段（trueTargets / falseTargets / assignments[].node）同步改写。
+        assert_eq!(
+            item.nodes[2].config.true_targets,
+            Some(vec!["new-2".to_owned()])
+        );
+        assert_eq!(
+            item.nodes[2].config.false_targets,
+            Some(vec!["new-1".to_owned()])
+        );
+        assert_eq!(
+            item.nodes[3].config.assignments.as_ref().unwrap()[0].node,
+            Some("new-2".to_owned())
+        );
+        // 连线 id 重生成、端点重映射、条件手柄保留。
+        assert_eq!(item.edges[0].id, "new-5");
+        assert_eq!(item.edges[0].source, "new-1");
+        assert_eq!(item.edges[0].target, "new-2");
+        assert_eq!(item.edges[1].source, "new-3");
+        assert_eq!(item.edges[1].source_handle, Some(ConditionBranchHandle::True));
+    }
+
+    #[test]
+    fn parse_rejects_malformed_files() {
+        assert_eq!(
+            parse_workflow_import("not json").unwrap_err(),
+            "文件不是合法的 JSON"
+        );
+        assert_eq!(
+            parse_workflow_import("[1]").unwrap_err(),
+            "导出文件结构不符：顶层必须是对象"
+        );
+        assert_eq!(
+            parse_workflow_import("{\"version\":1,\"workflows\":[{}]}").unwrap_err(),
+            format!("不是 ReqFlow 流程导出文件（format 标识缺失或不符，期望 \"{WORKFLOW_EXPORT_FORMAT}\"）")
+        );
+        assert_eq!(
+            parse_workflow_import("{\"format\":\"reqflow-workflow\",\"workflows\":[{}]}")
+                .unwrap_err(),
+            "导出文件缺少有效的 version 版本号"
+        );
+        assert_eq!(
+            parse_workflow_import("{\"format\":\"reqflow-workflow\",\"version\":2,\"workflows\":[{}]}")
+                .unwrap_err(),
+            "导出文件版本 v2 高于当前支持的最高版本 v1，请升级程序后再导入"
+        );
+        assert_eq!(
+            parse_workflow_import("{\"format\":\"reqflow-workflow\",\"version\":1}").unwrap_err(),
+            "导出文件中没有流程数据"
+        );
+        assert_eq!(
+            parse_workflow_import("{\"format\":\"reqflow-workflow\",\"version\":1,\"workflows\":[]}")
+                .unwrap_err(),
+            "导出文件中没有流程数据"
+        );
+    }
+
+    #[test]
+    fn parse_collects_per_workflow_issues_and_blocks_data() {
+        let text = json!({
+            "format": WORKFLOW_EXPORT_FORMAT,
+            "version": WORKFLOW_EXPORT_VERSION,
+            "workflows": [
+                { "nodes": "nope", "edges": [] },
+                {
+                    "name": "坏节点",
+                    "nodes": [{ "id": "", "type": "start", "position": {"x": 0, "y": 0}, "config": {} }],
+                    "edges": []
+                },
+                {
+                    "name": "便签连线",
+                    "nodes": [
+                        { "id": "n1", "type": "stickyNote", "position": {"x": 0, "y": 0}, "config": {} },
+                        { "id": "n2", "type": "start", "position": {"x": 0, "y": 0}, "config": {} }
+                    ],
+                    "edges": [{ "id": "e1", "source": "n1", "target": "n2" }]
+                },
+                {
+                    "name": "坏变量",
+                    "nodes": [],
+                    "edges": [],
+                    "variables": { "k": 42 }
+                },
+                {
+                    "name": "坏config",
+                    "nodes": [{ "id": "n1", "type": "httpReplay", "position": {"x": 0, "y": 0}, "config": { "failPolicy": "sometimes" } }],
+                    "edges": []
+                },
+                {
+                    "name": "重复id",
+                    "nodes": [
+                        { "id": "n1", "type": "start", "position": {"x": 0, "y": 0}, "config": {} },
+                        { "id": "n1", "type": "start", "position": {"x": 1, "y": 1}, "config": {} }
+                    ],
+                    "edges": []
+                }
+            ],
+        })
+        .to_string();
+        let parsed = parse_workflow_import(&text).unwrap();
+        assert_eq!(parsed.len(), 6);
+        assert!(parsed.iter().all(|workflow| workflow.data.is_none()));
+        assert!(parsed[0].issues.contains(&"流程名称缺失或为空".to_owned()));
+        assert_eq!(parsed[0].name, UNNAMED_WORKFLOW_NAME);
+        assert!(parsed[0].issues.contains(&"nodes 必须是数组".to_owned()));
+        assert!(parsed[1].issues.contains(&"节点 #1 缺少有效 id".to_owned()));
+        assert!(parsed[2]
+            .issues
+            .contains(&"连线 #1 连接了便签节点：便签不参与连线".to_owned()));
+        assert!(parsed[3]
+            .issues
+            .contains(&"variables中变量 \"k\" 的值必须是字符串".to_owned()));
+        assert!(parsed[4].issues.iter().any(|issue| issue.contains("形状非法")));
+        assert!(parsed[5].issues.contains(&"节点 id 重复：n1".to_owned()));
+    }
+
+    #[test]
+    fn parse_normalizes_edge_handles_and_validates_variables_keys() {
+        // 非法 sourceHandle 不落字段（M16-T1 口径），合法手柄保留。
+        let text = json!({
+            "format": WORKFLOW_EXPORT_FORMAT,
+            "version": WORKFLOW_EXPORT_VERSION,
+            "workflows": [{
+                "name": "手柄归一",
+                "nodes": [
+                    { "id": "n1", "type": "condition", "position": {"x": 0, "y": 0}, "config": {} },
+                    { "id": "n2", "type": "start", "position": {"x": 0, "y": 0}, "config": {} }
+                ],
+                "edges": [
+                    { "id": "e1", "source": "n1", "target": "n2", "sourceHandle": "middle" },
+                    { "id": "e2", "source": "n1", "target": "n2", "sourceHandle": "false" }
+                ],
+                "variables": { "env": "dev", "": "空键被拒" }
+            }],
+        })
+        .to_string();
+        let parsed = parse_workflow_import(&text).unwrap();
+        // 空键变量表命中宿主键非空校验，流程整体阻断。
+        assert!(parsed[0]
+            .issues
+            .contains(&"variables中变量键不能为空".to_owned()));
+        assert!(parsed[0].data.is_none());
+
+        let ok_text = json!({
+            "format": WORKFLOW_EXPORT_FORMAT,
+            "version": WORKFLOW_EXPORT_VERSION,
+            "workflows": [{
+                "name": "手柄归一",
+                "nodes": [
+                    { "id": "n1", "type": "condition", "position": {"x": 0, "y": 0}, "config": {} },
+                    { "id": "n2", "type": "start", "position": {"x": 0, "y": 0}, "config": {} }
+                ],
+                "edges": [
+                    { "id": "e1", "source": "n1", "target": "n2", "sourceHandle": "middle" },
+                    { "id": "e2", "source": "n1", "target": "n2", "sourceHandle": "false" }
+                ],
+                "variables": { "env": "dev" },
+                "secretVariables": { "token": "" }
+            }],
+        })
+        .to_string();
+        let parsed = parse_workflow_import(&ok_text).unwrap();
+        assert!(parsed[0].issues.is_empty(), "{:?}", parsed[0].issues);
+        let data = parsed[0].data.as_ref().unwrap();
+        assert_eq!(data.edges[0].source_handle, None);
+        assert_eq!(
+            data.edges[1].source_handle,
+            Some(ConditionBranchHandle::False)
+        );
+        assert_eq!(
+            data.secret_variables,
+            BTreeMap::from([("token".to_owned(), String::new())])
+        );
+    }
+
+    #[test]
+    fn conflict_resolution_renames_names_and_rejects_unvalidated_remap() {
+        assert_eq!(dedupe_workflow_name("a", &BTreeSet::new()), "a");
+        let taken = BTreeSet::from(["a".to_owned(), "a (导入 2)".to_owned()]);
+        assert_eq!(dedupe_workflow_name("a", &taken), "a (导入 3)");
+        let mut new_id = || "x".to_owned();
+        let mut new_ref_id =|_: &BTreeSet<String>| "aaaaa".to_owned();
+        // 校验未通过（data 为 None）的流程不能重映射——调用方编程错误。
+        let unvalidated = ParsedWorkflowImport::default();
+        assert!(remap_imported_workflow(&unvalidated, &mut new_id, &mut new_ref_id).is_err());
+    }
+
+    #[test]
+    fn imported_scripts_default_to_cleared_until_confirmed() {
+        let text = json!({
+            "format": WORKFLOW_EXPORT_FORMAT,
+            "version": WORKFLOW_EXPORT_VERSION,
+            "workflows": [{
+                "name": "带脚本的流程",
+                "nodes": [
+                    { "id": "n1", "type": "httpReplay", "position": {"x": 0, "y": 0}, "config": {
+                        "preProcess": "return input",
+                        "postProcess": "return response"
+                    } },
+                    { "id": "n2", "type": "condition", "position": {"x": 0, "y": 0}, "config": {
+                        "expression": "input.ok === true"
+                    } }
+                ],
+                "edges": []
+            }],
+        })
+        .to_string();
+        let mut parsed = parse_workflow_import(&text).unwrap();
+        let scripts = collect_imported_scripts(&parsed);
+        // 顺序：节点下标 → pre / post / expression。
+        assert_eq!(scripts.len(), 3);
+        assert_eq!(
+            scripts
+                .iter()
+                .map(|script| (script.node_index, script.kind.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(0, "preProcess"), (0, "postProcess"), (1, "expression")]
+        );
+        assert_eq!(scripts[0].source, "return input");
+        assert_eq!(scripts[2].node_id, "n2");
+
+        // 缺省拒绝：未确认的脚本整字段移除（节点保留、脚本不执行）。
+        let confirmed = BTreeSet::from([imported_script_key(
+            0,
+            0,
+            ImportedScriptKind::PreProcess,
+        )]);
+        let unconfirmed: BTreeSet<String> = scripts
+            .iter()
+            .map(|script| imported_script_key(script.workflow_index, script.node_index, script.kind))
+            .filter(|key| !confirmed.contains(key))
+            .collect();
+        clear_unconfirmed_scripts(&mut parsed[0], 0, &unconfirmed);
+        let nodes = &parsed[0].data.as_ref().unwrap().nodes;
+        assert_eq!(nodes[0].config.pre_process.as_deref(), Some("return input"));
+        assert_eq!(nodes[0].config.post_process, None);
+        assert_eq!(nodes[1].config.expression, None);
+        // 「整字段移除」：序列化形状与未配置脚本同形，不残留空串。
+        let config = serde_json::to_value(&nodes[0].config).unwrap();
+        assert!(config.get("postProcess").is_none());
+        // 全部确认 → 原样保留。
+        let mut untouched = parse_workflow_import(&text).unwrap();
+        clear_unconfirmed_scripts(&mut untouched[0], 0, &BTreeSet::new());
+        let nodes = &untouched[0].data.as_ref().unwrap().nodes;
+        assert_eq!(nodes[0].config.post_process.as_deref(), Some("return response"));
+        // 损坏流程（data 为 None）原样放过。
+        let mut broken = [ParsedWorkflowImport::default()];
+        clear_unconfirmed_scripts(&mut broken[0], 0, &unconfirmed);
     }
 }
