@@ -11,6 +11,7 @@ import type {
   WorkflowValidationIssue,
 } from "../api/types";
 import Canvas from "../components/flow/Canvas.vue";
+import type { SuggestNodeOption } from "../components/expression-input/expression-suggest";
 import {
   commitGraph,
   createGraphHistory,
@@ -131,6 +132,44 @@ function nodeLabel(node: WorkflowNode): string {
   const custom = node.label?.trim();
   return custom ? custom : getWorkflowNodeMeta(node.type).label;
 }
+
+/** 沿连线反向收集节点的上游闭包（含间接上游；不含自身，按发现顺序）。 */
+function upstreamClosure(nodeId: string): string[] {
+  const incoming = new Map<string, string[]>();
+  for (const edge of edges.value) {
+    const list = incoming.get(edge.target);
+    if (list) list.push(edge.source);
+    else incoming.set(edge.target, [edge.source]);
+  }
+  const seen = new Set<string>([nodeId]);
+  const queue = [nodeId];
+  const order: string[] = [];
+  while (queue.length > 0) {
+    const current = queue.shift() as string;
+    for (const source of incoming.get(current) ?? []) {
+      if (seen.has(source)) continue;
+      seen.add(source);
+      order.push(source);
+      queue.push(source);
+    }
+  }
+  return order;
+}
+
+/** 上游可引用节点候选（表达式提示第二级；id 为模板引用键 refId ?? id）。 */
+const selectedAvailableNodes = computed<SuggestNodeOption[]>(() => {
+  const node = selectedNode.value;
+  if (!node) return [];
+  return upstreamClosure(node.id)
+    .map((id) => nodes.value.find((item) => item.id === id))
+    .filter((item): item is WorkflowNode => item !== undefined)
+    .map((item) => ({ id: item.refId ?? item.id, label: nodeLabel(item) }));
+});
+
+/** 可引用变量名（流程级普通变量；secret 变量不入候选防明文回显）。 */
+const selectedVariableNames = computed<readonly string[]>(() =>
+  Object.keys(workflow.value?.variables ?? {}),
+);
 
 /** 列表行时间展示（Unix 毫秒 → 月-日 时:分）。 */
 function fmtTime(ts: number): string {
@@ -570,6 +609,8 @@ onBeforeUnmount(() => {
           :key="selectedNode.id"
           :node="selectedNode"
           :taken-keys="selectedTakenKeys"
+          :available-node-ids="selectedAvailableNodes"
+          :variable-names="selectedVariableNames"
           @update:config="updateSelectedConfig"
           @update:ref-id="updateSelectedRefId"
         />

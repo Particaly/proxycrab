@@ -12,6 +12,8 @@ import { reportError } from "../../../stores/app";
 import { confirmDialog } from "../../../stores/dialog";
 import CustomSelect from "../../CustomSelect.vue";
 import AssetTreePicker from "../../AssetTreePicker.vue";
+import ExpressionInput from "../../expression-input/ExpressionInput.vue";
+import type { SuggestNodeOption } from "../../expression-input/expression-suggest";
 import { formatBytes, formatDateTime } from "../../../utils/format";
 import { REPLAY_METHODS } from "../../../utils/replay";
 import ScriptEditor from "./ScriptEditor.vue";
@@ -59,6 +61,12 @@ const props = defineProps<{
   takenKeys: ReadonlySet<string>;
   /** 置灰全部编辑（运行期锁定等场景）。 */
   disabled?: boolean;
+  /** 上游可引用节点候选（模板引用键 refId ?? id + 展示名；透传表达式输入）。 */
+  availableNodeIds?: ReadonlyArray<SuggestNodeOption>;
+  /** 可引用变量名清单（流程级普通变量；透传表达式输入）。 */
+  variableNames?: ReadonlyArray<string>;
+  /** 激活环境集合 + 全局的键名清单（透传表达式输入）。 */
+  envKeys?: ReadonlyArray<string>;
 }>();
 
 const emit = defineEmits<{
@@ -577,14 +585,18 @@ function toggleScript(section: "pre" | "post"): void {
       </div>
       <div class="rnc-field">
         <span class="rnc-label">URL</span>
-        <input
-          v-model="url"
-          class="input mono"
-          placeholder="https://"
-          spellcheck="false"
-          :disabled="disabled"
-          aria-label="请求 URL"
-        />
+        <!-- URL 为模板语义字段（引擎对 override/manual url 渲染 `{{ }}`）：
+             表达式输入承接建议与预览；inert 包裹层承担置灰（组件无 disabled
+             prop，不改其源） -->
+        <div class="rnc-url-host" :inert="disabled || undefined">
+          <ExpressionInput
+            v-model="url"
+            placeholder="https://"
+            :available-node-ids="availableNodeIds"
+            :variable-names="variableNames"
+            :env-keys="envKeys"
+          />
+        </div>
         <div v-if="urlWarning" class="rnc-warning">{{ urlWarning }}</div>
       </div>
     </div>
@@ -597,7 +609,13 @@ function toggleScript(section: "pre" | "post"): void {
           requestId !== null ? "改动落覆盖项，删除捕获头落移除列表" : "作为请求基线请求头"
         }}</span>
       </div>
-      <HeaderRows v-model="headerRows" :disabled="disabled" />
+      <HeaderRows
+        v-model="headerRows"
+        :disabled="disabled"
+        :available-node-ids="availableNodeIds"
+        :variable-names="variableNames"
+        :env-keys="envKeys"
+      />
       <div v-if="headerError" class="rnc-warning">{{ headerError }}</div>
       <div v-if="removedCapturedHeaders.length > 0" class="rnc-removed">
         <span class="text-faint">已删除：</span>
@@ -898,6 +916,15 @@ function toggleScript(section: "pre" | "post"): void {
 /* 方法行 */
 .rnc-method {
   align-self: flex-start;
+}
+
+/* URL 表达式输入：与既有 .input 同框感（描边盒），置灰由 inert 包裹层降透明 */
+.rnc-url-host {
+  min-width: 0;
+}
+
+.rnc-url-host:inert {
+  opacity: 0.5;
 }
 
 .rnc-method :deep(.select-trigger) {
