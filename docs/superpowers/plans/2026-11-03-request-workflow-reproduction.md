@@ -188,10 +188,10 @@
 - Create: `src/utils/request-export.ts`（移植 `app/pages/requests/request-export.ts`）+ `src/utils/request-export-download.ts`
 - Modify: `src/windows/RequestLibraryWindow.vue`、可选 `crates/proxy-crab-mgr/src/flow_export.rs`
 
-- [ ] **Step 1: 复用既有实现**：cURL（`src/utils/curl.ts`）、HAR（`src/utils/har-export.ts` 的逐条生成形态）适配单条请求条目。
-- [ ] **Step 2: 新建**：Postman v2.1、fetch、axios、Python requests（含二进制 body 字节级重建与长字符串分块）。
-- [ ] **Step 3: UI**：「导出为…」菜单 + 下载（桌面走既有 `saveFile` 通路）。
-- [ ] **Step 4: 测试**：六格式快照测试 + 二进制 body + 无 body/params 回退。
+- [x] **Step 1: 复用既有实现**：cURL（`src/utils/curl.ts`）、HAR（`src/utils/har-export.ts` 的逐条生成形态）适配单条请求条目。
+- [x] **Step 2: 新建**：Postman v2.1、fetch、axios、Python requests（含二进制 body 字节级重建与长字符串分块）。
+- [x] **Step 3: UI**：「导出为…」菜单 + 下载（桌面走既有 `saveFile` 通路）。
+- [x] **Step 4: 测试**：六格式快照测试 + 二进制 body + 无 body/params 回退。
 
 ---
 
