@@ -177,10 +177,10 @@
 - Create: `crates/proxy-crab-mitm/src/flow/import.rs`（或前端 `src/utils/request-library-import.ts`，视纯函数归属）
 - Modify: `src/windows/RequestLibraryWindow.vue`（导入入口）
 
-- [ ] **Step 1: 移植 cURL 解析**（`app/pages/requests/curl-import.ts` 语义：`-H/-X/-d/--data-*/-F/-b/-u/-G/-I/-A/-e`、引号与续行、方法推断）。
-- [ ] **Step 2: 移植 HAR 解析**（body 64KB 安全截断）与 Postman Collection v2.1 解析。
-- [ ] **Step 3: 导入对话框**：粘贴/文件、预览条目、标签与去重策略。
-- [ ] **Step 4: 往返测试**：导出产物可回灌（与 Task 9 交叉验证）。
+- [x] **Step 1: 移植 cURL 解析**（`app/pages/requests/curl-import.ts` 语义：`-H/-X/-d/--data-*/-F/-b/-u/-G/-I/-A/-e`、引号与续行、方法推断）。
+- [x] **Step 2: 移植 HAR 解析**（body 64KB 安全截断）与 Postman Collection v2.1 解析。
+- [x] **Step 3: 导入对话框**：粘贴/文件、预览条目、标签与去重策略。
+- [x] **Step 4: 往返测试**：导出产物可回灌（与 Task 9 交叉验证）。
 
 ### Task 9: 导出与代码生成（六格式）
 
