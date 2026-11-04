@@ -125,8 +125,6 @@ const urlWarning = computed(() => urlHint(url.value));
 const referenced = ref<RequestLibraryEntry | null>(null);
 const refMissing = ref(false);
 let refLoadGeneration = 0;
-/** 是否已完成首次基线加载（首次合并既有 override，之后按新基线重置）。 */
-let firstBaselineApplied = false;
 /**
  * 水合期旗标：抽屉打开 / 切换节点期间的基线回填不落库（emit），避免
  * 「打开即标脏」；首个用户编辑起才恢复上抛。结束时机推迟到 nextTick——
@@ -236,9 +234,9 @@ watch(
         if (generation !== refLoadGeneration || requestId.value !== id) return;
         referenced.value = entry;
         refMissing.value = false;
-        const merge = !firstBaselineApplied && id === mountedRequestId;
-        firstBaselineApplied = true;
-        applyBaseline(merge);
+        // 与归档语义一致：重新选中打开时的原引用 = 合并既有覆盖项；
+        // 更换为其它条目 = 新快照即新基线，丢弃旧覆盖。
+        applyBaseline(id === mountedRequestId);
         endHydration();
         void persist();
       })
