@@ -50,12 +50,14 @@ export function buildNodeFieldSnippet(refId: string, path: string): string {
  * 与 flow-engine 模板「裸路径 = input.<path> 简写」语义对齐（15A 提示浮层
  * 的入参简写同款）：当前节点配置内的引用取当前节点入参，裸形态更短。出参
  * 引用（给下游节点用）走 buildNodeFieldSnippet 的带前缀形态——多上游聚合
- * 时入参是 `{ 引用键: 输出 }` 对象，裸路径会有歧义。
+ * 时入参是 `{ 引用键: 输出 }` 对象，裸路径会有歧义。空路径（防御调用方
+ * 传入）退化为 `{{ input }}`——引用整个聚合入参（裸简写只在有路径时省前缀）。
  *
  * @param path 字段点分路径（collectJsonPaths 产出口径）
  */
 export function buildInputFieldSnippet(path: string): string {
-  return `{{ ${path.replace(/^\.+/, "")} }}`;
+  const cleanPath = path.replace(/^\.+/, "");
+  return cleanPath === "" ? "{{ input }}" : `{{ ${cleanPath} }}`;
 }
 
 /**

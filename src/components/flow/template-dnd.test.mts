@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   IO_PATH_MIME,
+  buildInputFieldSnippet,
   buildNodeFieldSnippet,
   hasIoPathPayload,
   readIoPathPayload,
@@ -9,7 +10,8 @@ import {
 
 /**
  * IO 字段拖放协议测试（Task 15 薄片 B Step 3）：MIME 装配 / 解析往返、
- * chip 路径格式化、dragover types 判定、空载荷边界。
+ * chip 路径格式化（出参带前缀 / 入参裸路径简写）、dragover types 判定、
+ * 空载荷边界。
  */
 
 /** setData 捕获桩：记录写入并对 getData 同形回放（模拟 dataTransfer 往返） */
@@ -41,6 +43,14 @@ describe("buildNodeFieldSnippet", () => {
   it("空路径引用整个输出；前导点剥掉", () => {
     expect(buildNodeFieldSnippet("n1", "")).toBe("{{ node.n1 }}");
     expect(buildNodeFieldSnippet("n1", ".status")).toBe("{{ node.n1.status }}");
+  });
+});
+
+describe("buildInputFieldSnippet", () => {
+  it("入参裸路径简写；空路径退化为 {{ input }}", () => {
+    expect(buildInputFieldSnippet("headers.x-token")).toBe("{{ headers.x-token }}");
+    expect(buildInputFieldSnippet(".status")).toBe("{{ status }}");
+    expect(buildInputFieldSnippet("")).toBe("{{ input }}");
   });
 });
 
