@@ -30,6 +30,7 @@
 import { executeWorkflow } from "./executor";
 import type { ExecutorOptions, IdGenerator, NodeRunner, RunSummary } from "./executor";
 import type { NodeFailPolicy, NodeId, NodeRun, WorkflowNodeType } from "./types";
+import { createCancelSource } from "./cancel-signal";
 import {
   computeLoopBody,
   createConditionRunner,
@@ -51,7 +52,7 @@ import type { EnvWriteHandler, PostProcessResponse } from "./script";
 import { resolveCookieDecision, resolveHeaderFidelityPlan } from "./header-fidelity";
 import { RunVariableStore } from "./run-variables";
 import { encodeBase64 } from "./base64";
-import { setHostTimers } from "./host-env";
+import { setHostTimers, hostSetTimeout } from "./host-env";
 import type { CancelSignal } from "./cancel-signal";
 import type {
   HarEntry,
@@ -289,6 +290,46 @@ function defaultReplayTransport(payload: Record<string, unknown>): Promise<Repla
  * runWorkflow 主入口
  * ------------------------------------------------------------------ */
 
+/** 宿主取消轮询缺省周期（毫秒）：host.cancelled 驱动引擎级取消的检查间隔。
+ * 远小于典型节点耗时（请求 / 延时），取消在当前节点自然结算后即生效。 */
+const HOST_CANCEL_POLL_MS = 50;
+
+/**
+ * 宿主取消接线（宿主注入点，Task 20 收口）：全局 host.cancelled 可用时，以
+ * 纯 JS 取消源（createCancelSource）+ 轮询循环驱动引擎级取消信号——Rust 运行
+ * 编排（计划 Task 19）发起取消后 host.cancelled() 返回 true → signal 中止 →
+ * 执行器停止调度新节点、循环节点已完成轮次照常结算，run = cancelled（取消
+ * 优先于失败）。轮询循环为浮动 Promise：运行结束后随 VM 整体丢弃；宿主调用
+ * 被取消竞速打断（拒绝，VM 级取消已接管）时静默终止轮询。未传 options.signal
+ * 且宿主无 host.cancelled（Node 单测 / 旧宿主装配）时返回 undefined——不接线，
+ * 行为与既有逐字节一致。
+ */
+function connectHostCancelSignal(): CancelSignal | undefined {
+  const probe = (globalThis as { host?: { cancelled?: unknown } }).host?.cancelled;
+  if (typeof probe !== "function") return undefined;
+  const source = createCancelSource();
+  void (async () => {
+    while (!source.signal.aborted) {
+      // 睡眠走宿主定时器注入链（QuickJS 内 = host.sleep 组装；Node 单测 =
+      // globalThis.setTimeout，fake timers 兼容）。睡眠被取消竞速打断时回调
+      // 永不触发、轮询悬停——VM 层取消下运行整体丢弃，无需清理。
+      await new Promise<void>((resolve) => {
+        hostSetTimeout(resolve, HOST_CANCEL_POLL_MS);
+      });
+      if (source.signal.aborted) return;
+      try {
+        if ((await (probe as () => Promise<unknown>)()) === true) {
+          source.cancel();
+          return;
+        }
+      } catch {
+        return;
+      }
+    }
+  })();
+  return source.signal;
+}
+
 /** runWorkflow 选项（全部可选；语义见文件头） */
 export interface RunWorkflowOptions {
   /** 请求库投影（requestId → HAR 条目）：httpReplay 节点的重放基线来源 */
@@ -306,7 +347,9 @@ export interface RunWorkflowOptions {
   variables?: Record<string, unknown>;
   /** 环境变量快照（运行开始时定格）：注入模板 {{ env.* }} 与脚本 env 形参 */
   env?: Record<string, unknown>;
-  /** 取消信号（CancelSignal 结构；DOM AbortSignal 兼容） */
+  /** 取消信号（CancelSignal 结构；DOM AbortSignal 兼容）。缺省且宿主桥提供
+   * host.cancelled 时自动接线轮询（见 connectHostCancelSignal）；显式传信号时
+   * 以调用方信号为准、不轮询（既有行为不变）。 */
   signal?: CancelSignal;
   /** 工作流级默认失败策略（节点未显式配置时生效；缺省 'stop'） */
   defaultFailPolicy?: NodeFailPolicy;
@@ -314,6 +357,13 @@ export interface RunWorkflowOptions {
   maxNodeConcurrency?: number;
   /** 固定输出表（缺省从 workflow.nodes 的 config.pinnedOutput 投影） */
   pinnedOutputs?: Partial<Record<NodeId, unknown>>;
+  /**
+   * 指定节点重跑（M10-T5，可选；语义与 ExecutorOptions.resume 一致）：
+   * fromNode = 重跑起点（必须存在于图）；outputs / nodeRuns = 源运行中上游
+   * 闭包节点的输出与执行快照（宿主经 computeUpstreamClosure 预检后传入，
+   * 闭包内缺输出的上游 → 建档前整单判 failed、不执行任何节点）。
+   */
+  resume?: ExecutorOptions["resume"];
   /** runId 生成器（缺省 host-env 注入链） */
   generateId?: IdGenerator;
   /** 事件：节点开始（透传执行器；loop 循环体事件同样转发至此） */
@@ -421,9 +471,14 @@ export async function runWorkflow(
     transform: createTransformRunner(),
   };
 
+  // 引擎级取消信号（Task 20 宿主适配收口）：调用方显式传信号时以其为准；
+  // 未传且宿主桥提供 host.cancelled 时自动接线轮询（Rust 运行编排发起取消 →
+  // 执行器停止调度新节点、循环已完成轮次照常结算、run = cancelled）。
+  const signal = options.signal ?? connectHostCancelSignal();
+
   return executeWorkflow(workflow, {
     runners,
-    ...(options.signal !== undefined ? { signal: options.signal } : {}),
+    ...(signal !== undefined ? { signal } : {}),
     ...(options.generateId !== undefined ? { generateId: options.generateId } : {}),
     ...(options.defaultFailPolicy !== undefined
       ? { defaultFailPolicy: options.defaultFailPolicy }
@@ -431,6 +486,7 @@ export async function runWorkflow(
     ...(options.maxNodeConcurrency !== undefined
       ? { maxNodeConcurrency: options.maxNodeConcurrency }
       : {}),
+    ...(options.resume !== undefined ? { resume: options.resume } : {}),
     variables: () => variableStore.snapshot(),
     ...(envSnapshot !== undefined ? { env: () => envSnapshot } : {}),
     selectDownstream: createWorkflowDownstreamSelector(workflow.nodes, workflow.edges),
