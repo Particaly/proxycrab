@@ -132,6 +132,74 @@ ReqFlow workflow execution embeds QuickJS through `rquickjs` in `crates/proxy-cr
   errors, cancellation during sleep and during pure compute, and a JSON round-trip smoke
   run, each with a 10-second settle bound.
 
+## Workflow run orchestration
+
+Workflow runs compose the flow engine payload, the QuickJS host runtime, replay,
+and SQLite persistence in `crates/proxy-crab-mitm/src/flow/run.rs`. The management
+layer (`crates/proxy-crab-mgr`) exposes `GET /api/flow/runs` (list), `POST
+/api/flow/runs` (trigger), `GET /api/flow/runs/{id}` (detail), and `POST
+/api/flow/runs/{id}/cancel` (cancel). Records live in `<workspace>/flow/runs.db`:
+one `flow_runs` row per run (including the graph snapshot captured at creation, so
+a run renders even after the workflow definition changes) and one `flow_node_runs`
+row per node checkpoint with last-write-wins upserts per `(run_id, node_id)`.
+The list is newest-first, filters by workflow/status before pagination (default
+page size 200, hard cap 1000); the detail payload flattens the run record and
+appends its node checkpoints (`nodeRuns`).
+
+- Lifecycle: triggering prechecks proxy running, an existing target Session
+  (defaulting to the active one), and a valid graph; a failed precondition
+  creates no run row and maps to stable errors (missing workflow/Session 404,
+  invalid graph 422 `workflow_graph_invalid`, proxy not running 409, no active
+  Session 409). The run row is inserted as `running` with its graph snapshot
+  (`pinnedOutput` always stripped; over 256 KiB it degrades to a self-describing
+  skeleton with `truncated`), then the orchestration task (VM + write consumer)
+  spawns and the record returns immediately. Node events flow through
+  `host.emit` into one FIFO write queue per run; the single consumer serializes
+  checkpoint persistence and progress broadcasts, and `run-finish` is queued
+  behind every pending node write, so the terminal write naturally lands last.
+  Finalization overwrites node checkpoints from the engine summary (including
+  skipped nodes) and then writes the run terminal status.
+- Cancellation outranks failure: wherever the engine summary reports `failed`
+  while the cancel token has fired — and on both abort paths (VM infrastructure
+  failure, channel close without a terminal event) — the run is stored as
+  `cancelled`. The graceful cancel path relies on the `host.sleep` abandon
+  semantics: the run driver polls every 150 ms through `host.sleep(150)`, an
+  abandoned sleep rejects as `cancelled` and flips the engine abort signal, and
+  the engine stops scheduling at the next batch boundary (the current node
+  completes naturally). Pure-JS execution segments are covered by the VM
+  interrupt handler; both routes converge to the same `cancelled` terminal state.
+- Write queue and degradation: each active run owns exactly one writer, so
+  concurrent runs contend only at the SQLite connection. Failing to open
+  `runs.db` only degrades: the manager logs, keeps serving, and every run
+  operation reports 工作流运行记录库不可用 instead of blocking anything. When
+  the manager opens, a restart scan converges orphan `running` rows to
+  `interrupted` (error 进程重启：运行中断，finish timestamp set; node
+  checkpoints are left untouched).
+- Event bridge: `FlowRunEvent`s (`started` / `node` / `finished`) are folded by
+  the management layer into a single `FlowRuns` resource `HttpApiChange` —
+  run-level and node-level events share one resource domain, so the frontend
+  re-pulls the run list/detail instead of modeling per-event payloads. A lagged
+  broadcast subscriber still emits the change; lag never breaks the bridge.
+- VM limits and inputs: workflow execution reuses `FlowLimits::default()` —
+  64 MiB QuickJS heap, 100,000 interrupt-handler ticks, and a 30-second
+  accumulated active wall clock (time spent awaiting host calls does not
+  count). Loading the engine payload has an independent 30-second budget, and
+  workflow execution itself has no overall hard timeout — long runs are legal
+  and cancellation stays available. Engine arguments are injected once as a
+  JSON literal into `globalThis.__runArgs` (data never enters template source;
+  the driver script is a static constant). Run inputs snapshot the merged
+  three-layer variables, the active environment set frozen at dispatch (later
+  switches do not affect a live run; script env write-backs persist to that
+  frozen set), and the request-library HAR baseline (stored body blobs are
+  backfilled as base64 `postData`). Secrets from all three layers, the active
+  environment set, and script write-backs join the masking list; node snapshots
+  and error text are masked before persistence and broadcast.
+- Known limitations: engine `bodyBase64` byte bodies replay lossily as UTF-8
+  text (`ReplayBody` has no byte variant today; a byte channel would be its own
+  task). Cancel idempotency is not promised — cancelling an already-finished or
+  unknown run returns 404. The run list `status` filter has no enum validation;
+  an unknown value simply yields an empty page.
+
 ## Session sharing links
 
 The desktop and CLI management UIs open a managed application window from “链接分享” in a
