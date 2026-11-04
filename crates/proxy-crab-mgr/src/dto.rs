@@ -7,7 +7,7 @@ use proxy_crab_mitm::{
         env_sets::EnvGlobalVariables,
         model::{Project, Workflow, WorkflowEdge, WorkflowNode},
         request_library::HarSnapshot,
-        run_store::FlowRunRecord,
+        run_store::{FlowNodeRunRecord, FlowRunRecord},
         store::EnvVariableSet,
     },
     model::{
@@ -901,4 +901,15 @@ pub struct FlowRunListQuery {
 pub struct FlowRunPage {
     pub runs: Vec<FlowRunRecord>,
     pub total: usize,
+}
+
+/// Run detail payload: the flattened run record plus its node checkpoints.
+/// Wraps the mitm `FlowRunDetail` to keep the wire shape camelCase
+/// (`nodeRuns`) consistent with the run records.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FlowRunDetailPayload {
+    #[serde(flatten)]
+    pub run: FlowRunRecord,
+    pub node_runs: Vec<FlowNodeRunRecord>,
 }

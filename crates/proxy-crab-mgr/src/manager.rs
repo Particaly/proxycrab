@@ -15,7 +15,7 @@ use proxy_crab_mitm::{
         },
         model::{Project, Workflow, WORKFLOW_SCHEMA_VERSION},
         request_library::{CapturedRequest, RequestLibraryEntry, RequestSource},
-        run::{FlowRunDetail, FlowRunEvent, FlowRunManager, RunTriggerError},
+        run::{FlowRunEvent, FlowRunManager, RunTriggerError},
         run_store::FlowRunRecord,
         store::{EnvVariableSet, FlowStore, generate_flow_id},
         validate::{ValidationIssue, validate_workflow_graph},
@@ -47,9 +47,9 @@ use crate::{
         DeleteCount, EnvSetsPayload, EnvWriteBackRequest, EnvWriteBackResult, ErrorCode,
         ExecuteTemporaryScriptRequest, ExtendBreakpointRequest, FlowListQuery,
         FlowProjectCreateRequest, FlowProjectPage, FlowProjectUpdateRequest,
-        FlowRunListQuery, FlowRunPage, FlowRunTriggerRequest, FlowScriptDryRunRequest,
-        FLOW_RUN_DEFAULT_LIMIT, FLOW_RUN_MAX_LIMIT, HeaderItem, IngestCaptureRequest,
-        InterceptorCreateRequest, InterceptorDetail, InterceptorLibraryList,
+        FlowRunDetailPayload, FlowRunListQuery, FlowRunPage, FlowRunTriggerRequest,
+        FlowScriptDryRunRequest, FLOW_RUN_DEFAULT_LIMIT, FLOW_RUN_MAX_LIMIT, HeaderItem,
+        IngestCaptureRequest, InterceptorCreateRequest, InterceptorDetail, InterceptorLibraryList,
         InterceptorUpdateRequest, LogDetail, LogIdsPayload,
         LogIdsRequest, LogViewException, LogViewRow, LogViewsPayload, LogViewsRequest,
         ManagerError, ManagerResult, ReplaceActiveEnvSetRequest, ReplaceEnvGlobalsRequest,
@@ -324,7 +324,7 @@ pub trait ProxyCrabManager: Send + Sync {
     ) -> ManagerResult<FlowRunRecord>;
     async fn cancel_workflow_run(&self, run_id: String) -> ManagerResult<()>;
     async fn workflow_runs(&self, query: FlowRunListQuery) -> ManagerResult<FlowRunPage>;
-    async fn workflow_run_detail(&self, run_id: String) -> ManagerResult<FlowRunDetail>;
+    async fn workflow_run_detail(&self, run_id: String) -> ManagerResult<FlowRunDetailPayload>;
     fn subscribe_flow_run_events(&self) -> broadcast::Receiver<FlowRunEvent>;
     async fn request_library_page(
         &self,
@@ -2415,12 +2415,17 @@ impl ProxyCrabManager for MitmManager {
             .map_err(map_error)
     }
 
-    async fn workflow_run_detail(&self, run_id: String) -> ManagerResult<FlowRunDetail> {
-        self.flow_runs
+    async fn workflow_run_detail(&self, run_id: String) -> ManagerResult<FlowRunDetailPayload> {
+        let detail = self
+            .flow_runs
             .get_run_detail(&run_id)
             .await
             .map_err(map_error)?
-            .ok_or_else(|| ManagerError::not_found(format!("workflow run {run_id} not found")))
+            .ok_or_else(|| ManagerError::not_found(format!("workflow run {run_id} not found")))?;
+        Ok(FlowRunDetailPayload {
+            run: detail.run,
+            node_runs: detail.node_runs,
+        })
     }
 
     fn subscribe_flow_run_events(&self) -> broadcast::Receiver<FlowRunEvent> {

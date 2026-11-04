@@ -20,7 +20,7 @@ fn permission_catalog_contains_every_unique_route_action() {
         .map(|action| action.id)
         .collect::<BTreeSet<_>>();
 
-    assert_eq!(actions.len(), 108);
+    assert_eq!(actions.len(), 112);
     assert_eq!(ids.len(), actions.len());
     assert!(
         actions
@@ -60,6 +60,8 @@ fn permission_catalog_has_the_confirmed_default_matrix() {
         "GET /api/filter-scripts/{name}",
         "GET /api/flow-projects",
         "GET /api/flow-projects/{id}",
+        "GET /api/flow/runs",
+        "GET /api/flow/runs/{id}",
         "GET /api/interceptors",
         "GET /api/interceptors/{kind}/{name}",
         "GET /api/logs/{id}",
@@ -133,6 +135,8 @@ fn permission_catalog_has_the_confirmed_default_matrix() {
         "DELETE /api/request-library/{id}",
         "DELETE /api/session-shares/{id}",
         "POST /api/flow-projects",
+        "POST /api/flow/runs",
+        "POST /api/flow/runs/{id}/cancel",
         "POST /api/flow/script/dry-run",
         "POST /api/workflows",
         "PUT /api/flow-projects/{id}",
@@ -292,6 +296,28 @@ fn permission_lookup_uses_both_method_and_route_template() {
         .map(|action| action.method)
         .collect::<BTreeSet<_>>();
     assert_eq!(validate_methods, BTreeSet::from(["POST"]));
+    // Workflow runs (plan Task 19): reads allow, trigger/cancel approval.
+    let run_modes = [
+        ("GET", "/api/flow/runs", PermissionMode::Allow),
+        ("POST", "/api/flow/runs", PermissionMode::Approval),
+        ("GET", "/api/flow/runs/{id}", PermissionMode::Allow),
+        ("POST", "/api/flow/runs/{id}/cancel", PermissionMode::Approval),
+    ];
+    for (method, route, mode) in run_modes {
+        assert_eq!(
+            find_api_action(method, route).unwrap().default_mode,
+            mode,
+            "{method} {route}"
+        );
+    }
+    let runs_methods = api_actions_for_path("/api/flow/runs/run-1")
+        .map(|action| action.method)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(runs_methods, BTreeSet::from(["GET"]));
+    let cancel_methods = api_actions_for_path("/api/flow/runs/run-1/cancel")
+        .map(|action| action.method)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(cancel_methods, BTreeSet::from(["POST"]));
     let request_library_methods = api_actions_for_path("/api/request-library/entry-1")
         .map(|action| action.method)
         .collect::<BTreeSet<_>>();
