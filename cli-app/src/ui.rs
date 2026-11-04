@@ -392,10 +392,9 @@ async fn set_identity_redaction(
         .redaction_script
         .as_ref()
         .filter(|name| !name.is_empty())
+        && let Err(error) = state.manager.redaction_script(name.clone()).await
     {
-        if let Err(error) = state.manager.redaction_script(name.clone()).await {
-            return result::<()>(Err(error));
-        }
+        return result::<()>(Err(error));
     }
     result(
         state
