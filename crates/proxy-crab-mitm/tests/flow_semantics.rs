@@ -1143,3 +1143,353 @@ async fn resume_missing_upstream_output_fails_before_any_node() {
     assert_eq!(replay_count(&run), 0);
     assert_eq!(run.summary["nodeRuns"], json!({}));
 }
+
+/* ------------------------------------------------------------------ *
+ * 循环（loop）：对齐上游 logic-nodes*.test.ts / run-record.iterations.test.ts
+ * 的执行口径（以工作流驱动 runWorkflow，经循环子运行逐轮执行循环体）。
+ * ------------------------------------------------------------------ */
+
+/// 循环节点便捷构造。
+fn loop_node(config: JsonValue) -> JsonValue {
+    node("L", "loop", config)
+}
+
+/// 循环节点的迭代明细（LoopIterationsSummary）。
+fn iterations_of<'a>(run: &'a FlowRun, id: &str) -> &'a JsonValue {
+    &run_of(run, id)["iterations"]
+}
+
+/// 上游：逐项执行循环体：每轮写入 var.loop（item / index），聚合为逐轮结果数组；
+/// 循环节点快照带逐迭代明细（全部 success），循环体节点快照为「最后一轮」。
+/// 观察点 after 以循环体外节点 x 作第二上游（有外部上游的节点不入循环体——
+/// 留给父调度器按 join 语义在循环结束后执行一次）。
+#[tokio::test(flavor = "multi_thread")]
+async fn loop_runs_body_per_round_with_loop_variable_and_aggregates_sink_outputs() {
+    let harness = FlowHarness::new(vec![]);
+    let run = harness
+        .run(
+            workflow(
+                vec![
+                    start_node(),
+                    loop_node(json!({ "items": ["i0", "i1", "i2"] })),
+                    replay_node("body", "https://t/round-{{ var.loop.item }}"),
+                    node("x", "setVariable", json!({ "assignments": [] })),
+                    replay_node("after", "https://t/after"),
+                ],
+                vec![
+                    edge("s", "L"),
+                    edge("L", "body"),
+                    edge("s", "x"),
+                    edge("L", "after"),
+                    edge("x", "after"),
+                ],
+            ),
+            json!({}),
+        )
+        .await;
+
+    assert_eq!(run_status(&run), "success");
+    // 逐轮串行执行：重放 url 按 items 序（模板渲染出 var.loop.item）。
+    let urls: Vec<String> = begin_entries(&run)
+        .iter()
+        .map(|entry| entry.trim_start_matches("begin:").to_string())
+        .collect();
+    // 前三笔 = 循环体逐轮重放（串行按 items 序）；末笔 = 循环结束后的观察点。
+    assert_eq!(urls.len(), 4, "urls: {urls:?}");
+    assert_eq!(
+        &urls[..3],
+        &[
+            "https://t/round-i0".to_string(),
+            "https://t/round-i1".to_string(),
+            "https://t/round-i2".to_string(),
+        ]
+    );
+    // 聚合 = 单汇点 body 的逐轮输出（引擎归一化响应，json.url 回显请求 url）。
+    let loop_output = run_of(&run, "L")["output"].as_array().expect("loop output array");
+    assert_eq!(loop_output.len(), 3);
+    for (index, item) in loop_output.iter().enumerate() {
+        assert_eq!(
+            item["json"]["url"],
+            json!(format!("https://t/round-i{index}")),
+            "round {index}"
+        );
+    }
+    // 循环体下游（有外部上游的观察点）在循环结束后按 join 语义执行一次：
+    // input 聚合 { L: 逐轮结果数组, x: 外部节点输出 }。
+    assert_eq!(status_of(&run, "after"), "success");
+    let after_input = &run_of(&run, "after")["input"];
+    let after_loop_input = after_input["L"].as_array().expect("loop results array");
+    assert_eq!(after_loop_input.len(), 3);
+    assert!(after_input.get("x").is_some(), "external upstream key present");
+    // 逐迭代明细：total / done / capped / records 全 success 且按 index 升序。
+    let iterations = iterations_of(&run, "L");
+    assert_eq!(iterations["total"].as_i64(), Some(3));
+    assert_eq!(iterations["done"].as_i64(), Some(3));
+    assert_eq!(iterations["capped"], json!(false));
+    assert_eq!(iterations["truncated"], json!(false));
+    let records = iterations["records"].as_array().expect("records array");
+    assert_eq!(records.len(), 3);
+    for (index, record) in records.iter().enumerate() {
+        assert_eq!(record["index"].as_i64(), Some(index as i64));
+        assert_eq!(record["item"], json!(format!("i{index}")));
+        assert_eq!(record["status"], json!("success"));
+        assert_eq!(
+            record["output"]["json"]["url"],
+            json!(format!("https://t/round-i{index}"))
+        );
+    }
+    // 循环体节点快照 = 「最后一轮」执行（经 nestedNodeRun 代替统一 skipped）。
+    assert_eq!(status_of(&run, "body"), "success");
+    assert_eq!(
+        run_of(&run, "body")["output"]["json"]["url"],
+        json!("https://t/round-i2")
+    );
+}
+
+/// 上游（loop-concurrency）：并发迭代互不覆盖——setVariable 写入与 var.loop
+/// 走各自 overlay，结束后合并回父层；三轮各自读到自己的 item。
+#[tokio::test(flavor = "multi_thread")]
+async fn loop_concurrent_rounds_isolate_variable_scope() {
+    let harness = FlowHarness::new(vec![]);
+    let run = harness
+        .run(
+            workflow(
+                vec![
+                    start_node(),
+                    loop_node(json!({ "items": ["i0", "i1", "i2"], "concurrency": 3 })),
+                    node(
+                        "sv",
+                        "setVariable",
+                        json!({
+                            "assignments": [
+                                { "name": "seen", "from": "var", "path": "loop.item" },
+                            ],
+                        }),
+                    ),
+                    replay_node("sink", "https://t/seen-{{ var.seen }}"),
+                ],
+                vec![edge("s", "L"), edge("L", "sv"), edge("sv", "sink")],
+            ),
+            json!({}),
+        )
+        .await;
+
+    assert_eq!(run_status(&run), "success");
+    // 并发三轮各自可见自己的 item（url 集合 = 三轮各自写入的 seen 值）。
+    let mut urls: Vec<String> = begin_entries(&run)
+        .iter()
+        .map(|entry| entry.trim_start_matches("begin:").to_string())
+        .collect();
+    urls.sort();
+    assert_eq!(
+        urls,
+        vec![
+            "https://t/seen-i0".to_string(),
+            "https://t/seen-i1".to_string(),
+            "https://t/seen-i2".to_string(),
+        ]
+    );
+    // 逐轮聚合齐全（单汇点 sink，三轮输出）。
+    let loop_output = run_of(&run, "L")["output"].as_array().expect("loop output array");
+    assert_eq!(loop_output.len(), 3);
+    let iterations = iterations_of(&run, "L");
+    assert_eq!(iterations["done"].as_i64(), Some(3));
+    for record in iterations["records"].as_array().expect("records") {
+        assert_eq!(record["status"], json!("success"));
+    }
+}
+
+/// 上游：迭代上限——items 超出 maxIterations 按长度截断（不视为错误），
+/// capped 标注如实置位。
+#[tokio::test(flavor = "multi_thread")]
+async fn loop_caps_iterations_at_max_iterations_without_error() {
+    let harness = FlowHarness::new(vec![]);
+    let run = harness
+        .run(
+            workflow(
+                vec![
+                    start_node(),
+                    loop_node(json!({
+                        "items": ["i0", "i1", "i2", "i3", "i4"],
+                        "maxIterations": 2,
+                    })),
+                    replay_node("body", "https://t/round-{{ var.loop.item }}"),
+                ],
+                vec![edge("s", "L"), edge("L", "body")],
+            ),
+            json!({}),
+        )
+        .await;
+
+    assert_eq!(run_status(&run), "success");
+    assert_eq!(replay_count(&run), 2);
+    let loop_output = run_of(&run, "L")["output"].as_array().expect("loop output array");
+    assert_eq!(loop_output.len(), 2);
+    let iterations = iterations_of(&run, "L");
+    assert_eq!(iterations["total"].as_i64(), Some(2));
+    assert_eq!(iterations["done"].as_i64(), Some(2));
+    assert_eq!(iterations["capped"], json!(true));
+    let records = iterations["records"].as_array().expect("records array");
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0]["item"], json!("i0"));
+    assert_eq!(records[1]["item"], json!("i1"));
+}
+
+/// 上游：多汇点聚合——逐轮结果为 { <汇点 id>: output } 组对象（单汇点原样、
+/// 多汇点分组、由 collectIterationResult 决定）。
+#[tokio::test(flavor = "multi_thread")]
+async fn loop_aggregates_multiple_sinks_grouped_by_node_id() {
+    let harness = FlowHarness::new(vec![]);
+    let run = harness
+        .run(
+            workflow(
+                vec![
+                    start_node(),
+                    loop_node(json!({ "items": ["x"] })),
+                    replay_node("entry", "https://t/body-{{ var.loop.item }}"),
+                    replay_node("s1", "https://t/sink-1-{{ var.loop.item }}"),
+                    replay_node("s2", "https://t/sink-2-{{ var.loop.item }}"),
+                ],
+                vec![
+                    edge("s", "L"),
+                    edge("L", "entry"),
+                    edge("entry", "s1"),
+                    edge("entry", "s2"),
+                ],
+            ),
+            json!({}),
+        )
+        .await;
+
+    assert_eq!(run_status(&run), "success");
+    assert_eq!(replay_count(&run), 3);
+    // 单轮多汇点：逐轮结果为按汇点 id 分组的对象。
+    let loop_output = run_of(&run, "L")["output"].as_array().expect("loop output array");
+    assert_eq!(loop_output.len(), 1);
+    let round = &loop_output[0];
+    assert_eq!(
+        round["s1"]["json"]["url"],
+        json!("https://t/sink-1-x"),
+        "round: {round}"
+    );
+    assert_eq!(round["s2"]["json"]["url"], json!("https://t/sink-2-x"));
+}
+
+/// 上游（M13-T9）：逐迭代明细条数超 LOOP_ITERATIONS_MAX_RECORDS（100）时按
+/// index 升序保留前段并置 truncated；进度（total / done）不因明细截断失真。
+#[tokio::test(flavor = "multi_thread")]
+async fn loop_iteration_records_truncated_at_max_records() {
+    let items: Vec<JsonValue> = (0..102).map(|index| json!(format!("i{index}"))).collect();
+    let harness = FlowHarness::new(vec![]);
+    let run = harness
+        .run(
+            workflow(
+                vec![
+                    start_node(),
+                    loop_node(json!({ "items": items, "maxIterations": 102 })),
+                    // 体内纯 setVariable（零重放，快跑 102 轮子运行）
+                    node("sv", "setVariable", json!({ "assignments": [] })),
+                ],
+                vec![edge("s", "L"), edge("L", "sv")],
+            ),
+            json!({}),
+        )
+        .await;
+
+    assert_eq!(run_status(&run), "success");
+    let loop_output = run_of(&run, "L")["output"].as_array().expect("loop output array");
+    assert_eq!(loop_output.len(), 102);
+    let iterations = iterations_of(&run, "L");
+    assert_eq!(iterations["total"].as_i64(), Some(102));
+    assert_eq!(iterations["done"].as_i64(), Some(102));
+    assert_eq!(iterations["capped"], json!(false));
+    assert_eq!(iterations["truncated"], json!(true));
+    let records = iterations["records"].as_array().expect("records array");
+    assert_eq!(records.len(), 100);
+    // 保留前段：records[0] 是第 0 轮。
+    assert_eq!(records[0]["index"].as_i64(), Some(0));
+    assert_eq!(records[0]["status"], json!("success"));
+}
+
+/// 上游（取消感知）：取消时已完成轮次照常结算——第一轮完整保留，取消轮记
+/// cancelled 且不聚合，后续轮次不再执行；run = cancelled（取消优先）。
+/// 观察点 after 以循环体外节点 x 作第二上游（不入循环体；取消后收尾 skipped）。
+#[tokio::test(flavor = "multi_thread")]
+async fn loop_cancel_settles_completed_rounds_and_run_reports_cancelled() {
+    let harness = FlowHarness::new(vec![FlowHarness::on(
+        "round-2",
+        ReplayBehavior::CancelThen(120, Box::new(ReplayBehavior::Echo)),
+    )]);
+    let run = harness
+        .run(
+            workflow(
+                vec![
+                    start_node(),
+                    loop_node(json!({ "items": [1, 2, 3] })),
+                    replay_node("body", "https://t/round-{{ var.loop.item }}"),
+                    node("x", "setVariable", json!({ "assignments": [] })),
+                    replay_node("after", "https://t/after"),
+                ],
+                vec![
+                    edge("s", "L"),
+                    edge("L", "body"),
+                    edge("s", "x"),
+                    edge("L", "after"),
+                    edge("x", "after"),
+                ],
+            ),
+            json!({}),
+        )
+        .await;
+
+    // 取消优先于失败：执行器停止调度新节点，run = cancelled。
+    assert_eq!(run_status(&run), "cancelled");
+    assert_eq!(run.summary["error"], json!("运行已被取消"));
+    // 已开始轮次自然结算：只有第 1、2 轮发起了重放（第 3 轮未启动）。
+    assert_eq!(replay_count(&run), 2);
+    // loop 节点以已完成轮次聚合照常返回（success），其下游收尾 skipped。
+    assert_eq!(status_of(&run, "L"), "success");
+    assert_eq!(status_of(&run, "after"), "skipped");
+    let loop_output = run_of(&run, "L")["output"].as_array().expect("loop output array");
+    assert_eq!(loop_output.len(), 1, "only the settled round aggregates");
+    assert_eq!(loop_output[0]["json"]["url"], json!("https://t/round-1"));
+    // 逐迭代明细如实记录：第 1 轮 success、第 2 轮 cancelled（已开始未跑完）。
+    let iterations = iterations_of(&run, "L");
+    assert_eq!(iterations["total"].as_i64(), Some(3));
+    assert_eq!(iterations["done"].as_i64(), Some(2));
+    let records = iterations["records"].as_array().expect("records array");
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0]["index"].as_i64(), Some(0));
+    assert_eq!(records[0]["status"], json!("success"));
+    assert_eq!(records[1]["index"].as_i64(), Some(1));
+    assert_eq!(records[1]["status"], json!("cancelled"));
+    assert_eq!(records[1]["output"], json!(null));
+}
+
+/// 上游：空数据源——零轮迭代，输出空数组，循环体不执行。
+#[tokio::test(flavor = "multi_thread")]
+async fn loop_with_empty_items_runs_zero_rounds() {
+    let harness = FlowHarness::new(vec![]);
+    let run = harness
+        .run(
+            workflow(
+                vec![
+                    start_node(),
+                    loop_node(json!({ "items": [] })),
+                    replay_node("body", "https://t/round-{{ var.loop.item }}"),
+                ],
+                vec![edge("s", "L"), edge("L", "body")],
+            ),
+            json!({}),
+        )
+        .await;
+
+    assert_eq!(run_status(&run), "success");
+    assert_eq!(replay_count(&run), 0);
+    assert_eq!(run_of(&run, "L")["output"], json!([]));
+    let iterations = iterations_of(&run, "L");
+    assert_eq!(iterations["total"].as_i64(), Some(0));
+    assert_eq!(iterations["done"].as_i64(), Some(0));
+    assert_eq!(iterations["records"], json!([]));
+    assert_eq!(iterations["truncated"], json!(false));
+}
