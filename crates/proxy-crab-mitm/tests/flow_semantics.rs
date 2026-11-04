@@ -130,10 +130,7 @@ impl SemanticHost {
 impl FlowHost for SemanticHost {
     async fn replay(&self, payload: JsonValue) -> Result<JsonValue, FlowError> {
         let url = payload["url"].as_str().unwrap_or_default().to_string();
-        self.replay_log
-            .lock()
-            .unwrap()
-            .push(format!("begin:{url}"));
+        self.replay_log.lock().unwrap().push(format!("begin:{url}"));
         self.replay_payloads.lock().unwrap().push(payload.clone());
         let result = self.apply(self.behavior_for(&url), &payload).await;
         self.replay_log.lock().unwrap().push(format!("end:{url}"));
@@ -389,7 +386,10 @@ fn replay_count(run: &FlowRun) -> usize {
 #[tokio::test(flavor = "multi_thread")]
 async fn concurrent_nodes_overlap_while_blocked_and_events_settle_in_enqueue_order() {
     let harness = FlowHarness::new(vec![
-        FlowHarness::on("/n-a", ReplayBehavior::SleepThen(150, Box::new(ReplayBehavior::Echo))),
+        FlowHarness::on(
+            "/n-a",
+            ReplayBehavior::SleepThen(150, Box::new(ReplayBehavior::Echo)),
+        ),
         FlowHarness::on("/n-b", ReplayBehavior::Echo),
     ]);
     let run = harness
@@ -423,8 +423,14 @@ async fn concurrent_nodes_overlap_while_blocked_and_events_settle_in_enqueue_ord
     assert_eq!(event_ids(&run, "node-start"), vec!["s", "a", "b"]);
     assert_eq!(event_ids(&run, "node-finish"), vec!["s", "a", "b"]);
     // 各自输出正确（回显信封经引擎归一化）。
-    assert_eq!(run_of(&run, "a")["output"]["json"]["url"], json!("https://t/n-a"));
-    assert_eq!(run_of(&run, "b")["output"]["json"]["url"], json!("https://t/n-b"));
+    assert_eq!(
+        run_of(&run, "a")["output"]["json"]["url"],
+        json!("https://t/n-a")
+    );
+    assert_eq!(
+        run_of(&run, "b")["output"]["json"]["url"],
+        json!("https://t/n-b")
+    );
 }
 
 /// 上游：join 节点等双上游都结算后才执行，input 为两份输出的聚合对象。
@@ -432,7 +438,10 @@ async fn concurrent_nodes_overlap_while_blocked_and_events_settle_in_enqueue_ord
 #[tokio::test(flavor = "multi_thread")]
 async fn join_node_waits_for_both_upstreams_then_aggregates_inputs() {
     let harness = FlowHarness::new(vec![
-        FlowHarness::on("/n-a", ReplayBehavior::SleepThen(100, Box::new(ReplayBehavior::Echo))),
+        FlowHarness::on(
+            "/n-a",
+            ReplayBehavior::SleepThen(100, Box::new(ReplayBehavior::Echo)),
+        ),
         FlowHarness::on("/n-b", ReplayBehavior::Echo),
         FlowHarness::on("/n-join", ReplayBehavior::Echo),
     ]);
@@ -646,14 +655,19 @@ async fn condition_handle_routes_only_the_matching_branch() {
         assert_eq!(run_status(&run), "success", "{label}");
         assert_eq!(status_of(&run, active), "success", "{label}");
         assert_eq!(status_of(&run, inactive), "skipped", "{label}");
-        assert_eq!(run_of(&run, "c1")["output"]["branch"], json!(branch), "{label}");
+        assert_eq!(
+            run_of(&run, "c1")["output"]["branch"],
+            json!(branch),
+            "{label}"
+        );
         // 未激活分支不发起重放。
         let urls: Vec<String> = begin_entries(&run)
             .iter()
             .map(|entry| entry.trim_start_matches("begin:").to_string())
             .collect();
         assert!(
-            urls.iter().all(|url| !url.contains(&format!("/{inactive}"))),
+            urls.iter()
+                .all(|url| !url.contains(&format!("/{inactive}"))),
             "{inactive} must not replay: {urls:?}"
         );
     }
@@ -682,7 +696,12 @@ async fn condition_falls_back_to_legacy_manifest_and_passes_unbound_downstream()
                     replay_node("f1", "https://t/f1"),
                     replay_node("x", "https://t/x"),
                 ],
-                vec![edge("s", "c1"), edge("c1", "t1"), edge("c1", "f1"), edge("c1", "x")],
+                vec![
+                    edge("s", "c1"),
+                    edge("c1", "t1"),
+                    edge("c1", "f1"),
+                    edge("c1", "x"),
+                ],
             ),
             json!({}),
         )
@@ -735,7 +754,10 @@ async fn condition_without_routing_config_passes_through_to_all_downstream() {
 async fn fail_policy_stop_halts_scheduling_and_marks_downstream_skipped() {
     let harness = FlowHarness::new(vec![FlowHarness::on(
         "/n-a",
-        ReplayBehavior::Fail(FlowError::new(FlowErrorKind::Network, "upstream unreachable")),
+        ReplayBehavior::Fail(FlowError::new(
+            FlowErrorKind::Network,
+            "upstream unreachable",
+        )),
     )]);
     let run = harness
         .run(
@@ -752,7 +774,10 @@ async fn fail_policy_stop_halts_scheduling_and_marks_downstream_skipped() {
         .await;
 
     assert_eq!(run_status(&run), "failed");
-    assert_eq!(run.summary["error"], json!("节点 a 执行失败：upstream unreachable"));
+    assert_eq!(
+        run.summary["error"],
+        json!("节点 a 执行失败：upstream unreachable")
+    );
     assert_eq!(status_of(&run, "a"), "failed");
     assert_eq!(run_of(&run, "a")["error"], json!("upstream unreachable"));
     assert_eq!(status_of(&run, "b"), "skipped");
@@ -766,7 +791,10 @@ async fn fail_policy_stop_halts_scheduling_and_marks_downstream_skipped() {
 async fn fail_policy_continue_runs_downstream_with_missing_upstream_aggregated_as_null() {
     let harness = FlowHarness::new(vec![FlowHarness::on(
         "/n-a",
-        ReplayBehavior::Fail(FlowError::new(FlowErrorKind::Network, "upstream unreachable")),
+        ReplayBehavior::Fail(FlowError::new(
+            FlowErrorKind::Network,
+            "upstream unreachable",
+        )),
     )]);
     let run = harness
         .run(
@@ -790,7 +818,10 @@ async fn fail_policy_continue_runs_downstream_with_missing_upstream_aggregated_a
         .await;
 
     assert_eq!(run_status(&run), "failed");
-    assert_eq!(run.summary["error"], json!("节点 a 执行失败：upstream unreachable"));
+    assert_eq!(
+        run.summary["error"],
+        json!("节点 a 执行失败：upstream unreachable")
+    );
     assert_eq!(status_of(&run, "b"), "success");
     assert_eq!(run_of(&run, "b")["input"], json!(null));
     assert_eq!(replay_count(&run), 2);
@@ -801,7 +832,10 @@ async fn fail_policy_continue_runs_downstream_with_missing_upstream_aggregated_a
 async fn fail_policy_continue_join_aggregates_only_successful_upstream() {
     let harness = FlowHarness::new(vec![FlowHarness::on(
         "/n-a",
-        ReplayBehavior::Fail(FlowError::new(FlowErrorKind::Network, "upstream unreachable")),
+        ReplayBehavior::Fail(FlowError::new(
+            FlowErrorKind::Network,
+            "upstream unreachable",
+        )),
     )]);
     let run = harness
         .run(
@@ -833,7 +867,10 @@ async fn fail_policy_continue_join_aggregates_only_successful_upstream() {
     assert_eq!(run_status(&run), "failed");
     assert_eq!(status_of(&run, "join"), "success");
     // 聚合只含仍成功的上游（单上游回退原样透传）。
-    assert_eq!(run_of(&run, "join")["input"]["json"]["url"], json!("https://t/n-c"));
+    assert_eq!(
+        run_of(&run, "join")["input"]["json"]["url"],
+        json!("https://t/n-c")
+    );
     assert!(run_of(&run, "join")["input"].get("a").is_none());
 }
 
@@ -936,7 +973,10 @@ async fn retry_replays_until_success_within_max_attempts() {
 
     assert_eq!(run_status(&run), "success");
     assert_eq!(status_of(&run, "a"), "success");
-    assert_eq!(run_of(&run, "a")["output"]["json"]["url"], json!("https://t/n-a"));
+    assert_eq!(
+        run_of(&run, "a")["output"]["json"]["url"],
+        json!("https://t/n-a")
+    );
     assert_eq!(replay_count(&run), 3);
 }
 
@@ -946,7 +986,10 @@ async fn retry_replays_until_success_within_max_attempts() {
 async fn retry_exhausts_attempts_and_preserves_final_error() {
     let harness = FlowHarness::new(vec![FlowHarness::on(
         "/n-a",
-        ReplayBehavior::Fail(FlowError::new(FlowErrorKind::Network, "upstream unreachable")),
+        ReplayBehavior::Fail(FlowError::new(
+            FlowErrorKind::Network,
+            "upstream unreachable",
+        )),
     )]);
     let run = harness
         .run(
@@ -970,7 +1013,10 @@ async fn retry_exhausts_attempts_and_preserves_final_error() {
 
     assert_eq!(run_status(&run), "failed");
     assert_eq!(run_of(&run, "a")["error"], json!("upstream unreachable"));
-    assert_eq!(run.summary["error"], json!("节点 a 执行失败：upstream unreachable"));
+    assert_eq!(
+        run.summary["error"],
+        json!("节点 a 执行失败：upstream unreachable")
+    );
     assert_eq!(replay_count(&run), 2);
 }
 
@@ -1098,7 +1144,10 @@ async fn resume_presets_upstream_outputs_and_reruns_from_from_node() {
         .iter()
         .map(|entry| entry.trim_start_matches("begin:").to_string())
         .collect();
-    assert_eq!(urls, vec!["https://t/n-b".to_string(), "https://t/n-c".to_string()]);
+    assert_eq!(
+        urls,
+        vec!["https://t/n-b".to_string(), "https://t/n-c".to_string()]
+    );
     // a 的快照沿用源运行（入参 / 返回值 / 起跑时刻 / 耗时原样保留）。
     let a_run = run_of(&run, "a");
     assert_eq!(a_run["status"], json!("success"));
@@ -1106,7 +1155,10 @@ async fn resume_presets_upstream_outputs_and_reruns_from_from_node() {
     assert_eq!(a_run["startedAt"].as_f64(), Some(1000.0));
     assert_eq!(a_run["durationMs"].as_f64(), Some(40.0));
     // b 聚合到 a 的预置输出（单上游透传）。
-    assert_eq!(run_of(&run, "b")["input"], json!({ "token": "from-source-run" }));
+    assert_eq!(
+        run_of(&run, "b")["input"],
+        json!({ "token": "from-source-run" })
+    );
     assert_eq!(status_of(&run, "c"), "success");
 }
 
@@ -1138,8 +1190,14 @@ async fn resume_missing_upstream_output_fails_before_any_node() {
 
     assert_eq!(run_status(&run), "failed");
     let error = run.summary["error"].as_str().unwrap_or_default();
-    assert!(error.contains("上游节点在源运行中无成功输出"), "error: {error}");
-    assert!(error.contains('a'), "error must name the missing node: {error}");
+    assert!(
+        error.contains("上游节点在源运行中无成功输出"),
+        "error: {error}"
+    );
+    assert!(
+        error.contains('a'),
+        "error must name the missing node: {error}"
+    );
     assert_eq!(replay_count(&run), 0);
     assert_eq!(run.summary["nodeRuns"], json!({}));
 }
@@ -1205,7 +1263,9 @@ async fn loop_runs_body_per_round_with_loop_variable_and_aggregates_sink_outputs
         ]
     );
     // 聚合 = 单汇点 body 的逐轮输出（引擎归一化响应，json.url 回显请求 url）。
-    let loop_output = run_of(&run, "L")["output"].as_array().expect("loop output array");
+    let loop_output = run_of(&run, "L")["output"]
+        .as_array()
+        .expect("loop output array");
     assert_eq!(loop_output.len(), 3);
     for (index, item) in loop_output.iter().enumerate() {
         assert_eq!(
@@ -1220,7 +1280,10 @@ async fn loop_runs_body_per_round_with_loop_variable_and_aggregates_sink_outputs
     let after_input = &run_of(&run, "after")["input"];
     let after_loop_input = after_input["L"].as_array().expect("loop results array");
     assert_eq!(after_loop_input.len(), 3);
-    assert!(after_input.get("x").is_some(), "external upstream key present");
+    assert!(
+        after_input.get("x").is_some(),
+        "external upstream key present"
+    );
     // 逐迭代明细：total / done / capped / records 全 success 且按 index 升序。
     let iterations = iterations_of(&run, "L");
     assert_eq!(iterations["total"].as_i64(), Some(3));
@@ -1290,7 +1353,9 @@ async fn loop_concurrent_rounds_isolate_variable_scope() {
         ]
     );
     // 逐轮聚合齐全（单汇点 sink，三轮输出）。
-    let loop_output = run_of(&run, "L")["output"].as_array().expect("loop output array");
+    let loop_output = run_of(&run, "L")["output"]
+        .as_array()
+        .expect("loop output array");
     assert_eq!(loop_output.len(), 3);
     let iterations = iterations_of(&run, "L");
     assert_eq!(iterations["done"].as_i64(), Some(3));
@@ -1323,7 +1388,9 @@ async fn loop_caps_iterations_at_max_iterations_without_error() {
 
     assert_eq!(run_status(&run), "success");
     assert_eq!(replay_count(&run), 2);
-    let loop_output = run_of(&run, "L")["output"].as_array().expect("loop output array");
+    let loop_output = run_of(&run, "L")["output"]
+        .as_array()
+        .expect("loop output array");
     assert_eq!(loop_output.len(), 2);
     let iterations = iterations_of(&run, "L");
     assert_eq!(iterations["total"].as_i64(), Some(2));
@@ -1364,7 +1431,9 @@ async fn loop_aggregates_multiple_sinks_grouped_by_node_id() {
     assert_eq!(run_status(&run), "success");
     assert_eq!(replay_count(&run), 3);
     // 单轮多汇点：逐轮结果为按汇点 id 分组的对象。
-    let loop_output = run_of(&run, "L")["output"].as_array().expect("loop output array");
+    let loop_output = run_of(&run, "L")["output"]
+        .as_array()
+        .expect("loop output array");
     assert_eq!(loop_output.len(), 1);
     let round = &loop_output[0];
     assert_eq!(
@@ -1397,7 +1466,9 @@ async fn loop_iteration_records_truncated_at_max_records() {
         .await;
 
     assert_eq!(run_status(&run), "success");
-    let loop_output = run_of(&run, "L")["output"].as_array().expect("loop output array");
+    let loop_output = run_of(&run, "L")["output"]
+        .as_array()
+        .expect("loop output array");
     assert_eq!(loop_output.len(), 102);
     let iterations = iterations_of(&run, "L");
     assert_eq!(iterations["total"].as_i64(), Some(102));
@@ -1450,7 +1521,9 @@ async fn loop_cancel_settles_completed_rounds_and_run_reports_cancelled() {
     // loop 节点以已完成轮次聚合照常返回（success），其下游收尾 skipped。
     assert_eq!(status_of(&run, "L"), "success");
     assert_eq!(status_of(&run, "after"), "skipped");
-    let loop_output = run_of(&run, "L")["output"].as_array().expect("loop output array");
+    let loop_output = run_of(&run, "L")["output"]
+        .as_array()
+        .expect("loop output array");
     assert_eq!(loop_output.len(), 1, "only the settled round aggregates");
     assert_eq!(loop_output[0]["json"]["url"], json!("https://t/round-1"));
     // 逐迭代明细如实记录：第 1 轮 success、第 2 轮 cancelled（已开始未跑完）。

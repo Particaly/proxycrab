@@ -1,9 +1,5 @@
 import type { InjectionKey } from "vue";
-import type {
-  WorkflowEdge,
-  WorkflowNode,
-  WorkflowValidationIssue,
-} from "../../api/types";
+import type { WorkflowEdge, WorkflowNode, WorkflowValidationIssue } from "../../api/types";
 
 /**
  * 常驻校验徽标的数据口径（Task 13 Step 3）：本地规则即时提示 + 服务端
@@ -169,9 +165,7 @@ function issueKey(issue: NodeIssue): string {
  * 把问题清单按节点归属（nodeIds 里的每个节点都拿到同一问题引用）。
  * 流程级问题（nodeIds 为空）不落表；供画布节点徽标消费。
  */
-export function groupIssuesByNode(
-  issues: readonly NodeIssue[],
-): ReadonlyMap<string, NodeIssue[]> {
+export function groupIssuesByNode(issues: readonly NodeIssue[]): ReadonlyMap<string, NodeIssue[]> {
   const table = new Map<string, NodeIssue[]>();
   for (const issue of issues) {
     for (const id of issue.nodeIds) {
@@ -195,6 +189,5 @@ export function badgeIssues(issues: readonly NodeIssue[]): NodeIssue[] {
  * 画布 → 节点组件的问题注入键（Vue provide / inject；NodeShell 渲染徽标用）。
  * 值为 nodeId → 该节点的合并后问题清单。
  */
-export const NODE_ISSUES_KEY: InjectionKey<ReadonlyMap<string, NodeIssue[]>> = Symbol(
-  "flow-node-issues",
-);
+export const NODE_ISSUES_KEY: InjectionKey<ReadonlyMap<string, NodeIssue[]>> =
+  Symbol("flow-node-issues");

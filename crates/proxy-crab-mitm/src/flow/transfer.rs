@@ -87,7 +87,11 @@ pub fn collect_referenced_request_ids(workflows: &[Workflow]) -> BTreeSet<String
     let mut ids = BTreeSet::new();
     for workflow in workflows {
         for node in &workflow.nodes {
-            if let Some(request_id) = node.config.request_id.as_deref().filter(|id| !id.is_empty())
+            if let Some(request_id) = node
+                .config
+                .request_id
+                .as_deref()
+                .filter(|id| !id.is_empty())
             {
                 ids.insert(request_id.to_owned());
             }
@@ -200,14 +204,18 @@ fn inspect_imported_node_shape(value: &Value, index: usize) -> Option<String> {
         .get("type")
         .is_some_and(|value| serde_json::from_value::<WorkflowNodeType>(value.clone()).is_ok());
     if !type_ok {
-        return Some(format!("{} 的 type 必须是 {NODE_TYPE_LABELS} 之一", label()));
+        return Some(format!(
+            "{} 的 type 必须是 {NODE_TYPE_LABELS} 之一",
+            label()
+        ));
     }
-    let position_ok = object.get("position").and_then(Value::as_object).is_some_and(
-        |position| {
+    let position_ok = object
+        .get("position")
+        .and_then(Value::as_object)
+        .is_some_and(|position| {
             position.get("x").is_some_and(Value::is_number)
                 && position.get("y").is_some_and(Value::is_number)
-        },
-    );
+        });
     if !position_ok {
         return Some(format!("{} 的 position 必须是含数字 x / y 的对象", label()));
     }
@@ -243,8 +251,14 @@ fn inspect_imported_edge_shape(
     if !non_empty("source") || !non_empty("target") {
         return Some(format!("{} 缺少有效的 source / target", label()));
     }
-    let source = object.get("source").and_then(Value::as_str).unwrap_or_default();
-    let target = object.get("target").and_then(Value::as_str).unwrap_or_default();
+    let source = object
+        .get("source")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let target = object
+        .get("target")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     if !node_ids.contains(source) || !node_ids.contains(target) {
         return Some(format!("{} 引用了不存在的节点", label()));
     }
@@ -262,9 +276,7 @@ fn normalize_edge_for_import(edge: &Value) -> Value {
         .get("sourceHandle")
         .and_then(Value::as_str)
         .is_some_and(|handle| handle == "true" || handle == "false");
-    if !handle_ok
-        && let Some(object) = edge.as_object_mut()
-    {
+    if !handle_ok && let Some(object) = edge.as_object_mut() {
         object.remove("sourceHandle");
     }
     edge
@@ -373,9 +385,7 @@ fn inspect_imported_workflow(value: &Value) -> ParsedWorkflowImport {
 
     let mut edges = Vec::new();
     for (index, edge) in raw_edges.into_iter().flatten().enumerate() {
-        if let Some(issue) =
-            inspect_imported_edge_shape(edge, index, &node_ids, &sticky_node_ids)
-        {
+        if let Some(issue) = inspect_imported_edge_shape(edge, index, &node_ids, &sticky_node_ids) {
             issues.push(issue);
             continue;
         }
@@ -385,8 +395,7 @@ fn inspect_imported_workflow(value: &Value) -> ParsedWorkflowImport {
         }
     }
 
-    let variables =
-        inspect_imported_variables(object.get("variables"), "variables", &mut issues);
+    let variables = inspect_imported_variables(object.get("variables"), "variables", &mut issues);
     // secret 变量表与 variables 同形校验、同通道透传（导入文件通常只含空值
     // 占位——导出侧已剔除值）。
     let secret_variables = inspect_imported_variables(
@@ -445,7 +454,10 @@ pub fn parse_workflow_import(text: &str) -> WorkflowImportParseResult {
         .and_then(Value::as_array)
         .filter(|workflows| !workflows.is_empty())
         .ok_or_else(|| "导出文件中没有流程数据".to_owned())?;
-    Ok(raw_workflows.iter().map(inspect_imported_workflow).collect())
+    Ok(raw_workflows
+        .iter()
+        .map(inspect_imported_workflow)
+        .collect())
 }
 
 /* ------------------------------------------------------------------ *
@@ -676,8 +688,8 @@ pub fn collect_imported_scripts(workflows: &[ParsedWorkflowImport]) -> Vec<Impor
         };
         for (node_index, node) in data.nodes.iter().enumerate() {
             for kind in SCRIPT_KINDS {
-                if let Some(source) = config_script(&node.config, kind)
-                    .filter(|source| !source.is_empty())
+                if let Some(source) =
+                    config_script(&node.config, kind).filter(|source| !source.is_empty())
                 {
                     scripts.push(ImportedScriptRef {
                         workflow_index,
@@ -712,11 +724,8 @@ pub fn clear_unconfirmed_scripts(
     }
     for (node_index, node) in data.nodes.iter_mut().enumerate() {
         for kind in SCRIPT_KINDS {
-            let unconfirmed = unconfirmed_keys.contains(&imported_script_key(
-                workflow_index,
-                node_index,
-                kind,
-            ));
+            let unconfirmed =
+                unconfirmed_keys.contains(&imported_script_key(workflow_index, node_index, kind));
             if unconfirmed
                 && config_script(&node.config, kind).is_some_and(|source| !source.is_empty())
             {
@@ -762,7 +771,9 @@ mod tests {
                 pre_process: Some("return input".to_owned()),
                 post_process: Some("return response".to_owned()),
                 override_: Some(RequestOverride {
-                    url: Some("http://api.test/{{ node.n2.path }}?r={{ node.bbbbb.id }}".to_owned()),
+                    url: Some(
+                        "http://api.test/{{ node.n2.path }}?r={{ node.bbbbb.id }}".to_owned(),
+                    ),
                     ..RequestOverride::default()
                 }),
                 ..NodeConfig::default()
@@ -930,7 +941,10 @@ mod tests {
         // 解析产物保持导入文件原文的旧 id（重映射前）。
         let data = parsed[0].data.as_ref().unwrap();
         assert_eq!(data.nodes[1].id, "n1");
-        assert_eq!(data.edges[1].source_handle, Some(ConditionBranchHandle::True));
+        assert_eq!(
+            data.edges[1].source_handle,
+            Some(ConditionBranchHandle::True)
+        );
 
         let mut id_counter = 0_usize;
         let mut new_id = || {
@@ -968,7 +982,13 @@ mod tests {
         assert_eq!(item.nodes[1].position, Position { x: 1.5, y: -2.5 });
         // 模板引用：旧节点 id → 新节点 id、旧 refId → 新 refId。
         assert_eq!(
-            item.nodes[1].config.override_.as_ref().unwrap().url.as_deref(),
+            item.nodes[1]
+                .config
+                .override_
+                .as_ref()
+                .unwrap()
+                .url
+                .as_deref(),
             Some("http://api.test/{{ node.new-3.path }}?r={{ node.rbbbo.id }}")
         );
         assert_eq!(
@@ -993,7 +1013,10 @@ mod tests {
         assert_eq!(item.edges[0].source, "new-1");
         assert_eq!(item.edges[0].target, "new-2");
         assert_eq!(item.edges[1].source, "new-3");
-        assert_eq!(item.edges[1].source_handle, Some(ConditionBranchHandle::True));
+        assert_eq!(
+            item.edges[1].source_handle,
+            Some(ConditionBranchHandle::True)
+        );
     }
 
     #[test]
@@ -1008,7 +1031,9 @@ mod tests {
         );
         assert_eq!(
             parse_workflow_import("{\"version\":1,\"workflows\":[{}]}").unwrap_err(),
-            format!("不是 ReqFlow 流程导出文件（format 标识缺失或不符，期望 \"{WORKFLOW_EXPORT_FORMAT}\"）")
+            format!(
+                "不是 ReqFlow 流程导出文件（format 标识缺失或不符，期望 \"{WORKFLOW_EXPORT_FORMAT}\"）"
+            )
         );
         assert_eq!(
             parse_workflow_import("{\"format\":\"reqflow-workflow\",\"workflows\":[{}]}")
@@ -1016,8 +1041,10 @@ mod tests {
             "导出文件缺少有效的 version 版本号"
         );
         assert_eq!(
-            parse_workflow_import("{\"format\":\"reqflow-workflow\",\"version\":2,\"workflows\":[{}]}")
-                .unwrap_err(),
+            parse_workflow_import(
+                "{\"format\":\"reqflow-workflow\",\"version\":2,\"workflows\":[{}]}"
+            )
+            .unwrap_err(),
             "导出文件版本 v2 高于当前支持的最高版本 v1，请升级程序后再导入"
         );
         assert_eq!(
@@ -1025,8 +1052,10 @@ mod tests {
             "导出文件中没有流程数据"
         );
         assert_eq!(
-            parse_workflow_import("{\"format\":\"reqflow-workflow\",\"version\":1,\"workflows\":[]}")
-                .unwrap_err(),
+            parse_workflow_import(
+                "{\"format\":\"reqflow-workflow\",\"version\":1,\"workflows\":[]}"
+            )
+            .unwrap_err(),
             "导出文件中没有流程数据"
         );
     }
@@ -1080,13 +1109,22 @@ mod tests {
         assert_eq!(parsed[0].name, UNNAMED_WORKFLOW_NAME);
         assert!(parsed[0].issues.contains(&"nodes 必须是数组".to_owned()));
         assert!(parsed[1].issues.contains(&"节点 #1 缺少有效 id".to_owned()));
-        assert!(parsed[2]
-            .issues
-            .contains(&"连线 #1 连接了便签节点：便签不参与连线".to_owned()));
-        assert!(parsed[3]
-            .issues
-            .contains(&"variables中变量 \"k\" 的值必须是字符串".to_owned()));
-        assert!(parsed[4].issues.iter().any(|issue| issue.contains("形状非法")));
+        assert!(
+            parsed[2]
+                .issues
+                .contains(&"连线 #1 连接了便签节点：便签不参与连线".to_owned())
+        );
+        assert!(
+            parsed[3]
+                .issues
+                .contains(&"variables中变量 \"k\" 的值必须是字符串".to_owned())
+        );
+        assert!(
+            parsed[4]
+                .issues
+                .iter()
+                .any(|issue| issue.contains("形状非法"))
+        );
         assert!(parsed[5].issues.contains(&"节点 id 重复：n1".to_owned()));
     }
 
@@ -1112,9 +1150,11 @@ mod tests {
         .to_string();
         let parsed = parse_workflow_import(&text).unwrap();
         // 空键变量表命中宿主键非空校验，流程整体阻断。
-        assert!(parsed[0]
-            .issues
-            .contains(&"variables中变量键不能为空".to_owned()));
+        assert!(
+            parsed[0]
+                .issues
+                .contains(&"variables中变量键不能为空".to_owned())
+        );
         assert!(parsed[0].data.is_none());
 
         let ok_text = json!({
@@ -1155,7 +1195,7 @@ mod tests {
         let taken = BTreeSet::from(["a".to_owned(), "a (导入 2)".to_owned()]);
         assert_eq!(dedupe_workflow_name("a", &taken), "a (导入 3)");
         let mut new_id = || "x".to_owned();
-        let mut new_ref_id =|_: &BTreeSet<String>| "aaaaa".to_owned();
+        let mut new_ref_id = |_: &BTreeSet<String>| "aaaaa".to_owned();
         // 校验未通过（data 为 None）的流程不能重映射——调用方编程错误。
         let unvalidated = ParsedWorkflowImport::default();
         assert!(remap_imported_workflow(&unvalidated, &mut new_id, &mut new_ref_id).is_err());
@@ -1196,14 +1236,12 @@ mod tests {
         assert_eq!(scripts[2].node_id, "n2");
 
         // 缺省拒绝：未确认的脚本整字段移除（节点保留、脚本不执行）。
-        let confirmed = BTreeSet::from([imported_script_key(
-            0,
-            0,
-            ImportedScriptKind::PreProcess,
-        )]);
+        let confirmed = BTreeSet::from([imported_script_key(0, 0, ImportedScriptKind::PreProcess)]);
         let unconfirmed: BTreeSet<String> = scripts
             .iter()
-            .map(|script| imported_script_key(script.workflow_index, script.node_index, script.kind))
+            .map(|script| {
+                imported_script_key(script.workflow_index, script.node_index, script.kind)
+            })
             .filter(|key| !confirmed.contains(key))
             .collect();
         clear_unconfirmed_scripts(&mut parsed[0], 0, &unconfirmed);
@@ -1218,7 +1256,10 @@ mod tests {
         let mut untouched = parse_workflow_import(&text).unwrap();
         clear_unconfirmed_scripts(&mut untouched[0], 0, &BTreeSet::new());
         let nodes = &untouched[0].data.as_ref().unwrap().nodes;
-        assert_eq!(nodes[0].config.post_process.as_deref(), Some("return response"));
+        assert_eq!(
+            nodes[0].config.post_process.as_deref(),
+            Some("return response")
+        );
         // 损坏流程（data 为 None）原样放过。
         let mut broken = [ParsedWorkflowImport::default()];
         clear_unconfirmed_scripts(&mut broken[0], 0, &unconfirmed);

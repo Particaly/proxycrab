@@ -51,7 +51,12 @@ describe("model to Vue Flow projection", () => {
       node("a", 0, 0),
       { id: "note", type: "stickyNote", position: { x: 1, y: 1 }, config: {} },
     ];
-    const issue = { level: "warning" as const, code: "isolated-node", message: "m", nodeIds: ["a"] };
+    const issue = {
+      level: "warning" as const,
+      code: "isolated-node",
+      message: "m",
+      nodeIds: ["a"],
+    };
     const flowNodes = toFlowNodes(model, new Map([["a", [issue]]]));
     expect(flowNodes[0]!.data.issues).toEqual([issue]);
     expect(flowNodes[0]!.zIndex).toBeUndefined();
@@ -77,7 +82,9 @@ describe("node / edge factories", () => {
     expect(created.refId).toMatch(/^[A-Za-z]{5}$/);
     expect(created.refId).not.toBe("start");
     // 便签默认带空文本；开始节点为空配置
-    expect(createWorkflowNode("stickyNote", { x: 0, y: 0 }, new Set()).config).toEqual({ text: "" });
+    expect(createWorkflowNode("stickyNote", { x: 0, y: 0 }, new Set()).config).toEqual({
+      text: "",
+    });
     expect(createWorkflowNode("start", { x: 0, y: 0 }, new Set()).config).toEqual({});
   });
 

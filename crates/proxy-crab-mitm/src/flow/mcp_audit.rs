@@ -83,7 +83,10 @@ pub fn truncate_arguments_summary(arguments_json: &str) -> String {
     if arguments_json.chars().count() <= ARGUMENTS_SUMMARY_LIMIT {
         return arguments_json.to_owned();
     }
-    let mut summary: String = arguments_json.chars().take(ARGUMENTS_SUMMARY_LIMIT).collect();
+    let mut summary: String = arguments_json
+        .chars()
+        .take(ARGUMENTS_SUMMARY_LIMIT)
+        .collect();
     summary.push('…');
     summary
 }
@@ -136,8 +139,8 @@ fn parse_envelope(raw: Value) -> Result<McpAuditEnvelope> {
             "flow {MCP_AUDIT_FILE} schema version {version} is not supported (expected <= {MCP_AUDIT_SCHEMA_VERSION})"
         );
     }
-    let envelope: McpAuditEnvelope = serde_json::from_value(raw)
-        .context("flow mcp-audit.json is corrupt")?;
+    let envelope: McpAuditEnvelope =
+        serde_json::from_value(raw).context("flow mcp-audit.json is corrupt")?;
     Ok(envelope)
 }
 
@@ -150,8 +153,7 @@ fn load_envelope(flow_root: &Path) -> Result<Option<McpAuditEnvelope>> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error).context("failed to read flow mcp-audit.json"),
     };
-    let raw: Value =
-        serde_json::from_slice(&bytes).context("flow mcp-audit.json is corrupt")?;
+    let raw: Value = serde_json::from_slice(&bytes).context("flow mcp-audit.json is corrupt")?;
     parse_envelope(raw).map(Some)
 }
 

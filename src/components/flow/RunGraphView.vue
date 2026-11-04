@@ -65,7 +65,9 @@ const flowNodes = computed(() =>
 );
 
 /** 展示连线：分支标签 + 运行中边流动动画类。 */
-const flowEdges = computed(() => withEdgeRunClasses(toFlowEdges(props.edges), props.runStates ?? null));
+const flowEdges = computed(() =>
+  withEdgeRunClasses(toFlowEdges(props.edges), props.runStates ?? null),
+);
 
 function minimapColor(node: { type?: string }): string {
   const meta = getWorkflowNodeMeta(String(node.type ?? ""));
@@ -107,8 +109,12 @@ function minimapColor(node: { type?: string }): string {
 
     <!-- 只读画布的工具条：缩放 / 全览（无编辑动作） -->
     <div class="run-graph-toolbar">
-      <button class="btn icon" title="放大" @click="zoomIn()"><span aria-hidden="true">＋</span></button>
-      <button class="btn icon" title="缩小" @click="zoomOut()"><span aria-hidden="true">－</span></button>
+      <button class="btn icon" title="放大" @click="zoomIn()">
+        <span aria-hidden="true">＋</span>
+      </button>
+      <button class="btn icon" title="缩小" @click="zoomOut()">
+        <span aria-hidden="true">－</span>
+      </button>
       <button class="btn icon" title="适应画布" @click="fitView({ padding: 0.25, maxZoom: 1 })">
         <span aria-hidden="true">⤢</span>
       </button>

@@ -1,12 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { copyText } from "../../utils/clipboard";
-import {
-  buildJsonTree,
-  defaultExpanded,
-  filterTree,
-  stringifyNodeValue,
-} from "./json-tree";
+import { buildJsonTree, defaultExpanded, filterTree, stringifyNodeValue } from "./json-tree";
 import type { JsonTreeNode, JsonValueKind } from "./json-tree";
 
 /**
@@ -189,7 +184,10 @@ function inlineText(text: string): string {
         没有匹配「{{ query.trim() }}」的键或值
       </p>
       <template v-else>
-        <template v-for="row in visibleRows" :key="row.close ? `close-${row.node.path}` : row.node.path">
+        <template
+          v-for="row in visibleRows"
+          :key="row.close ? `close-${row.node.path}` : row.node.path"
+        >
           <div
             class="json-tree-row"
             :class="{ matched: row.node.matched }"
@@ -200,7 +198,11 @@ function inlineText(text: string): string {
           >
             <!-- 展开 / 折叠箭头：容器与截断节点可展开，其余占位对齐 -->
             <button
-              v-if="row.node.kind === 'object' || row.node.kind === 'array' || row.node.kind === 'truncated'"
+              v-if="
+                row.node.kind === 'object' ||
+                row.node.kind === 'array' ||
+                row.node.kind === 'truncated'
+              "
               type="button"
               class="json-tree-toggle"
               :aria-expanded="isExpanded(row.node)"
@@ -290,7 +292,7 @@ function inlineText(text: string): string {
             class="json-tree-truncated-preview"
             :style="{ marginLeft: `${row.node.depth * 14 + 4}px` }"
             :data-testid="`${testId}-truncated-preview`"
-          >{{ row.node.truncated.preview }}</pre>
+            >{{ row.node.truncated.preview }}</pre>
         </template>
       </template>
     </div>

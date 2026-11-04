@@ -546,7 +546,8 @@ onBeforeUnmount(() => {
               </div>
             </div>
             <p class="mcp-tier-hint">
-              当前暴露 {{ mcpToolCount ?? "—" }} 个工具；执行档关闭时运行类工具不可用。修改档位需审批确认。
+              当前暴露
+              {{ mcpToolCount ?? "—" }} 个工具；执行档关闭时运行类工具不可用。修改档位需审批确认。
             </p>
           </section>
 

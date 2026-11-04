@@ -48,7 +48,13 @@ function makeEdge(source: string, target: string): WorkflowEdge {
  * computeLoopBody 的准入语义，由其既有测试锁定）。
  */
 function makeBodyGraph(): { nodes: WorkflowNode[]; edges: WorkflowEdge[]; loopId: NodeId } {
-  const nodes = [makeNode("s"), makeNode("L", { items: ["x"] }), makeNode("a"), makeNode("b"), makeNode("m")];
+  const nodes = [
+    makeNode("s"),
+    makeNode("L", { items: ["x"] }),
+    makeNode("a"),
+    makeNode("b"),
+    makeNode("m"),
+  ];
   const edges = [
     makeEdge("s", "L"),
     makeEdge("L", "a"),

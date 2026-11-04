@@ -16,10 +16,14 @@ function truncatedWrapper(preview: string, originalBytes: number): unknown {
 describe("截断快照识别（披露判定契约）", () => {
   test("字段齐全才认定；preview / originalBytes 类型不符或标记缺失不误伤", () => {
     expect(isTruncatedSnapshot(truncatedWrapper("{...", 4096))).toBe(true);
-    expect(isTruncatedSnapshot({ __truncated: true, preview: "x", originalBytes: "12" })).toBe(false);
+    expect(isTruncatedSnapshot({ __truncated: true, preview: "x", originalBytes: "12" })).toBe(
+      false,
+    );
     expect(isTruncatedSnapshot({ __truncated: true, preview: 1, originalBytes: 12 })).toBe(false);
     expect(isTruncatedSnapshot({ preview: "x", originalBytes: 12 })).toBe(false);
-    expect(isTruncatedSnapshot({ __truncated: false, preview: "x", originalBytes: 12 })).toBe(false);
+    expect(isTruncatedSnapshot({ __truncated: false, preview: "x", originalBytes: 12 })).toBe(
+      false,
+    );
     expect(isTruncatedSnapshot(null)).toBe(false);
     expect(isTruncatedSnapshot("{ __truncated... }")).toBe(false);
     // 恰好同形的普通对象（字段名相同但语义不同）不会被误伤——契约由三个字段同时成立构成
@@ -111,7 +115,9 @@ describe("stringifyNodeValue", () => {
     expect(stringifyNodeValue(buildJsonTree({ b: 1, a: [1] }))).toBe(
       JSON.stringify({ b: 1, a: [1] }, null, 2),
     );
-    expect(stringifyNodeValue(buildJsonTree(truncatedWrapper("preview-text", 99)))).toBe("preview-text");
+    expect(stringifyNodeValue(buildJsonTree(truncatedWrapper("preview-text", 99)))).toBe(
+      "preview-text",
+    );
   });
 
   test("isScalarKind 与分类一致", () => {

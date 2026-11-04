@@ -32,7 +32,11 @@ function makeNode(
 
 /** 构造连线（id 由 source→target 拼出） */
 function makeEdge(source: string, target: string) {
-  return { id: asEdgeId(`${source}->${target}`), source: asNodeId(source), target: asNodeId(target) };
+  return {
+    id: asEdgeId(`${source}->${target}`),
+    source: asNodeId(source),
+    target: asNodeId(target),
+  };
 }
 
 /** 桩重放宿主：按 url 记录出站请求并回 200 JSON 信封 */

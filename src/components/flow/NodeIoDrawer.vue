@@ -1,10 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from "vue";
-import {
-  buildInputFieldSnippet,
-  buildNodeFieldSnippet,
-  writeIoPathPayload,
-} from "./template-dnd";
+import { buildInputFieldSnippet, buildNodeFieldSnippet, writeIoPathPayload } from "./template-dnd";
 import {
   buildFieldTree,
   countFieldNodes,
@@ -95,7 +91,10 @@ const GROUP_DEFS: ReadonlyArray<IoGroupDef> = [
 
 /** 单组展开判定：搜索时全展开（命中的深层字段直接可见）；顶层默认展开；
  * 其余按用户手动展开集 */
-function expandedFor(searching: boolean, expanded: Set<string>): (node: IoFieldTreeNode) => boolean {
+function expandedFor(
+  searching: boolean,
+  expanded: Set<string>,
+): (node: IoFieldTreeNode) => boolean {
   return (node) => searching || node.depth === 0 || expanded.has(node.path);
 }
 
@@ -255,7 +254,11 @@ onBeforeUnmount(() => {
             }}
           </span>
         </div>
-        <div v-if="group.view.rows.length > 0" class="io-tree" :data-testid="`node-io-${group.key}-tree`">
+        <div
+          v-if="group.view.rows.length > 0"
+          class="io-tree"
+          :data-testid="`node-io-${group.key}-tree`"
+        >
           <div
             v-for="row in group.view.rows"
             :key="row.path"
@@ -296,7 +299,9 @@ onBeforeUnmount(() => {
         <p v-else-if="group.view.hasSample" class="io-group-empty">
           该值没有可下钻的字段（原始值 / 空）。
         </p>
-        <p v-else class="io-group-empty">暂无样本数据：该节点运行 / 试跑后在此展示，可一键复制模板引用。</p>
+        <p v-else class="io-group-empty">
+          暂无样本数据：该节点运行 / 试跑后在此展示，可一键复制模板引用。
+        </p>
       </section>
     </div>
   </aside>

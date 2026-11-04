@@ -29,9 +29,9 @@ pub async fn respond(
         protocol::Incoming::Request(request) if request.method == "tools/call" => {
             Some(tools::call(&request, context, tool_timeout).await)
         }
-        protocol::Incoming::Request(request) if request.method == "tools/list" => {
-            Some(protocol::success(&request.id, tools::list_envelope(&context.tiers)))
-        }
+        protocol::Incoming::Request(request) if request.method == "tools/list" => Some(
+            protocol::success(&request.id, tools::list_envelope(&context.tiers)),
+        ),
         incoming => protocol::handle(incoming),
     }
 }

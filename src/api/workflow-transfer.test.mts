@@ -60,13 +60,20 @@ test("inspect summarizes counts, names and the stable script list", () => {
     workflows: [
       workflow("wf-a", "结算链路", [
         replayNode("n1", { preProcess: "input.a", postProcess: "", expression: undefined }),
-        { id: "n2", type: "condition", position: { x: 1, y: 1 }, config: { expression: "input.ok === true" } },
+        {
+          id: "n2",
+          type: "condition",
+          position: { x: 1, y: 1 },
+          config: { expression: "input.ok === true" },
+        },
         { id: "n3", type: "start", position: { x: 2, y: 2 }, config: {} },
       ]),
       workflow("wf-b", "", [replayNode("n9", { postProcess: "resp.code" })]),
     ],
     requests: [],
-    envSets: [{ id: "env-1", name: "默认", values: {}, secretValues: {}, createdAt: 1, updatedAt: 1 }],
+    envSets: [
+      { id: "env-1", name: "默认", values: {}, secretValues: {}, createdAt: 1, updatedAt: 1 },
+    ],
   };
   const result = inspectWorkflowEnvelope(envelope);
   expect(result.ok).toBe(true);

@@ -47,13 +47,7 @@ export function isTruncatedSnapshot(value: unknown): value is TruncatedSnapshot 
 
 /** JSON 值的展示分类（决定分色与渲染形态）。 */
 export type JsonValueKind =
-  | "object"
-  | "array"
-  | "string"
-  | "number"
-  | "boolean"
-  | "null"
-  | "truncated";
+  "object" | "array" | "string" | "number" | "boolean" | "null" | "truncated";
 
 /** JSON 树节点（buildJsonTree 产物；filterTree 产物为其浅拷贝收敛版）。 */
 export interface JsonTreeNode {
@@ -81,12 +75,7 @@ export interface JsonTreeNode {
 }
 
 /** 标量分类集合（判定「有值可展示」的节点）。 */
-const SCALAR_KINDS: ReadonlySet<JsonValueKind> = new Set([
-  "string",
-  "number",
-  "boolean",
-  "null",
-]);
+const SCALAR_KINDS: ReadonlySet<JsonValueKind> = new Set(["string", "number", "boolean", "null"]);
 
 /** 值是否为标量（非容器、非截断包装）。 */
 export function isScalarKind(kind: JsonValueKind): boolean {

@@ -36,7 +36,9 @@ function sampleRun(overrides: Partial<FlowRunRecord> = {}): FlowRunRecord {
 }
 
 /** 造一条最小节点 checkpoint。 */
-function sampleNodeRun(overrides: Partial<FlowNodeRunRecord> & { nodeId: string }): FlowNodeRunRecord {
+function sampleNodeRun(
+  overrides: Partial<FlowNodeRunRecord> & { nodeId: string },
+): FlowNodeRunRecord {
   return {
     runId: "run-1234567890",
     status: "success",
@@ -92,15 +94,22 @@ describe("耗时格式化", () => {
   });
 
   test("由运行记录计算耗时：running 缺 finishedAt 显示进行中，其余按时长", () => {
-    expect(formatRunDuration({ status: "running", startedAt: 0, finishedAt: undefined })).toBe("进行中…");
+    expect(formatRunDuration({ status: "running", startedAt: 0, finishedAt: undefined })).toBe(
+      "进行中…",
+    );
     expect(formatRunDuration({ status: "success", startedAt: 0, finishedAt: 1500 })).toBe("1.5s");
-    expect(formatRunDuration({ status: "failed", startedAt: 100, finishedAt: undefined })).toBe("—");
+    expect(formatRunDuration({ status: "failed", startedAt: 100, finishedAt: undefined })).toBe(
+      "—",
+    );
   });
 });
 
 describe("列表筛选参数组装与分页", () => {
   test("『all』哨兵与空值不下发，页码换算 offset，limit 恒为每页条数", () => {
-    expect(buildRunListQuery({ workflowId: "all", status: "all" }, 0)).toEqual({ limit: 20, offset: 0 });
+    expect(buildRunListQuery({ workflowId: "all", status: "all" }, 0)).toEqual({
+      limit: 20,
+      offset: 0,
+    });
     expect(buildRunListQuery({ workflowId: "wf-1", status: "failed" }, 2)).toEqual({
       workflowId: "wf-1",
       status: "failed",
@@ -115,7 +124,10 @@ describe("列表筛选参数组装与分页", () => {
   });
 
   test("负页码按 0 处理", () => {
-    expect(buildRunListQuery({ workflowId: "all", status: "all" }, -3)).toEqual({ limit: 20, offset: 0 });
+    expect(buildRunListQuery({ workflowId: "all", status: "all" }, -3)).toEqual({
+      limit: 20,
+      offset: 0,
+    });
   });
 
   test("页数与筛选生效判定", () => {
@@ -188,12 +200,12 @@ describe("图快照解析与三态还原", () => {
     expect(fallbackMessages).toHaveLength(1);
     expect(fallbackMessages[0]).toContain("图快照缺失，按当前流程定义显示");
 
-    expect(runGraphDisclosures({ nodes: [], edges: [], source: "none", truncated: false }, true)).toEqual([
-      "流程定义已删除且无图快照，画布不可还原",
-    ]);
-    expect(runGraphDisclosures({ nodes: [], edges: [], source: "none", truncated: false }, false)).toEqual([
-      "图快照缺失且后端未提供流程定义能力，画布不可还原",
-    ]);
+    expect(
+      runGraphDisclosures({ nodes: [], edges: [], source: "none", truncated: false }, true),
+    ).toEqual(["流程定义已删除且无图快照，画布不可还原"]);
+    expect(
+      runGraphDisclosures({ nodes: [], edges: [], source: "none", truncated: false }, false),
+    ).toEqual(["图快照缺失且后端未提供流程定义能力，画布不可还原"]);
 
     // 完整快照无需披露
     expect(
@@ -230,16 +242,25 @@ describe("节点运行态着色投影", () => {
       "interrupted",
     );
     expect(states.n1?.status).toBe("success");
-    expect(states.n2).toMatchObject({ status: "skipped", rawStatus: "running", runInterrupted: true });
+    expect(states.n2).toMatchObject({
+      status: "skipped",
+      rawStatus: "running",
+      runInterrupted: true,
+    });
   });
 
   test("非中断运行的 running 节点保持 running（转圈脉冲）", () => {
-    const states = nodeRunsToRunStates([sampleNodeRun({ nodeId: "n1", status: "running" })], "running");
+    const states = nodeRunsToRunStates(
+      [sampleNodeRun({ nodeId: "n1", status: "running" })],
+      "running",
+    );
     expect(states.n1).toMatchObject({ status: "running", runInterrupted: false });
   });
 
   test("循环迭代进度防御提取：正常 / 缺字段 / 非对象", () => {
-    expect(iterationProgress({ total: 5, done: 2, capped: true, records: [], truncated: false })).toEqual({
+    expect(
+      iterationProgress({ total: 5, done: 2, capped: true, records: [], truncated: false }),
+    ).toEqual({
       total: 5,
       done: 2,
       capped: true,
@@ -251,10 +272,19 @@ describe("节点运行态着色投影", () => {
 
   test("进度并入运行态 map（已迭代 done/total/capped）", () => {
     const states = nodeRunsToRunStates(
-      [sampleNodeRun({ nodeId: "loop", iterations: { total: 5, done: 2, capped: true, records: [], truncated: false } })],
+      [
+        sampleNodeRun({
+          nodeId: "loop",
+          iterations: { total: 5, done: 2, capped: true, records: [], truncated: false },
+        }),
+      ],
       "success",
     );
-    expect(states.loop).toMatchObject({ iterationsDone: 2, iterationsTotal: 5, iterationsCapped: true });
+    expect(states.loop).toMatchObject({
+      iterationsDone: 2,
+      iterationsTotal: 5,
+      iterationsCapped: true,
+    });
   });
 });
 
@@ -295,7 +325,12 @@ describe("边运行态", () => {
       { id: "e2", source: "b", target: "c" },
     ];
     const withClasses = withEdgeRunClasses(edges, states);
-    expect(withClasses[0]).toEqual({ id: "e1", source: "a", target: "b", class: "flow-edge-running" });
+    expect(withClasses[0]).toEqual({
+      id: "e1",
+      source: "a",
+      target: "b",
+      class: "flow-edge-running",
+    });
     expect(withClasses[1]).toEqual({ id: "e2", source: "b", target: "c" });
     // 关闭运行态（null）原样返回
     expect(withEdgeRunClasses(edges, null)).toEqual(edges);

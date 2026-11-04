@@ -30,7 +30,10 @@ import { formatLoopIterationProgress } from "./run-view";
  * 循环迭代进度行。节点名双击进入行内编辑（Enter / 失焦提交、Esc 取消），
  * 经 NODE_RENAME_KEY 上抛画布 → 窗口落 domain 节点 label。
  */
-const props = defineProps<NodeProps<{ node: WorkflowNode; issues: NodeIssue[]; runState?: RunNodeVisualState }>>();
+const props =
+  defineProps<
+    NodeProps<{ node: WorkflowNode; issues: NodeIssue[]; runState?: RunNodeVisualState }>
+  >();
 
 const renameNode = inject(NODE_RENAME_KEY, null);
 
@@ -84,10 +87,18 @@ const runMark = computed(() => {
 /** 循环迭代进度行（仅循环节点携带进度时渲染）。 */
 const runIterations = computed(() => {
   const state = runState.value;
-  if (state === undefined || state.iterationsDone === undefined || state.iterationsTotal === undefined) {
+  if (
+    state === undefined ||
+    state.iterationsDone === undefined ||
+    state.iterationsTotal === undefined
+  ) {
     return null;
   }
-  return formatLoopIterationProgress(state.iterationsDone, state.iterationsTotal, state.iterationsCapped === true);
+  return formatLoopIterationProgress(
+    state.iterationsDone,
+    state.iterationsTotal,
+    state.iterationsCapped === true,
+  );
 });
 
 /** 便签底色：config.color 为合法 HEX 时生效，否则用默认便签黄。 */

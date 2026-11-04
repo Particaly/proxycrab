@@ -43,7 +43,9 @@ const filters = ref({ workflowId: "all", status: "all" });
 const workflowOptions = ref<Array<{ id: string; name: string }>>([]);
 
 const pageCount = computed(() => runPageCount(total.value));
-const pageLabel = computed(() => `${Math.min(page.value + 1, pageCount.value)} / ${pageCount.value}`);
+const pageLabel = computed(
+  () => `${Math.min(page.value + 1, pageCount.value)} / ${pageCount.value}`,
+);
 
 /** 表格行的耗时列（running 显示「进行中…」）。 */
 function durationOf(run: FlowRunRecord): string {
@@ -173,7 +175,13 @@ onUnmounted(() => {
 
     <!-- 行（空态按「无数据 / 筛选无命中」区分） -->
     <div v-if="runs.length === 0" class="empty-hint">
-      {{ loadError !== null ? "加载失败" : hasActiveFilters(filters) ? "没有符合筛选条件的运行记录" : "暂无运行记录" }}
+      {{
+        loadError !== null
+          ? "加载失败"
+          : hasActiveFilters(filters)
+            ? "没有符合筛选条件的运行记录"
+            : "暂无运行记录"
+      }}
     </div>
     <div v-else class="rh-body">
       <button
@@ -185,10 +193,16 @@ onUnmounted(() => {
         @click="openRunDetail(run.id)"
       >
         <span class="rh-time mono">{{ formatDateTime(run.startedAt) }}</span>
-        <span class="rh-name" :title="run.workflowName">{{ run.workflowName || run.workflowId }}</span>
-        <span class="rh-trigger"><span class="badge">{{ runTriggerLabel(run.trigger) }}</span></span>
+        <span class="rh-name" :title="run.workflowName">{{
+          run.workflowName || run.workflowId
+        }}</span>
+        <span class="rh-trigger"
+          ><span class="badge">{{ runTriggerLabel(run.trigger) }}</span></span
+        >
         <span class="rh-status">
-          <span class="badge rh-status-badge" :class="`is-${run.status}`">{{ runStatusLabel(run.status) }}</span>
+          <span class="badge rh-status-badge" :class="`is-${run.status}`">{{
+            runStatusLabel(run.status)
+          }}</span>
         </span>
         <span class="rh-duration mono">{{ durationOf(run) }}</span>
         <span class="rh-error-col" :class="{ 'text-danger': run.error }" :title="run.error ?? ''">

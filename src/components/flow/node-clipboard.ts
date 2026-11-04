@@ -84,9 +84,7 @@ export function copySelectedNodes(
       position: { x: node.position.x, y: node.position.y },
       config: cloneConfig(node.config),
     })),
-    edges: edges.filter(
-      (edge) => selectedIds.has(edge.source) && selectedIds.has(edge.target),
-    ),
+    edges: edges.filter((edge) => selectedIds.has(edge.source) && selectedIds.has(edge.target)),
   };
   return clipboard;
 }
@@ -145,7 +143,10 @@ function remapConfigTemplateRefs(
   if (Array.isArray(value)) return value.map((item) => remapConfigTemplateRefs(item, refIdByToken));
   if (value !== null && typeof value === "object") {
     return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [key, remapConfigTemplateRefs(item, refIdByToken)]),
+      Object.entries(value).map(([key, item]) => [
+        key,
+        remapConfigTemplateRefs(item, refIdByToken),
+      ]),
     );
   }
   return value;

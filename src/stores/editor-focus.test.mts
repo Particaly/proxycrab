@@ -1,9 +1,5 @@
 import { beforeEach, expect, test } from "vitest";
-import {
-  consumeEditorFocus,
-  editorFocusStore,
-  requestEditorFocus,
-} from "./editor-focus";
+import { consumeEditorFocus, editorFocusStore, requestEditorFocus } from "./editor-focus";
 
 /**
  * 编辑器聚焦请求接缝单测（Task 22 薄片 C）：写入→消费一次即清空、

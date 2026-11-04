@@ -244,7 +244,11 @@ const REGISTRY: &[ToolDescriptor] = &[
                 "integer",
                 "Max entries to return, between 1 and 200; omitted defaults to 50.",
             ),
-            ("offset", "integer", "Entries to skip; must be non-negative."),
+            (
+                "offset",
+                "integer",
+                "Entries to skip; must be non-negative.",
+            ),
         ],
     },
     ToolDescriptor {
@@ -261,7 +265,11 @@ const REGISTRY: &[ToolDescriptor] = &[
         tier: ToolTier::Write,
         params: &[
             ("id", "string", "Workflow id to update."),
-            ("projectId", "string", "Optional new owning flow project id."),
+            (
+                "projectId",
+                "string",
+                "Optional new owning flow project id.",
+            ),
             ("name", "string", "Optional new workflow name."),
             ("description", "string", "Optional new description."),
             (
@@ -275,7 +283,11 @@ const REGISTRY: &[ToolDescriptor] = &[
                 "Replacement edge list; send together with nodes as one graph unit.",
             ),
             ("variables", "object", "Replacement workflow variables map."),
-            ("secretVariables", "object", "Replacement secret variables map."),
+            (
+                "secretVariables",
+                "object",
+                "Replacement secret variables map.",
+            ),
         ],
     },
     ToolDescriptor {
@@ -465,7 +477,11 @@ pub async fn call(request: &RpcRequest, context: &ToolCallContext, timeout: Dura
         .await;
     // 审计身份解析（plan Task 25 Step 4）：本地直连记 "local"，分享身份
     // 记其稳定 id，解析失败记 "unresolved"。
-    let identity = match context.permissions.share_identity(&context.credential).await {
+    let identity = match context
+        .permissions
+        .share_identity(&context.credential)
+        .await
+    {
         Ok(None) => "local".to_owned(),
         Ok(Some(identity)) => identity.id,
         Err(_) => "unresolved".to_owned(),
@@ -489,7 +505,11 @@ pub async fn call(request: &RpcRequest, context: &ToolCallContext, timeout: Dura
     // 脱敏绑定（plan Task 25 Step 4）：有绑定时执行段换成 reader
     // (Some(&script), "mcp")，工具结果与 HTTP API 同路径脱敏；reader 解析
     // 失败按 ManagerError 走 tool_error（fail closed），无绑定用原 manager。
-    let manager = match context.permissions.redaction_script(&context.credential).await {
+    let manager = match context
+        .permissions
+        .redaction_script(&context.credential)
+        .await
+    {
         Ok(Some(script)) => match context.manager.reader(Some(&script), "mcp") {
             Ok(reader) => reader,
             Err(error) => {
@@ -511,8 +531,7 @@ pub async fn call(request: &RpcRequest, context: &ToolCallContext, timeout: Dura
         },
         Ok(None) => context.manager.clone(),
         Err(denied) => {
-            let reason =
-                manager_error_reason(&ManagerError::internal(denied.message));
+            let reason = manager_error_reason(&ManagerError::internal(denied.message));
             record_audit(
                 context,
                 McpAuditEntry::new(
@@ -534,7 +553,14 @@ pub async fn call(request: &RpcRequest, context: &ToolCallContext, timeout: Dura
         Ok(Ok(value)) => {
             record_audit(
                 context,
-                McpAuditEntry::new(name, identity.as_str(), &arguments_json, "ok", "allowed", None),
+                McpAuditEntry::new(
+                    name,
+                    identity.as_str(),
+                    &arguments_json,
+                    "ok",
+                    "allowed",
+                    None,
+                ),
             )
             .await;
             protocol::success(
@@ -582,7 +608,10 @@ pub async fn call(request: &RpcRequest, context: &ToolCallContext, timeout: Dura
 /// trait 走 blocking 通道（审计文件小，单次原子写，无需额外异步化）。
 async fn record_audit(context: &ToolCallContext, entry: McpAuditEntry) {
     if let Err(error) = context.manager.append_mcp_audit(entry).await {
-        tracing::warn!("failed to append MCP tool call audit entry: {}", error.message);
+        tracing::warn!(
+            "failed to append MCP tool call audit entry: {}",
+            error.message
+        );
     }
 }
 
@@ -696,8 +725,9 @@ async fn execute(
             let source = manager.log_body_source(query.session_id, id, side).await?;
             // BodySource 不序列化上送：走读时受限渲染（与日志详情的 body
             // 形态一致，超限降级为 Large 摘要）。
-            let payload = read_body_payload(source)
-                .map_err(|_| ManagerError::new(ErrorCode::BodyReadFailed, "read capture body failed"))?;
+            let payload = read_body_payload(source).map_err(|_| {
+                ManagerError::new(ErrorCode::BodyReadFailed, "read capture body failed")
+            })?;
             serialize_result(payload)
         }
         /* ---- 请求库 ---- */
@@ -757,8 +787,9 @@ async fn execute(
 
 /// 反序列化工具入参为映射路由的查询/请求体类型；失败归入 bad_request。
 fn parse_arguments<T: DeserializeOwned>(arguments: &Value) -> Result<T, ManagerError> {
-    serde_json::from_value(arguments.clone())
-        .map_err(|error| ManagerError::bad_request(format!("arguments do not match the tool schema: {error}")))
+    serde_json::from_value(arguments.clone()).map_err(|error| {
+        ManagerError::bad_request(format!("arguments do not match the tool schema: {error}"))
+    })
 }
 
 /// 从工具入参中提取路径参数（id 等，提升为入参的路由段）；缺失或类型
@@ -768,13 +799,16 @@ fn path_argument<T: DeserializeOwned>(arguments: &Value, name: &str) -> Result<T
         .get(name)
         .ok_or_else(|| ManagerError::bad_request(format!("missing required argument: {name}")))?;
     serde_json::from_value(value.clone()).map_err(|error| {
-        ManagerError::bad_request(format!("argument '{name}' does not match the tool schema: {error}"))
+        ManagerError::bad_request(format!(
+            "argument '{name}' does not match the tool schema: {error}"
+        ))
     })
 }
 
 /// 执行结果统一序列化；失败归入 internal（不透出内部细节）。
 fn serialize_result<T: serde::Serialize>(value: T) -> Result<Value, ManagerError> {
-    serde_json::to_value(value).map_err(|_| ManagerError::internal("tool result serialization failed"))
+    serde_json::to_value(value)
+        .map_err(|_| ManagerError::internal("tool result serialization failed"))
 }
 
 /// 测试专用长任务桩：验证超时与断连取消的可观察信号（STARTED 置位后
@@ -837,10 +871,10 @@ mod tests {
     use crate::dto::ScriptRequest;
     use crate::manager::MitmManager;
     use async_trait::async_trait;
+    use proxy_crab_mitm::ProxyCrab;
     use proxy_crab_mitm::log_buffer::LogBuffer;
     use proxy_crab_mitm::model::{HeaderValues, NewSession, RequestData};
     use proxy_crab_mitm::storage::CaptureStore;
-    use proxy_crab_mitm::ProxyCrab;
     use tempfile::tempdir;
 
     struct AllowTools;
@@ -877,7 +911,10 @@ mod tests {
         }
     }
 
-    fn test_context(manager: Arc<dyn ProxyCrabManager>, permits: Arc<Semaphore>) -> ToolCallContext {
+    fn test_context(
+        manager: Arc<dyn ProxyCrabManager>,
+        permits: Arc<Semaphore>,
+    ) -> ToolCallContext {
         test_context_with_tiers(manager, McpTiers::default(), permits)
     }
 
@@ -934,7 +971,10 @@ mod tests {
             .iter()
             .find(|tool| tool["name"] == "log_body")
             .unwrap();
-        assert_eq!(log_body["inputSchema"]["properties"]["side"]["type"], "string");
+        assert_eq!(
+            log_body["inputSchema"]["properties"]["side"]["type"],
+            "string"
+        );
         assert!(
             log_body["inputSchema"]["properties"]["side"]["description"]
                 .as_str()
@@ -1022,7 +1062,10 @@ mod tests {
             execute: false,
         };
         assert_eq!(
-            list_envelope(&write_only)["tools"].as_array().unwrap().len(),
+            list_envelope(&write_only)["tools"]
+                .as_array()
+                .unwrap()
+                .len(),
             2
         );
     }
@@ -1081,15 +1124,17 @@ mod tests {
     fn page_bounds_inject_safe_default_and_reject_out_of_range() {
         // 未声明界限的工具原样放行（含已有 manager 侧校验的 workflow_runs_list）。
         let raw = json!({ "limit": 999, "offset": -1 });
-        assert_eq!(enforce_page_bounds("workflow_runs_list", &raw).unwrap(), raw);
+        assert_eq!(
+            enforce_page_bounds("workflow_runs_list", &raw).unwrap(),
+            raw
+        );
         // 不带 limit（含显式 null）时注入安全缺省值，避免一次拉爆全量。
         assert_eq!(
             enforce_page_bounds("workflows_list", &json!({})).unwrap(),
             json!({ "limit": 50 })
         );
         assert_eq!(
-            enforce_page_bounds("workflows_list", &json!({ "limit": null, "offset": 10 }))
-                .unwrap(),
+            enforce_page_bounds("workflows_list", &json!({ "limit": null, "offset": 10 })).unwrap(),
             json!({ "limit": 50, "offset": 10 })
         );
         // 越界拒绝：limit=0/超上限/负 limit/负 offset，文案说明合法范围。
@@ -1244,12 +1289,7 @@ mod tests {
             Arc::new(Semaphore::new(MAX_IN_FLIGHT_TOOL_CALLS)),
         );
         slow_tool_stub::reset();
-        let response = call(
-            &slow_tool_request(3),
-            &context,
-            Duration::from_millis(50),
-        )
-        .await;
+        let response = call(&slow_tool_request(3), &context, Duration::from_millis(50)).await;
 
         assert!(slow_tool_stub::started(), "stub must have started running");
         assert_eq!(response["result"]["isError"], true);
@@ -1275,7 +1315,9 @@ mod tests {
         let tasks = (0..MAX_IN_FLIGHT_TOOL_CALLS)
             .map(|id| {
                 let context = context.clone();
-                tokio::spawn(async move { call(&slow_tool_request(id), &context, TOOL_CALL_TIMEOUT).await })
+                tokio::spawn(async move {
+                    call(&slow_tool_request(id), &context, TOOL_CALL_TIMEOUT).await
+                })
             })
             .collect::<Vec<_>>();
         for _ in 0..500 {
@@ -1406,8 +1448,8 @@ mod tests {
         manager
             .create_redaction_script(ScriptRequest {
                 name: "mask".into(),
-                content:
-                    "assert(context.api == 'mcp'); req.uri = 'https://example.com/masked'".into(),
+                content: "assert(context.api == 'mcp'); req.uri = 'https://example.com/masked'"
+                    .into(),
             })
             .await
             .unwrap();

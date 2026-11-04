@@ -159,9 +159,7 @@ impl RunStore {
     }
 
     fn connection(&self) -> std::sync::MutexGuard<'_, Connection> {
-        self.connection
-            .lock()
-            .expect("run database lock poisoned")
+        self.connection.lock().expect("run database lock poisoned")
     }
 
     /// Insert a fresh run row (status `running`).
@@ -180,9 +178,7 @@ impl RunStore {
                 run.started_at as i64,
                 run.finished_at.map(|value| value as i64),
                 run.error,
-                run.graph_snapshot
-                    .as_ref()
-                    .map(JsonValue::to_string),
+                run.graph_snapshot.as_ref().map(JsonValue::to_string),
             ],
         )?;
         Ok(())
@@ -368,7 +364,7 @@ fn node_from_row(row: &Row<'_>) -> rusqlite::Result<FlowNodeRunRecord> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::flow::run_record::{is_truncated_snapshot, SNAPSHOT_MAX_BYTES};
+    use crate::flow::run_record::{SNAPSHOT_MAX_BYTES, is_truncated_snapshot};
     use serde_json::json;
 
     fn sample_run(id: &str) -> FlowRunRecord {
@@ -445,10 +441,14 @@ mod tests {
         assert_eq!(run.status, "success");
         assert_eq!(run.finished_at, Some(1020));
 
-        let (page, total) = store.list_runs(Some("wf-1"), Some("success"), 10, 0).unwrap();
+        let (page, total) = store
+            .list_runs(Some("wf-1"), Some("success"), 10, 0)
+            .unwrap();
         assert_eq!(total, 1);
         assert_eq!(page[0].id, "run-1");
-        let (_, total) = store.list_runs(Some("wf-1"), Some("failed"), 10, 0).unwrap();
+        let (_, total) = store
+            .list_runs(Some("wf-1"), Some("failed"), 10, 0)
+            .unwrap();
         assert_eq!(total, 0);
     }
 
@@ -506,7 +506,10 @@ mod tests {
         // output：读回为截断包装，originalBytes 为原值序列化字节数。
         let output = stored.output.as_ref().unwrap();
         let view = is_truncated_snapshot(output).expect("output becomes a truncated wrapper");
-        assert_eq!(view.original_bytes as usize, oversized_output.to_string().len());
+        assert_eq!(
+            view.original_bytes as usize,
+            oversized_output.to_string().len()
+        );
         assert!(output.to_string().len() <= SNAPSHOT_MAX_BYTES);
         // input 小值透传；iterations 超限 item 收敛、普通字段保留。
         assert_eq!(stored.input, Some(json!({ "a": 1 })));

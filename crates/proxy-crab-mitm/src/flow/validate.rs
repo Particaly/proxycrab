@@ -26,7 +26,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::flow::model::{is_valid_ref_id, WorkflowEdge, WorkflowNode, WorkflowNodeType};
+use crate::flow::model::{WorkflowEdge, WorkflowNode, WorkflowNodeType, is_valid_ref_id};
 
 /// 问题类别字面量联合（见模块头规则清单）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,7 +129,11 @@ pub fn validate_workflow_graph(
                 .collect();
             issues.push(ValidationIssue::new(
                 ValidationIssueCode::DanglingEdge,
-                format!("连线 {} 指向不存在的节点（{}）", edge.id, missing.join("、")),
+                format!(
+                    "连线 {} 指向不存在的节点（{}）",
+                    edge.id,
+                    missing.join("、")
+                ),
                 locate_ids,
             ));
         }

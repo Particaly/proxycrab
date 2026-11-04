@@ -167,9 +167,7 @@ function toggleScript(key: string): void {
 function toggleAllScripts(): void {
   const scripts = summary.value?.scripts ?? [];
   const allChecked = scripts.length > 0 && confirmedScripts.value.size === scripts.length;
-  confirmedScripts.value = allChecked
-    ? new Set()
-    : new Set(scripts.map((script) => script.key));
+  confirmedScripts.value = allChecked ? new Set() : new Set(scripts.map((script) => script.key));
 }
 
 /** 审查清单的节点定位文案：节点类型中文标签 + 原始节点 id（导入时会被重映射）。 */
@@ -244,12 +242,10 @@ onBeforeUnmount(() => {
           共 {{ allWorkflows.length }} 条流程 · 已选 {{ checkedIds.length }} 条
         </span>
         <span class="wt-spacer" />
-        <button
-          class="btn"
-          :disabled="allWorkflows.length === 0"
-          @click="toggleAllWorkflows()"
-        >
-          {{ checkedIds.length === allWorkflows.length && allWorkflows.length > 0 ? "全不选" : "全选" }}
+        <button class="btn" :disabled="allWorkflows.length === 0" @click="toggleAllWorkflows()">
+          {{
+            checkedIds.length === allWorkflows.length && allWorkflows.length > 0 ? "全不选" : "全选"
+          }}
         </button>
         <button class="btn icon" title="刷新列表" @click="loadExportData()">
           <Io5Refresh :size="14" />
@@ -272,11 +268,7 @@ onBeforeUnmount(() => {
               </span>
               <span class="badge">{{ group.workflows.length }}</span>
             </div>
-            <label
-              v-for="workflow in group.workflows"
-              :key="workflow.id"
-              class="wt-row"
-            >
+            <label v-for="workflow in group.workflows" :key="workflow.id" class="wt-row">
               <input
                 type="checkbox"
                 :checked="checkedIds.includes(workflow.id)"
@@ -296,16 +288,18 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="wt-foot">
-        <span
-          v-if="exportFeedback"
-          class="wt-feedback"
-          aria-live="polite"
-        >
+        <span v-if="exportFeedback" class="wt-feedback" aria-live="polite">
           {{ exportFeedback }}
         </span>
         <span class="wt-spacer" />
         <button class="btn primary" :disabled="!canExport" @click="runExport()">
-          {{ exporting ? "导出中…" : checkedIds.length > 0 ? `导出并下载 ${checkedIds.length} 条` : "导出并下载" }}
+          {{
+            exporting
+              ? "导出中…"
+              : checkedIds.length > 0
+                ? `导出并下载 ${checkedIds.length} 条`
+                : "导出并下载"
+          }}
         </button>
       </div>
     </div>
@@ -352,11 +346,7 @@ onBeforeUnmount(() => {
               脚本确认（已勾选 {{ confirmedScripts.size }}/{{ summary.scripts.length }}）
             </span>
             <span class="wt-spacer" />
-            <button
-              v-if="summary.scripts.length > 0"
-              class="btn"
-              @click="toggleAllScripts()"
-            >
+            <button v-if="summary.scripts.length > 0" class="btn" @click="toggleAllScripts()">
               {{ confirmedScripts.size === summary.scripts.length ? "全不选" : "全选" }}
             </button>
           </div>
@@ -394,7 +384,9 @@ onBeforeUnmount(() => {
               {{ group.project.name }}
             </option>
           </select>
-          <span class="wt-hint">导入副本归入该项目；请求库/环境集条目与现有 id 冲突时跳过不覆盖</span>
+          <span class="wt-hint"
+            >导入副本归入该项目；请求库/环境集条目与现有 id 冲突时跳过不覆盖</span
+          >
         </div>
 
         <!-- 结果面板：成功/跳过 + reasons/issues + 扩展字段裁决 -->
@@ -439,8 +431,9 @@ onBeforeUnmount(() => {
               <span class="wt-result-family-label">{{ family.label }}：</span>
               <span>新增 {{ family.outcome.imported }} 条</span>
               <span v-if="family.outcome.skipped.length > 0" class="wt-result-issues">
-                跳过 {{ family.outcome.skipped.length }} 条
-                （{{ family.outcome.skipped.map((s) => `${s.id}：${s.reason}`).join("；") }}）
+                跳过 {{ family.outcome.skipped.length }} 条 （{{
+                  family.outcome.skipped.map((s) => `${s.id}：${s.reason}`).join("；")
+                }}）
               </span>
             </div>
           </div>

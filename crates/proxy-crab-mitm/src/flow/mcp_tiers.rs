@@ -77,8 +77,8 @@ fn parse_envelope(raw: Value) -> Result<McpTiers> {
             "flow {MCP_TIERS_FILE} schema version {version} is not supported (expected <= {MCP_TIERS_SCHEMA_VERSION})"
         );
     }
-    let envelope: McpTiersEnvelope = serde_json::from_value(raw)
-        .context("flow mcp-tools.json is corrupt")?;
+    let envelope: McpTiersEnvelope =
+        serde_json::from_value(raw).context("flow mcp-tools.json is corrupt")?;
     Ok(envelope.tiers)
 }
 
@@ -91,8 +91,7 @@ fn load_envelope(flow_root: &Path) -> Result<Option<McpTiers>> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error).context("failed to read flow mcp-tools.json"),
     };
-    let raw: Value =
-        serde_json::from_slice(&bytes).context("flow mcp-tools.json is corrupt")?;
+    let raw: Value = serde_json::from_slice(&bytes).context("flow mcp-tools.json is corrupt")?;
     parse_envelope(raw).map(Some)
 }
 

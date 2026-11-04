@@ -45,7 +45,10 @@ export interface ImportRequestItem {
 }
 
 /** 按 UTF-8 字符边界截断文本（超 maxBytes 时），保证不含半字符（U+FFFD）。 */
-export function truncateUtf8Safe(text: string, maxBytes: number): { text: string; truncated: boolean } {
+export function truncateUtf8Safe(
+  text: string,
+  maxBytes: number,
+): { text: string; truncated: boolean } {
   const bytes = new TextEncoder().encode(text);
   if (bytes.length <= maxBytes) return { text, truncated: false };
   let end = maxBytes;
@@ -124,7 +127,8 @@ export interface CurlParsedRequest {
   mimeType?: string;
 }
 
-export type CurlImportResult = { ok: true; request: CurlParsedRequest } | { ok: false; error: string };
+export type CurlImportResult =
+  { ok: true; request: CurlParsedRequest } | { ok: false; error: string };
 
 /** 引号未闭合的统一错误文案。 */
 const UNBALANCED_QUOTE_ERROR = "引号未闭合：请检查命令中的单引号 / 双引号";
@@ -262,11 +266,47 @@ const SHORT_WITH_VALUE: Record<string, OptionValueKind> = {
 };
 
 /** 带参但值被忽略的短选项（只为吃掉参数，避免其参数被误当 URL）。 */
-const SHORT_IGNORED_WITH_VALUE = new Set(["o", "m", "c", "C", "D", "T", "x", "t", "z", "w", "Q", "K", "E"]);
+const SHORT_IGNORED_WITH_VALUE = new Set([
+  "o",
+  "m",
+  "c",
+  "C",
+  "D",
+  "T",
+  "x",
+  "t",
+  "z",
+  "w",
+  "Q",
+  "K",
+  "E",
+]);
 
 /** 无参短选项：-I 触发 HEAD、-G 触发 GET 查询串形态，其余忽略。 */
 const SHORT_FLAGLESS = new Set([
-  "k", "s", "S", "v", "i", "I", "f", "l", "g", "G", "L", "n", "N", "q", "a", "B", "h", "M", "0", "1", "2", "4", "6",
+  "k",
+  "s",
+  "S",
+  "v",
+  "i",
+  "I",
+  "f",
+  "l",
+  "g",
+  "G",
+  "L",
+  "n",
+  "N",
+  "q",
+  "a",
+  "B",
+  "h",
+  "M",
+  "0",
+  "1",
+  "2",
+  "4",
+  "6",
 ]);
 
 /** 带参且值被使用的长选项。 */
@@ -287,17 +327,50 @@ const LONG_WITH_VALUE: Record<string, OptionValueKind> = {
 
 /** 带参但值被忽略的长选项。 */
 const LONG_IGNORED_WITH_VALUE = new Set([
-  "--output", "--proxy", "--max-time", "--connect-timeout", "--retry", "--cacert", "--capath",
-  "--cert", "--key", "--dump-header", "--cookie-jar", "--resolve", "--connect-to", "--proto",
-  "--pass", "--pubkey", "--continue-at",
+  "--output",
+  "--proxy",
+  "--max-time",
+  "--connect-timeout",
+  "--retry",
+  "--cacert",
+  "--capath",
+  "--cert",
+  "--key",
+  "--dump-header",
+  "--cookie-jar",
+  "--resolve",
+  "--connect-to",
+  "--proto",
+  "--pass",
+  "--pubkey",
+  "--continue-at",
 ]);
 
 /** 无参长选项：--head / --get 有语义，其余忽略。 */
 const LONG_FLAGLESS = new Set([
-  "--compressed", "--insecure", "--silent", "--verbose", "--location", "--fail", "--head",
-  "--get", "--no-buffer", "--http1.0", "--http1.1", "--http2", "--ipv4", "--ipv6",
-  "--progress-bar", "--no-keepalive", "--tr-encoding", "--anyauth", "--ntlm", "--digest",
-  "--negotiate", "--basic", "--location-trusted",
+  "--compressed",
+  "--insecure",
+  "--silent",
+  "--verbose",
+  "--location",
+  "--fail",
+  "--head",
+  "--get",
+  "--no-buffer",
+  "--http1.0",
+  "--http1.1",
+  "--http2",
+  "--ipv4",
+  "--ipv6",
+  "--progress-bar",
+  "--no-keepalive",
+  "--tr-encoding",
+  "--anyauth",
+  "--ntlm",
+  "--digest",
+  "--negotiate",
+  "--basic",
+  "--location-trusted",
 ]);
 
 /** 解析期收集的选项值。 */
@@ -475,7 +548,11 @@ function encodeDataUrlEncodeValue(
     return { ok: false, value: "", error: "不支持从文件读取请求体（--data-urlencode @file）" };
   }
   if (eq > 0) {
-    return { ok: true, value: `${value.slice(0, eq)}=${encodeURIComponent(value.slice(eq + 1))}`, error: null };
+    return {
+      ok: true,
+      value: `${value.slice(0, eq)}=${encodeURIComponent(value.slice(eq + 1))}`,
+      error: null,
+    };
   }
   const content = eq === 0 ? value.slice(1) : value;
   return { ok: true, value: encodeURIComponent(content), error: null };
@@ -484,7 +561,9 @@ function encodeDataUrlEncodeValue(
 /** 拆分 -F 表单字段（first '='）；@file / <file 读文件上传不支持。 */
 function splitFormField(
   value: string,
-): { ok: true; field: { name: string; value: string }; error: null } | { ok: false; field: null; error: string } {
+):
+  | { ok: true; field: { name: string; value: string }; error: null }
+  | { ok: false; field: null; error: string } {
   const eq = value.indexOf("=");
   if (eq === -1) {
     return { ok: false, field: null, error: `-F 表单字段缺少 = 分隔（应为 name=value）：${value}` };
@@ -508,7 +587,9 @@ function parseCookieString(cookie: string): RequestLibraryHarPair[] {
     .filter((pair) => pair !== "")
     .map((pair) => {
       const eq = pair.indexOf("=");
-      return eq === -1 ? { name: pair, value: "" } : { name: pair.slice(0, eq), value: pair.slice(eq + 1) };
+      return eq === -1
+        ? { name: pair, value: "" }
+        : { name: pair.slice(0, eq), value: pair.slice(eq + 1) };
     });
 }
 
@@ -526,7 +607,9 @@ function setDerivedHeader(headers: RequestLibraryHarPair[], name: string, value:
 }
 
 /** 规范化 URL：无协议头补 http://；解析出 queryString；失败返回 null。 */
-function normalizeUrl(rawUrl: string): { url: string; queryString: RequestLibraryHarPair[] } | null {
+function normalizeUrl(
+  rawUrl: string,
+): { url: string; queryString: RequestLibraryHarPair[] } | null {
   const candidate = /^[a-z][a-z\d+.-]*:\/\//i.test(rawUrl) ? rawUrl : `http://${rawUrl}`;
   try {
     const parsed = new URL(candidate);
@@ -562,7 +645,11 @@ export function parseCurlCommand(input: string): CurlImportResult {
 
   // 首 token 须为 curl（容忍路径前缀 / .exe 后缀 / 前置 sudo）。
   let command = tokens;
-  const baseOf = (token: string) => token.replace(/^.*[/\\]/, "").replace(/\.exe$/i, "").toLowerCase();
+  const baseOf = (token: string) =>
+    token
+      .replace(/^.*[/\\]/, "")
+      .replace(/\.exe$/i, "")
+      .toLowerCase();
   if (baseOf(command[0]) === "sudo" && command.length > 1) command = command.slice(1);
   if (baseOf(command[0]) !== "curl") {
     return { ok: false, error: "不是 curl 命令：应以 curl 开头" };
@@ -684,7 +771,9 @@ function buildEntry(input: EntryInput): RequestLibraryHarEntry {
       httpVersion: "HTTP/1.1",
       headers: input.headers,
       queryString: input.queryString,
-      ...(input.cookies !== undefined && input.cookies.length > 0 ? { cookies: input.cookies } : {}),
+      ...(input.cookies !== undefined && input.cookies.length > 0
+        ? { cookies: input.cookies }
+        : {}),
       ...(input.postData !== undefined ? { postData: input.postData } : {}),
     },
   };
@@ -776,7 +865,8 @@ export function buildCurlItem(request: CurlParsedRequest): ImportRequestItem {
     url: request.url,
     headers: request.headers.map((header) => ({ ...header })),
     queryString: request.queryString.map((pair) => ({ ...pair })),
-    cookies: request.cookies.length > 0 ? request.cookies.map((cookie) => ({ ...cookie })) : undefined,
+    cookies:
+      request.cookies.length > 0 ? request.cookies.map((cookie) => ({ ...cookie })) : undefined,
     postData,
   });
 }
@@ -833,8 +923,7 @@ export interface ImportSkipped {
 }
 
 export type HarImportResult =
-  | { ok: true; items: ImportRequestItem[]; skipped: ImportSkipped[] }
-  | { ok: false; error: string };
+  { ok: true; items: ImportRequestItem[]; skipped: ImportSkipped[] } | { ok: false; error: string };
 
 /** 归一化 HAR 头 / 查询串 / params 数组：仅保留 name / value 均为字符串的项。 */
 function normalizePairs(value: unknown): RequestLibraryHarPair[] {
@@ -955,8 +1044,7 @@ export function parseHarImport(text: string): HarImportResult {
  * ------------------------------------------------------------------ */
 
 export type PostmanImportResult =
-  | { ok: true; items: ImportRequestItem[]; skipped: ImportSkipped[] }
-  | { ok: false; error: string };
+  { ok: true; items: ImportRequestItem[]; skipped: ImportSkipped[] } | { ok: false; error: string };
 
 /** Postman 表单字段（urlencoded / formdata / cookie / query 共用的读取形状）。 */
 interface PostmanFormEntry {
@@ -1010,8 +1098,12 @@ function readPostmanBody(
 ): RequestLibraryHarPostData | undefined {
   const mode = readString(body["mode"]);
   if (mode === "raw" && typeof body["raw"] === "string") {
-    const options = isPlainObject(body["options"]) ? (body["options"] as Record<string, unknown>) : {};
-    const rawOptions = isPlainObject(options["raw"]) ? (options["raw"] as Record<string, unknown>) : {};
+    const options = isPlainObject(body["options"])
+      ? (body["options"] as Record<string, unknown>)
+      : {};
+    const rawOptions = isPlainObject(options["raw"])
+      ? (options["raw"] as Record<string, unknown>)
+      : {};
     const language = readString(rawOptions["language"]);
     return {
       mimeType: RAW_LANGUAGE_MIME[language ?? ""] ?? contentType ?? "text/plain",
@@ -1051,13 +1143,18 @@ function readPostmanBody(
       query: readString(graphql["query"]) ?? "",
       variables: graphql["variables"] ?? {},
     });
-    return { mimeType: "application/json", text: truncateUtf8Safe(payload, IMPORT_BODY_MAX_BYTES).text };
+    return {
+      mimeType: "application/json",
+      text: truncateUtf8Safe(payload, IMPORT_BODY_MAX_BYTES).text,
+    };
   }
   return undefined;
 }
 
 /** 归一化 Postman URL（string 或 UrlObject）→ 原文 URL + queryString。 */
-function readPostmanUrl(value: unknown): { url: string; queryString: RequestLibraryHarPair[] } | null {
+function readPostmanUrl(
+  value: unknown,
+): { url: string; queryString: RequestLibraryHarPair[] } | null {
   if (typeof value === "string") {
     const queryIndex = value.indexOf("?");
     const query: RequestLibraryHarPair[] =

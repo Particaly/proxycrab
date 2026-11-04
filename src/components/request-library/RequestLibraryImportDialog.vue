@@ -1,6 +1,12 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import type { CurlParsedRequest, ImportRequestItem, ImportSkipped, ImportSubmitOutcome, ImportSubmitPayload } from "../../utils/request-library-import";
+import type {
+  CurlParsedRequest,
+  ImportRequestItem,
+  ImportSkipped,
+  ImportSubmitOutcome,
+  ImportSubmitPayload,
+} from "../../utils/request-library-import";
 import {
   buildCurlItem,
   buildDefaultRequestName,
@@ -97,10 +103,15 @@ async function onFileChange(event: Event): Promise<void> {
 }
 
 const fileSelectedCount = computed(() =>
-  fileItems.value === null ? 0 : fileItems.value.filter((_, index) => fileSelected.value.has(index)).length,
+  fileItems.value === null
+    ? 0
+    : fileItems.value.filter((_, index) => fileSelected.value.has(index)).length,
 );
 const fileAllSelected = computed(
-  () => fileItems.value !== null && fileItems.value.length > 0 && fileSelected.value.size === fileItems.value.length,
+  () =>
+    fileItems.value !== null &&
+    fileItems.value.length > 0 &&
+    fileSelected.value.size === fileItems.value.length,
 );
 
 function toggleFileItem(index: number): void {
@@ -119,7 +130,8 @@ function toggleAllFileItems(): void {
 
 /** 待提交条目（cURL 页为解析产物；文件页为勾选条目）。 */
 function pendingItems(): ImportRequestItem[] {
-  if (tab.value === "curl") return curlParsed.value === null ? [] : [buildCurlItem(curlParsed.value)];
+  if (tab.value === "curl")
+    return curlParsed.value === null ? [] : [buildCurlItem(curlParsed.value)];
   return (fileItems.value ?? []).filter((_, index) => fileSelected.value.has(index));
 }
 
@@ -189,7 +201,9 @@ function curlSummary(parsed: CurlParsedRequest): string {
 
         <!-- cURL 命令页 -->
         <div v-if="tab === 'curl'" class="import-body">
-          <p class="import-hint">粘贴完整的 curl 命令（支持多行续行与引号转义），解析确认后入库。</p>
+          <p class="import-hint">
+            粘贴完整的 curl 命令（支持多行续行与引号转义），解析确认后入库。
+          </p>
           <textarea
             v-model="curlText"
             class="input import-curl-input mono"
@@ -203,9 +217,11 @@ function curlSummary(parsed: CurlParsedRequest): string {
           <div v-if="curlError" class="import-error" role="alert">{{ curlError }}</div>
           <div v-if="curlParsed" class="import-preview">
             <div class="import-preview-line">
-              <span class="import-method" :class="curlParsed.method === 'GET' ? 'm-get' : 'm-other'">{{
-                curlParsed.method
-              }}</span>
+              <span
+                class="import-method"
+                :class="curlParsed.method === 'GET' ? 'm-get' : 'm-other'"
+                >{{ curlParsed.method }}</span
+              >
               <span class="import-name" :title="curlParsed.url">{{
                 buildDefaultRequestName(curlParsed.method, curlParsed.url)
               }}</span>
@@ -260,9 +276,11 @@ function curlSummary(parsed: CurlParsedRequest): string {
                     :aria-label="`选择条目 ${item.method} ${item.url}`"
                     @change="toggleFileItem(index)"
                   />
-                  <span class="import-method" :class="item.method === 'GET' ? 'm-get' : 'm-other'">{{
-                    item.method
-                  }}</span>
+                  <span
+                    class="import-method"
+                    :class="item.method === 'GET' ? 'm-get' : 'm-other'"
+                    >{{ item.method }}</span
+                  >
                   <span v-if="item.status >= 0" class="import-status">{{ item.status }}</span>
                   <span class="import-name" :title="item.url">{{ item.url }}</span>
                 </label>

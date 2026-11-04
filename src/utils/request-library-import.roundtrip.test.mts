@@ -3,11 +3,7 @@ import type { Backend } from "../api/backend";
 import type { LogDetail } from "../api/types";
 import { fullCurl } from "./curl";
 import { appendHar } from "./har-export";
-import {
-  buildImportRequest,
-  parseCurlCommand,
-  parseHarImport,
-} from "./request-library-import.ts";
+import { buildImportRequest, parseCurlCommand, parseHarImport } from "./request-library-import.ts";
 
 /**
  * 往返测试（ReqFlow 复刻 Task 8 Step 4）：本仓库既有导出产物可回灌导入。
@@ -55,7 +51,7 @@ test("cURL 往返：fullCurl 产物可完整解析回请求语义", () => {
         { name: "Content-Type", value: "application/json" },
         { name: "X-Token", value: "abc: def" },
       ],
-      body: { type: "json", content: { sku: "A-1", note: "it's \"quoted\"" }, size: 40 },
+      body: { type: "json", content: { sku: "A-1", note: 'it\'s "quoted"' }, size: 40 },
     },
   });
   const parsed = parseCurlCommand(fullCurl(source));

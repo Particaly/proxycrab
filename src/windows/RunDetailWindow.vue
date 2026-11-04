@@ -126,7 +126,9 @@ const runStates = computed<RunNodeStateMap>(() =>
   run.value === null ? {} : nodeRunsToRunStates(run.value.nodeRuns, run.value.status),
 );
 
-const failedCount = computed(() => (run.value === null ? 0 : countFailedNodeRuns(run.value.nodeRuns)));
+const failedCount = computed(() =>
+  run.value === null ? 0 : countFailedNodeRuns(run.value.nodeRuns),
+);
 
 /* ------------------------------ 执行记录清单 ------------------------------ */
 
@@ -200,12 +202,18 @@ onUnmounted(() => {
     <div class="rd-header">
       <template v-if="run !== null">
         <span class="rd-id mono" :title="run.id">运行 {{ shortId(run.id) }}</span>
-        <span class="badge rd-status-badge" :class="`is-${run.status}`">{{ runStatusLabel(run.status) }}</span>
+        <span class="badge rd-status-badge" :class="`is-${run.status}`">{{
+          runStatusLabel(run.status)
+        }}</span>
         <span class="badge">{{ runTriggerLabel(run.trigger) }}</span>
-        <span class="rd-name" :title="run.workflowName">{{ run.workflowName || run.workflowId }}</span>
+        <span class="rd-name" :title="run.workflowName">{{
+          run.workflowName || run.workflowId
+        }}</span>
         <span class="rd-meta text-secondary">
           开始 {{ formatDateTime(run.startedAt) }}
-          <template v-if="run.finishedAt !== undefined"> · 结束 {{ formatDateTime(run.finishedAt) }}</template>
+          <template v-if="run.finishedAt !== undefined">
+            · 结束 {{ formatDateTime(run.finishedAt) }}</template
+          >
           · 耗时 {{ formatRunDuration(run) }}
         </span>
         <span v-if="failedCount > 0" class="rd-failed">{{ failedCount }} 个节点失败</span>
@@ -226,7 +234,9 @@ onUnmounted(() => {
       <span v-else class="text-faint">运行 {{ shortId(props.runId) }}</span>
     </div>
 
-    <div v-if="run !== null && run.error" class="rd-run-error" :title="run.error">{{ run.error }}</div>
+    <div v-if="run !== null && run.error" class="rd-run-error" :title="run.error">
+      {{ run.error }}
+    </div>
 
     <!-- 图来源披露（降级 / 回落 / 不可还原） -->
     <div v-for="message in disclosures" :key="message" class="rd-disclosure">
@@ -269,7 +279,9 @@ onUnmounted(() => {
               @click="selectedNodeId = entry.nodeId"
             >
               <span class="rd-dot" :class="dotClass(entry.nodeId)" />
-              <span class="rd-list-name" :title="entry.nodeId">{{ nodeDisplayName(entry.nodeId) }}</span>
+              <span class="rd-list-name" :title="entry.nodeId">{{
+                nodeDisplayName(entry.nodeId)
+              }}</span>
               <span
                 class="rd-list-status"
                 :class="{ 'text-danger': entry.nodeRun.status === 'failed' }"
@@ -290,7 +302,9 @@ onUnmounted(() => {
                 @click="selectedNodeId = entry.nodeId"
               >
                 <span class="rd-dot" :class="dotClass(entry.nodeId)" />
-                <span class="rd-list-name" :title="entry.nodeId">{{ nodeDisplayName(entry.nodeId) }}</span>
+                <span class="rd-list-name" :title="entry.nodeId">{{
+                  nodeDisplayName(entry.nodeId)
+                }}</span>
                 <span class="badge rd-stale-badge">陈旧</span>
               </button>
             </template>

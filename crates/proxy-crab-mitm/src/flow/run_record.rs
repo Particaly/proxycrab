@@ -161,9 +161,7 @@ fn build_truncated_wrapper(
                 ("__truncated".to_owned(), JsonValue::Bool(true)),
                 (
                     "preview".to_owned(),
-                    JsonValue::String(
-                        cut_to_utf8_bytes(serialized, budget).to_owned() + &tail,
-                    ),
+                    JsonValue::String(cut_to_utf8_bytes(serialized, budget).to_owned() + &tail),
                 ),
                 ("originalBytes".to_owned(), JsonValue::from(original_bytes)),
             ]
@@ -307,8 +305,12 @@ pub fn cap_iterations_summary(
             if let Some(item) = record_object.get("item") {
                 updated.insert(
                     "item".to_owned(),
-                    cap_snapshot(item, max_bytes, &format!("{node_id}.iteration[{index}].item"))
-                        .value,
+                    cap_snapshot(
+                        item,
+                        max_bytes,
+                        &format!("{node_id}.iteration[{index}].item"),
+                    )
+                    .value,
                 );
             }
             if let Some(output) = record_object.get("output") {
@@ -362,7 +364,10 @@ pub fn cap_node_run_object(node_run: &JsonValue, max_bytes: usize, node_id: &str
 }
 
 /// 把单快照上限应用到整张节点快照表（nodeId → 节点运行对象）。
-pub fn cap_node_runs(node_runs: &Map<String, JsonValue>, max_bytes: usize) -> Map<String, JsonValue> {
+pub fn cap_node_runs(
+    node_runs: &Map<String, JsonValue>,
+    max_bytes: usize,
+) -> Map<String, JsonValue> {
     node_runs
         .iter()
         .map(|(node_id, node_run)| {
@@ -414,7 +419,10 @@ mod tests {
     /// 构造一个序列化后约 target 字节的 JSON 对象（用重复键填充）。
     fn padded_object(target_bytes: usize) -> JsonValue {
         let mut map = Map::new();
-        map.insert("pad".to_owned(), JsonValue::String("x".repeat(target_bytes)));
+        map.insert(
+            "pad".to_owned(),
+            JsonValue::String("x".repeat(target_bytes)),
+        );
         JsonValue::Object(map)
     }
 
@@ -437,7 +445,10 @@ mod tests {
         let view = is_truncated_snapshot(&result.value).expect("wrapper shape");
         assert_eq!(view.original_bytes, original_bytes);
         assert!(view.preview.starts_with("{\"pad\":\"xxx"));
-        assert!(view.preview.ends_with("…[ProxyCrab 快照已截断]（n1.output）"));
+        assert!(
+            view.preview
+                .ends_with("…[ProxyCrab 快照已截断]（n1.output）")
+        );
         // 包装整体序列化不超上限（结构完整优先的病理配置除外）
         assert!(result.value.to_string().len() <= SNAPSHOT_MAX_BYTES);
     }
@@ -466,7 +477,11 @@ mod tests {
     #[test]
     fn string_truncation_reports_utf8_bytes_and_stays_on_char_boundary() {
         let text = "中".repeat(SNAPSHOT_MAX_BYTES / 3 + 100);
-        let result = cap_snapshot(&JsonValue::String(text.clone()), SNAPSHOT_MAX_BYTES, "n1.output");
+        let result = cap_snapshot(
+            &JsonValue::String(text.clone()),
+            SNAPSHOT_MAX_BYTES,
+            "n1.output",
+        );
         assert!(result.capped);
         let JsonValue::String(truncated) = &result.value else {
             panic!("string expected");
@@ -505,7 +520,10 @@ mod tests {
             panic!("string expected");
         };
         assert_eq!(truncated.len(), 40);
-        assert_eq!(truncated.as_str(), format!("{}{}", "x".repeat(10), TRUNCATION_MARKER));
+        assert_eq!(
+            truncated.as_str(),
+            format!("{}{}", "x".repeat(10), TRUNCATION_MARKER)
+        );
 
         // 连裸标记都放不下：退化为空尾部，仅剩 head（head 预算 = 全部 max）
         let result = cap_snapshot(&JsonValue::String("x".repeat(100)), 10, "l");
@@ -536,8 +554,10 @@ mod tests {
         assert!(is_truncated_snapshot(&json!({ "__truncated": true })).is_none());
         assert!(is_truncated_snapshot(&json!({ "__truncated": true, "preview": "p" })).is_none());
         assert!(
-            is_truncated_snapshot(&json!({ "__truncated": true, "preview": 1, "originalBytes": 2 }))
-                .is_none()
+            is_truncated_snapshot(
+                &json!({ "__truncated": true, "preview": 1, "originalBytes": 2 })
+            )
+            .is_none()
         );
         assert!(
             is_truncated_snapshot(

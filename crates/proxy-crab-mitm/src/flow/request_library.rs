@@ -38,7 +38,7 @@ use crate::{
 };
 
 use super::store::{
-    REQUEST_LIBRARY_DIRECTORY, WRITE_LOCK, FlowEntity, FlowStore, delete_entity, get_entity,
+    FlowEntity, FlowStore, REQUEST_LIBRARY_DIRECTORY, WRITE_LOCK, delete_entity, get_entity,
     list_entities, put_entity, put_entity_locked, validate_flow_id,
 };
 
@@ -449,8 +449,8 @@ impl FlowStore {
         origin: Option<&str>,
         har: Option<HarSnapshot>,
     ) -> Result<RequestLibraryEntry> {
-        let mut entry = get_entity::<RequestLibraryEntry>(&self.flow_root, id)?
-            .ok_or_else(|| {
+        let mut entry =
+            get_entity::<RequestLibraryEntry>(&self.flow_root, id)?.ok_or_else(|| {
                 crate::error::Error::FlowEntityNotFound(
                     <RequestLibraryEntry as FlowEntity>::LABEL,
                     id.to_owned(),
@@ -608,12 +608,10 @@ fn expand_headers(headers: &HeaderValues) -> Vec<HarHeader> {
     headers
         .iter()
         .flat_map(|(name, values)| {
-            values
-                .iter()
-                .map(|value| HarHeader {
-                    name: name.clone(),
-                    value: value.clone(),
-                })
+            values.iter().map(|value| HarHeader {
+                name: name.clone(),
+                value: value.clone(),
+            })
         })
         .collect()
 }
@@ -929,18 +927,27 @@ mod tests {
             "GET localhost:3000/x"
         );
         // Unparsable URLs and authority-form targets fall back to raw text.
-        assert_eq!(build_default_request_name("GET", "not a url"), "GET not a url");
+        assert_eq!(
+            build_default_request_name("GET", "not a url"),
+            "GET not a url"
+        );
         assert_eq!(
             build_default_request_name("CONNECT", "example.com:443"),
             "CONNECT example.com:443"
         );
         // Blank methods keep only the target.
-        assert_eq!(build_default_request_name("  ", "https://a.com/x"), "a.com/x");
+        assert_eq!(
+            build_default_request_name("  ", "https://a.com/x"),
+            "a.com/x"
+        );
     }
 
     #[test]
     fn name_dedup_appends_the_first_free_suffix() {
-        assert_eq!(assign_unique_name("GET a", [].into_iter()).as_str(), "GET a");
+        assert_eq!(
+            assign_unique_name("GET a", [].into_iter()).as_str(),
+            "GET a"
+        );
         assert_eq!(
             assign_unique_name("GET a", ["GET b", "GET a"].into_iter()).as_str(),
             "GET a 2"

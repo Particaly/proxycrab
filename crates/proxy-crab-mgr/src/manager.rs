@@ -15,7 +15,7 @@ use proxy_crab_mitm::{
         },
         mcp_audit::McpAuditEntry,
         mcp_tiers::McpTiers,
-        model::{Project, Workflow, WORKFLOW_SCHEMA_VERSION, generate_ref_id},
+        model::{Project, WORKFLOW_SCHEMA_VERSION, Workflow, generate_ref_id},
         request_library::{CapturedRequest, RequestLibraryEntry, RequestSource},
         run::{FlowRunEvent, FlowRunManager, RunTriggerError},
         run_store::FlowRunRecord,
@@ -46,26 +46,25 @@ use crate::{
     dto::{
         ActiveSession, AgentsPresetState, BreakpointDetailPayload, BreakpointQuery, BypassPage,
         BypassQuery, CertificateResponse, CreateAgentsPresetRequest, CreateEnvSetRequest,
-        CreateRequestLibraryRequest, CreateSessionRequest, DebugFilterScriptRequest,
-        DeleteCount, EnvSetsPayload, EnvWriteBackRequest, EnvWriteBackResult, ErrorCode,
-        ExecuteTemporaryScriptRequest, ExtendBreakpointRequest, FlowListQuery,
-        FlowProjectCreateRequest, FlowProjectPage, FlowProjectUpdateRequest,
-        FlowRunDetailPayload, FlowRunListQuery, FlowRunPage, FlowRunTriggerRequest,
-        FlowScriptDryRunRequest, FLOW_RUN_DEFAULT_LIMIT, FLOW_RUN_MAX_LIMIT, HeaderItem,
-        IngestCaptureRequest, InterceptorCreateRequest, InterceptorDetail, InterceptorLibraryList,
-        InterceptorUpdateRequest, LogDetail, LogIdsPayload,
-        LogIdsRequest, LogViewException, LogViewRow, LogViewsPayload, LogViewsRequest,
-        ManagerError, ManagerResult, ReplaceActiveEnvSetRequest, ReplaceEnvGlobalsRequest,
-        ReplaceSessionInterceptorsRequest, ReplaceSessionViewRequest, ReplayBodyPayload,
-        ReplayRequestPayload, ReplayResult, REQUEST_LIBRARY_DEFAULT_LIMIT,
-        REQUEST_LIBRARY_MAX_LIMIT, RequestDetail, RequestLibraryPage, RequestLibraryQuery,
-        ResponseDetail, RoutingSelection, SaveEnvSetRequest, ScriptRequest,
-        SessionInterceptorItem, SessionInterceptorsPayload, SessionsPayload,
-        SessionViewPayload, SystemLogsQuery, UpdateAgentsPresetRequest,
-        UpdateRequestLibraryRequest, UpdateScriptRequest, UpdateSessionRequest,
-        WorkflowCreateRequest, WorkflowImportCreated, WorkflowImportExtensionSkipped,
-        WorkflowImportRequest, WorkflowImportResult, WorkflowImportSkipped, WorkflowListQuery,
-        WorkflowPage, WorkflowUpdateRequest, WorkflowValidationIssue,
+        CreateRequestLibraryRequest, CreateSessionRequest, DebugFilterScriptRequest, DeleteCount,
+        EnvSetsPayload, EnvWriteBackRequest, EnvWriteBackResult, ErrorCode,
+        ExecuteTemporaryScriptRequest, ExtendBreakpointRequest, FLOW_RUN_DEFAULT_LIMIT,
+        FLOW_RUN_MAX_LIMIT, FlowListQuery, FlowProjectCreateRequest, FlowProjectPage,
+        FlowProjectUpdateRequest, FlowRunDetailPayload, FlowRunListQuery, FlowRunPage,
+        FlowRunTriggerRequest, FlowScriptDryRunRequest, HeaderItem, IngestCaptureRequest,
+        InterceptorCreateRequest, InterceptorDetail, InterceptorLibraryList,
+        InterceptorUpdateRequest, LogDetail, LogIdsPayload, LogIdsRequest, LogViewException,
+        LogViewRow, LogViewsPayload, LogViewsRequest, ManagerError, ManagerResult,
+        REQUEST_LIBRARY_DEFAULT_LIMIT, REQUEST_LIBRARY_MAX_LIMIT, ReplaceActiveEnvSetRequest,
+        ReplaceEnvGlobalsRequest, ReplaceSessionInterceptorsRequest, ReplaceSessionViewRequest,
+        ReplayBodyPayload, ReplayRequestPayload, ReplayResult, RequestDetail, RequestLibraryPage,
+        RequestLibraryQuery, ResponseDetail, RoutingSelection, SaveEnvSetRequest, ScriptRequest,
+        SessionInterceptorItem, SessionInterceptorsPayload, SessionViewPayload, SessionsPayload,
+        SystemLogsQuery, UpdateAgentsPresetRequest, UpdateRequestLibraryRequest,
+        UpdateScriptRequest, UpdateSessionRequest, WorkflowCreateRequest, WorkflowImportCreated,
+        WorkflowImportExtensionSkipped, WorkflowImportRequest, WorkflowImportResult,
+        WorkflowImportSkipped, WorkflowListQuery, WorkflowPage, WorkflowUpdateRequest,
+        WorkflowValidationIssue,
     },
 };
 use tokio::sync::{Semaphore, broadcast, watch};
@@ -299,8 +298,10 @@ pub trait ProxyCrabManager: Send + Sync {
     async fn delete_bypass_entries(&self, ids: Vec<u64>) -> ManagerResult<DeleteCount>;
     async fn clear_bypass_entries(&self) -> ManagerResult<DeleteCount>;
     async fn flow_projects(&self, query: FlowListQuery) -> ManagerResult<FlowProjectPage>;
-    async fn create_flow_project(&self, request: FlowProjectCreateRequest)
-    -> ManagerResult<Project>;
+    async fn create_flow_project(
+        &self,
+        request: FlowProjectCreateRequest,
+    ) -> ManagerResult<Project>;
     async fn flow_project(&self, id: String) -> ManagerResult<Project>;
     async fn update_flow_project(
         &self,
@@ -363,7 +364,11 @@ pub trait ProxyCrabManager: Send + Sync {
         &self,
         request: IngestCaptureRequest,
     ) -> ManagerResult<RequestLibraryEntry>;
-    async fn request_library_body_source(&self, id: String, max_size: u64) -> ManagerResult<BodySource>;
+    async fn request_library_body_source(
+        &self,
+        id: String,
+        max_size: u64,
+    ) -> ManagerResult<BodySource>;
     async fn env_sets(&self) -> ManagerResult<EnvSetsPayload>;
     async fn create_env_set(&self, request: CreateEnvSetRequest) -> ManagerResult<EnvVariableSet>;
     async fn save_env_set(
@@ -380,7 +385,10 @@ pub trait ProxyCrabManager: Send + Sync {
         &self,
         request: ReplaceEnvGlobalsRequest,
     ) -> ManagerResult<EnvGlobalVariables>;
-    async fn env_write_back(&self, request: EnvWriteBackRequest) -> ManagerResult<EnvWriteBackResult>;
+    async fn env_write_back(
+        &self,
+        request: EnvWriteBackRequest,
+    ) -> ManagerResult<EnvWriteBackResult>;
     async fn mcp_tiers(&self) -> ManagerResult<McpTiers>;
     async fn replace_mcp_tiers(&self, tiers: McpTiers) -> ManagerResult<McpTiers>;
     /// 追加一条 MCP 工具调用审计（plan Task 25 Step 4）。调用方（MCP 工具
@@ -2206,8 +2214,7 @@ impl ProxyCrabManager for MitmManager {
             let store = FlowStore::open(&flow_root).map_err(map_flow_error)?;
             let now = now_millis();
             let project = Project {
-                id: generate_flow_id("proj")
-                    .map_err(map_flow_error)?,
+                id: generate_flow_id("proj").map_err(map_flow_error)?,
                 name: request.name,
                 description: request.description,
                 color: request.color,
@@ -2281,10 +2288,13 @@ impl ProxyCrabManager for MitmManager {
                 workflows.retain(|workflow| workflow.project_id == project_id);
             }
             let total = workflows.len();
-            paginate(&mut workflows, FlowListQuery {
-                limit: query.limit,
-                offset: query.offset,
-            });
+            paginate(
+                &mut workflows,
+                FlowListQuery {
+                    limit: query.limit,
+                    offset: query.offset,
+                },
+            );
             Ok(WorkflowPage { workflows, total })
         })
         .await
@@ -2318,7 +2328,8 @@ impl ProxyCrabManager for MitmManager {
 
     async fn workflow(&self, id: String) -> ManagerResult<Workflow> {
         let flow_root = self.flow_root();
-        self.run_blocking("workflow read", move || require_workflow(&flow_root, &id)).await
+        self.run_blocking("workflow read", move || require_workflow(&flow_root, &id))
+            .await
     }
 
     async fn update_workflow(
@@ -2403,10 +2414,13 @@ impl ProxyCrabManager for MitmManager {
             for id in &ids {
                 // 重复 id 只带出一次；缺失 id 整体 404（显式导出不该静默截断）。
                 if seen.insert(id.clone()) {
-                    let workflow = store
-                        .get_workflow(id)
-                        .map_err(map_flow_error)?
-                        .ok_or_else(|| ManagerError::not_found(format!("workflow {id} not found")))?;
+                    let workflow =
+                        store
+                            .get_workflow(id)
+                            .map_err(map_flow_error)?
+                            .ok_or_else(|| {
+                                ManagerError::not_found(format!("workflow {id} not found"))
+                            })?;
                     workflows.push(workflow);
                 }
             }
@@ -2516,8 +2530,9 @@ impl ProxyCrabManager for MitmManager {
                     continue;
                 };
                 let name = transfer::dedupe_workflow_name(&workflow.name, &taken_names);
-                let item = transfer::remap_imported_workflow(workflow, &mut new_id, &mut new_ref_id)
-                    .map_err(ManagerError::internal)?;
+                let item =
+                    transfer::remap_imported_workflow(workflow, &mut new_id, &mut new_ref_id)
+                        .map_err(ManagerError::internal)?;
                 let now = unix_millis();
                 let doc = Workflow {
                     id: generate_flow_id("wf").map_err(map_error)?,
@@ -2545,15 +2560,15 @@ impl ProxyCrabManager for MitmManager {
             // 请求库条目新 id 原样入库（导入流程的 requestId 引用它，原样
             // 入库才保持引用可解析）；环境变量集导入物已无 secret 表。
             for entry in &extensions.requests {
-                let exists = store
-                    .get_request(&entry.id)
-                    .map_err(map_error)?
-                    .is_some();
+                let exists = store.get_request(&entry.id).map_err(map_error)?.is_some();
                 if exists {
-                    result.requests.skipped.push(WorkflowImportExtensionSkipped {
-                        id: entry.id.clone(),
-                        reason: format!("请求库条目已存在，跳过导入：{}", entry.id),
-                    });
+                    result
+                        .requests
+                        .skipped
+                        .push(WorkflowImportExtensionSkipped {
+                            id: entry.id.clone(),
+                            reason: format!("请求库条目已存在，跳过导入：{}", entry.id),
+                        });
                 } else {
                     store.put_request(entry).map_err(map_error)?;
                     result.requests.imported += 1;
@@ -2567,10 +2582,13 @@ impl ProxyCrabManager for MitmManager {
                 .collect();
             for set in &extensions.env_sets {
                 if env_set_ids.contains(&set.id) {
-                    result.env_sets.skipped.push(WorkflowImportExtensionSkipped {
-                        id: set.id.clone(),
-                        reason: format!("环境变量集已存在，跳过导入：{}", set.id),
-                    });
+                    result
+                        .env_sets
+                        .skipped
+                        .push(WorkflowImportExtensionSkipped {
+                            id: set.id.clone(),
+                            reason: format!("环境变量集已存在，跳过导入：{}", set.id),
+                        });
                 } else {
                     store.save_env_set(set).map_err(map_error)?;
                     result.env_sets.imported += 1;
@@ -2696,14 +2714,9 @@ impl ProxyCrabManager for MitmManager {
                         && tags.iter().all(|tag| entry.tags.contains(tag))
                         && needle.as_deref().is_none_or(|needle| {
                             entry.name.to_ascii_lowercase().contains(needle)
-                                || entry
-                                    .har
-                                    .log
-                                    .entries
-                                    .first()
-                                    .is_some_and(|har_entry| {
-                                        har_entry.request.url.to_ascii_lowercase().contains(needle)
-                                    })
+                                || entry.har.log.entries.first().is_some_and(|har_entry| {
+                                    har_entry.request.url.to_ascii_lowercase().contains(needle)
+                                })
                         })
                 })
                 .collect();
@@ -2799,7 +2812,11 @@ impl ProxyCrabManager for MitmManager {
         .await
     }
 
-    async fn request_library_body_source(&self, id: String, max_size: u64) -> ManagerResult<BodySource> {
+    async fn request_library_body_source(
+        &self,
+        id: String,
+        max_size: u64,
+    ) -> ManagerResult<BodySource> {
         if max_size == 0 {
             return Err(ManagerError::bad_request(
                 "max_size must be greater than zero",
@@ -2954,7 +2971,9 @@ impl ProxyCrabManager for MitmManager {
     async fn mcp_tiers(&self) -> ManagerResult<McpTiers> {
         let root = self.runtime.workspace().root().to_path_buf();
         self.run_blocking("read mcp tiers", move || {
-            FlowStore::open(&root).and_then(|store| store.mcp_tiers()).map_err(map_error)
+            FlowStore::open(&root)
+                .and_then(|store| store.mcp_tiers())
+                .map_err(map_error)
         })
         .await
     }
@@ -2987,7 +3006,8 @@ impl ProxyCrabManager for MitmManager {
                 .map_err(map_error)
         })
         .await
-    }}
+    }
+}
 
 /// Helpers shared by the workflow-domain manager methods: resolve the workspace
 /// flow root for use inside blocking tasks.
@@ -3057,22 +3077,15 @@ fn map_trigger_error(error: RunTriggerError) -> ManagerError {
         RunTriggerError::WorkflowNotFound(_) | RunTriggerError::SessionMissing(_) => {
             ManagerError::not_found(message)
         }
-        RunTriggerError::NotValid(_) => {
-            ManagerError::new(ErrorCode::WorkflowGraphInvalid, message)
-        }
-        RunTriggerError::ProxyNotRunning => {
-            ManagerError::new(ErrorCode::ProxyNotRunning, message)
-        }
+        RunTriggerError::NotValid(_) => ManagerError::new(ErrorCode::WorkflowGraphInvalid, message),
+        RunTriggerError::ProxyNotRunning => ManagerError::new(ErrorCode::ProxyNotRunning, message),
         RunTriggerError::NoSession => ManagerError::conflict(message),
         RunTriggerError::Storage(error) => map_error(error),
     }
 }
 
 /// Look up one set by id, mapping a missing id to the not-found API error.
-fn find_env_set<'a>(
-    sets: &'a [EnvVariableSet],
-    id: &str,
-) -> ManagerResult<&'a EnvVariableSet> {
+fn find_env_set<'a>(sets: &'a [EnvVariableSet], id: &str) -> ManagerResult<&'a EnvVariableSet> {
     sets.iter()
         .find(|set| set.id == id)
         .ok_or_else(|| ManagerError::not_found(format!("environment variable set {id} not found")))
@@ -3086,9 +3099,7 @@ fn unix_millis() -> u64 {
 }
 
 /// Open the workspace flow store for one blocking management task.
-fn flow_store(
-    runtime: &ProxyCrab,
-) -> ManagerResult<proxy_crab_mitm::flow::store::FlowStore> {
+fn flow_store(runtime: &ProxyCrab) -> ManagerResult<proxy_crab_mitm::flow::store::FlowStore> {
     proxy_crab_mitm::flow::store::FlowStore::open(runtime.workspace().root()).map_err(map_error)
 }
 
@@ -3118,7 +3129,9 @@ fn load_captured_request(
             let live = error;
             let is_live_session_missing = live
                 .downcast_ref::<proxy_crab_mitm::error::Error>()
-                .is_some_and(|mitm| matches!(mitm, proxy_crab_mitm::error::Error::SessionNotFound(_)));
+                .is_some_and(|mitm| {
+                    matches!(mitm, proxy_crab_mitm::error::Error::SessionNotFound(_))
+                });
             if !is_live_session_missing {
                 return Err(map_error(live));
             }
@@ -3186,7 +3199,9 @@ fn request_library_body_source(
                         format!("request library entry {id} has no stored request body"),
                     )
                 })?;
-            let bytes = match post_data.as_ref().and_then(|post_data| post_data.encoding.as_deref())
+            let bytes = match post_data
+                .as_ref()
+                .and_then(|post_data| post_data.encoding.as_deref())
             {
                 None | Some("") => text.clone().into_bytes(),
                 Some("base64") => {

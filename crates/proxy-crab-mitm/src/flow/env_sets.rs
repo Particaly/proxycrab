@@ -193,7 +193,10 @@ pub struct EnvSnapshot {
 
 /// Resolve the runtime snapshot of one active set (pure function): `None` id
 /// or an id that matches no set yields an empty snapshot.
-pub fn resolve_active_env_snapshot(sets: &[EnvVariableSet], active_id: Option<&str>) -> EnvSnapshot {
+pub fn resolve_active_env_snapshot(
+    sets: &[EnvVariableSet],
+    active_id: Option<&str>,
+) -> EnvSnapshot {
     let Some(active_id) = active_id else {
         return EnvSnapshot::default();
     };
@@ -385,7 +388,11 @@ impl FlowStore {
         validate_variables_table(&set.secret_values)?;
         let _guard = WRITE_LOCK.lock().expect("flow write lock poisoned");
         let mut envelope = load_envelope_locked(&self.flow_root)?;
-        match envelope.sets.iter().position(|existing| existing.id == set.id) {
+        match envelope
+            .sets
+            .iter()
+            .position(|existing| existing.id == set.id)
+        {
             Some(index) => envelope.sets[index] = set.clone(),
             None => envelope.sets.push(set.clone()),
         }
@@ -475,10 +482,7 @@ impl FlowStore {
     pub fn active_env_snapshot(&self) -> Result<EnvSnapshot> {
         let sets = self.list_env_sets()?;
         let active_set_id = self.active_env_set_id()?;
-        Ok(resolve_active_env_snapshot(
-            &sets,
-            active_set_id.as_deref(),
-        ))
+        Ok(resolve_active_env_snapshot(&sets, active_set_id.as_deref()))
     }
 
     /// Submit (commit) one script env write-back batch. The batch is queued
@@ -496,7 +500,9 @@ impl FlowStore {
         if writes.is_empty() {
             bail!("env write-back requires at least one entry");
         }
-        let mut queue = ENV_WRITE_BACK_QUEUE.lock().expect("env write-back queue poisoned");
+        let mut queue = ENV_WRITE_BACK_QUEUE
+            .lock()
+            .expect("env write-back queue poisoned");
         queue.push_back(EnvWriteBack { set_id, writes });
         Ok(())
     }
@@ -615,7 +621,10 @@ mod tests {
             "****** ******"
         );
         // Values below the minimum length are skipped.
-        assert_eq!(mask_secrets_in_text("abc abc", &secrets(&["abc"])), "abc abc");
+        assert_eq!(
+            mask_secrets_in_text("abc abc", &secrets(&["abc"])),
+            "abc abc"
+        );
         // The placeholder never participates.
         assert_eq!(
             mask_secrets_in_text("****** ok", &secrets(&[SECRET_MASK_PLACEHOLDER, "ok"])),
@@ -652,7 +661,10 @@ mod tests {
             ("added".to_owned(), "fresh".to_owned()),
         ]);
         restore_masked_secret_values(&mut incoming, &existing);
-        assert_eq!(incoming.get("password").map(String::as_str), Some("hunter2"));
+        assert_eq!(
+            incoming.get("password").map(String::as_str),
+            Some("hunter2")
+        );
         assert_eq!(incoming.get("token").map(String::as_str), Some("new-token"));
         assert_eq!(incoming.get("added").map(String::as_str), Some("fresh"));
     }
@@ -681,8 +693,14 @@ mod tests {
         );
         assert_eq!(snapshot.secret_values, vec!["http://secret", "hunter2"]);
         // Missing id or unknown set yields the empty snapshot.
-        assert_eq!(resolve_active_env_snapshot(&[], Some("env-dev")), EnvSnapshot::default());
-        assert_eq!(resolve_active_env_snapshot(&[set], None), EnvSnapshot::default());
+        assert_eq!(
+            resolve_active_env_snapshot(&[], Some("env-dev")),
+            EnvSnapshot::default()
+        );
+        assert_eq!(
+            resolve_active_env_snapshot(&[set], None),
+            EnvSnapshot::default()
+        );
     }
 
     #[test]
@@ -705,7 +723,11 @@ mod tests {
             values: BTreeMap::from([("region".to_owned(), "cn".to_owned())]),
             secret_values: BTreeMap::from([("key".to_owned(), "k-1234".to_owned())]),
         };
-        assert!(strip_globals_secrets_for_export(&globals).secret_values.is_empty());
+        assert!(
+            strip_globals_secrets_for_export(&globals)
+                .secret_values
+                .is_empty()
+        );
     }
 
     #[test]

@@ -8,7 +8,9 @@ use proxy_crab_mitm::flow::request_library::{
     CapturedRequest, HarCookie, HarQueryString, RequestSource,
 };
 use proxy_crab_mitm::flow::store::FlowStore;
-use proxy_crab_mitm::model::{BodySourceType, CaptureError, ErrorStage, HeaderValues, RequestData, ResponseData};
+use proxy_crab_mitm::model::{
+    BodySourceType, CaptureError, ErrorStage, HeaderValues, RequestData, ResponseData,
+};
 use proxy_crab_mitm::storage::{BodySide, CaptureStore};
 use tempfile::tempdir;
 
@@ -111,7 +113,10 @@ fn ingest_builds_typed_har_snapshot_with_normalized_cookies() {
     assert!(har_entry.started_date_time.starts_with("20"));
     assert!(har_entry.time < 60_000);
     assert_eq!(har_entry.request.method, "POST");
-    assert_eq!(har_entry.request.url, "https://api.example.com/v1/login?debug=1");
+    assert_eq!(
+        har_entry.request.url,
+        "https://api.example.com/v1/login?debug=1"
+    );
     assert_eq!(har_entry.request.http_version, "HTTP/2");
     assert_eq!(
         har_entry.request.query_string,
@@ -157,17 +162,36 @@ fn ingest_builds_typed_har_snapshot_with_normalized_cookies() {
     // Round trip through disk, and the persisted JSON stays camelCase.
     assert_eq!(store.get_request(&entry.id).unwrap(), Some(entry.clone()));
     let raw: serde_json::Value = serde_json::from_slice(
-        &fs::read(root.path().join(format!("flow/request-library/{}.json", entry.id))).unwrap(),
+        &fs::read(
+            root.path()
+                .join(format!("flow/request-library/{}.json", entry.id)),
+        )
+        .unwrap(),
     )
     .unwrap();
     assert_eq!(raw["source"], "capture");
-    assert_eq!(raw["har"]["log"]["entries"][0]["request"]["queryString"][0]["name"], "debug");
-    assert_eq!(raw["har"]["log"]["entries"][0]["request"]["cookies"][0]["name"], "session");
-    assert_eq!(raw["har"]["log"]["entries"][0]["response"]["statusText"], "OK");
+    assert_eq!(
+        raw["har"]["log"]["entries"][0]["request"]["queryString"][0]["name"],
+        "debug"
+    );
+    assert_eq!(
+        raw["har"]["log"]["entries"][0]["request"]["cookies"][0]["name"],
+        "session"
+    );
+    assert_eq!(
+        raw["har"]["log"]["entries"][0]["response"]["statusText"],
+        "OK"
+    );
     assert!(raw.get("bodyRef").is_none());
 
     // A bodyless request carries no postData at all.
-    let bare = begin(&captures, "GET", "https://api.example.com/ping", "HTTP/1.1", HeaderValues::new());
+    let bare = begin(
+        &captures,
+        "GET",
+        "https://api.example.com/ping",
+        "HTTP/1.1",
+        HeaderValues::new(),
+    );
     complete_ok(&captures, bare, HeaderValues::new());
     let entry = store
         .ingest_capture(&captured(&captures, bare), None, &[])
@@ -226,7 +250,10 @@ fn large_text_and_binary_bodies_are_stored_as_blobs() {
         .ingest_capture(&captured(&captures, large_id), None, &[])
         .unwrap();
     let body_ref = large.body_ref.as_ref().expect("large body goes to a blob");
-    assert_eq!(body_ref.path, format!("request-library/bodies/{}.body", large.id));
+    assert_eq!(
+        body_ref.path,
+        format!("request-library/bodies/{}.body", large.id)
+    );
     assert_eq!(body_ref.size, 64 * 1024 + 1);
     assert!(
         large.har.log.entries[0]
@@ -237,8 +264,12 @@ fn large_text_and_binary_bodies_are_stored_as_blobs() {
             .text
             .is_none()
     );
-    let entry_json = root.path().join(format!("flow/request-library/{}.json", large.id));
-    let blob = root.path().join(format!("flow/request-library/bodies/{}.body", large.id));
+    let entry_json = root
+        .path()
+        .join(format!("flow/request-library/{}.json", large.id));
+    let blob = root
+        .path()
+        .join(format!("flow/request-library/bodies/{}.body", large.id));
     assert_eq!(fs::metadata(&blob).unwrap().len(), 64 * 1024 + 1);
     assert!(
         fs::metadata(&entry_json).unwrap().len() < 8 * 1024,
@@ -265,9 +296,15 @@ fn large_text_and_binary_bodies_are_stored_as_blobs() {
     let binary = store
         .ingest_capture(&captured(&captures, binary_id), None, &[])
         .unwrap();
-    let binary_ref = binary.body_ref.as_ref().expect("binary body goes to a blob");
+    let binary_ref = binary
+        .body_ref
+        .as_ref()
+        .expect("binary body goes to a blob");
     assert_eq!(binary_ref.size, binary_bytes.len() as u64);
-    assert_eq!(store.read_request_body(&binary).unwrap().unwrap(), binary_bytes);
+    assert_eq!(
+        store.read_request_body(&binary).unwrap().unwrap(),
+        binary_bytes
+    );
     assert!(blob.exists());
 
     // Deleting the entry removes its blob with it.
@@ -291,13 +328,25 @@ fn naming_defaults_dedup_and_explicit_overrides() {
     };
 
     let first = store
-        .ingest_capture(&captured(&captures, make("http://example.com/ping")), None, &[])
+        .ingest_capture(
+            &captured(&captures, make("http://example.com/ping")),
+            None,
+            &[],
+        )
         .unwrap();
     let second = store
-        .ingest_capture(&captured(&captures, make("http://example.com/ping")), None, &[])
+        .ingest_capture(
+            &captured(&captures, make("http://example.com/ping")),
+            None,
+            &[],
+        )
         .unwrap();
     let third = store
-        .ingest_capture(&captured(&captures, make("http://example.com/ping")), None, &[])
+        .ingest_capture(
+            &captured(&captures, make("http://example.com/ping")),
+            None,
+            &[],
+        )
         .unwrap();
     assert_eq!(first.name, "GET example.com/ping");
     assert_eq!(second.name, "GET example.com/ping 2");
@@ -324,7 +373,11 @@ fn naming_defaults_dedup_and_explicit_overrides() {
 
     // A blank explicit name falls back to the default naming.
     let blank = store
-        .ingest_capture(&captured(&captures, make("http://example.com/")), Some("   "), &[])
+        .ingest_capture(
+            &captured(&captures, make("http://example.com/")),
+            Some("   "),
+            &[],
+        )
         .unwrap();
     assert_eq!(blank.name, "GET example.com");
 
@@ -341,7 +394,13 @@ fn failed_capture_ingests_without_response_summary() {
     let store = FlowStore::open(root.path()).unwrap();
     let captures = CaptureStore::open(1, root.path()).unwrap();
 
-    let id = begin(&captures, "GET", "https://down.example.com/x", "HTTP/1.1", HeaderValues::new());
+    let id = begin(
+        &captures,
+        "GET",
+        "https://down.example.com/x",
+        "HTTP/1.1",
+        HeaderValues::new(),
+    );
     captures
         .fail(
             id,
@@ -378,13 +437,20 @@ async fn archived_session_captures_stay_ingestible_through_the_runtime() {
         "HTTP/1.1",
         HeaderValues::new(),
     );
-    captures.save_body(id, BodySide::Request, br#"{"user":"u"}"#).unwrap();
+    captures
+        .save_body(id, BodySide::Request, br#"{"user":"u"}"#)
+        .unwrap();
     complete_ok(&captures, id, HeaderValues::new());
     drop(captures);
 
     runtime.archive_session(session.id).await.unwrap();
     assert!(
-        runtime.workspace().root().join("sessions_archived").join(session.id.to_string()).exists()
+        runtime
+            .workspace()
+            .root()
+            .join("sessions_archived")
+            .join(session.id.to_string())
+            .exists()
     );
 
     // The live path refuses archived sessions, the archived path serves them.
@@ -416,7 +482,13 @@ async fn archived_session_captures_stay_ingestible_through_the_runtime() {
         .unwrap();
     assert_eq!(entry.name, "POST api.example.com/v1/login");
     assert_eq!(
-        entry.har.log.entries[0].request.post_data.as_ref().unwrap().text.as_deref(),
+        entry.har.log.entries[0]
+            .request
+            .post_data
+            .as_ref()
+            .unwrap()
+            .text
+            .as_deref(),
         Some(r#"{"user":"u"}"#)
     );
 

@@ -168,9 +168,7 @@ test("env set operations map onto the management routes with camelCase bodies", 
   expect(payload.sets).toEqual([set]);
   expect(payload.activeSetId).toBe("env-dev");
 
-  expect(
-    await backend.envSets!.create({ name: "prod", copyFrom: "env-dev" }),
-  ).toEqual(set);
+  expect(await backend.envSets!.create({ name: "prod", copyFrom: "env-dev" })).toEqual(set);
   expect(
     await backend.envSets!.save("env-dev", {
       name: "dev",
@@ -179,12 +177,14 @@ test("env set operations map onto the management routes with camelCase bodies", 
     }),
   ).toEqual(set);
   expect(await backend.envSets!.setActive(null)).toBe("env-dev");
-  expect(
-    await backend.envSets!.saveGlobals({ values: {}, secretValues: {} }),
-  ).toEqual({ values: {}, secretValues: {} });
-  expect(
-    await backend.envSets!.writeBack({ setId: "env-dev", writes: { count: 2 } }),
-  ).toEqual({ applied: 1, dropped: 0 });
+  expect(await backend.envSets!.saveGlobals({ values: {}, secretValues: {} })).toEqual({
+    values: {},
+    secretValues: {},
+  });
+  expect(await backend.envSets!.writeBack({ setId: "env-dev", writes: { count: 2 } })).toEqual({
+    applied: 1,
+    dropped: 0,
+  });
   await backend.envSets!.remove("env-dev");
 
   const calls = fetchMock.mock.calls as Array<[URL, RequestInit]>;

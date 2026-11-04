@@ -17,10 +17,7 @@ function other(x: number, y: number): { x: number; y: number } {
 
 describe("snapPosition", () => {
   it("左边缘接近其他节点右边缘时吸附（axis = x 垂直线）", () => {
-    const result = snapPosition(
-      { x: W + 3, y: 200 },
-      [other(0, 100)],
-    );
+    const result = snapPosition({ x: W + 3, y: 200 }, [other(0, 100)]);
     expect(result.x).toBe(W);
     expect(result.guides).toEqual([
       { axis: "x", value: W, from: Math.min(100, 200), to: Math.max(100 + H, 200 + H) },
@@ -36,10 +33,7 @@ describe("snapPosition", () => {
   });
 
   it("阈值外不吸附，返回原坐标与空辅助线", () => {
-    const result = snapPosition(
-      { x: W + ALIGNMENT_SNAP_THRESHOLD + 1, y: 500 },
-      [other(0, 100)],
-    );
+    const result = snapPosition({ x: W + ALIGNMENT_SNAP_THRESHOLD + 1, y: 500 }, [other(0, 100)]);
     expect(result.x).toBe(W + ALIGNMENT_SNAP_THRESHOLD + 1);
     expect(result.guides).toEqual([]);
   });

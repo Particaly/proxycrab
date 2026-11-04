@@ -61,10 +61,7 @@ import {
   latestRunningRunId,
   refreshFlowRuns,
 } from "../stores/flow-run";
-import {
-  consumeEditorFocus,
-  editorFocusStore,
-} from "../stores/editor-focus";
+import { consumeEditorFocus, editorFocusStore } from "../stores/editor-focus";
 import { flowTrialStore } from "../stores/flow-trial";
 import { windowsStore } from "../stores/windows";
 import "../styles/flow.css";
@@ -132,9 +129,7 @@ const canUndo = computed(() => history.value.past.length > 0);
 const canRedo = computed(() => history.value.future.length > 0);
 
 /** 运行期画布编辑锁定：运行态来自 stores/flow-run.ts 的事件对账（Task 22）。 */
-const runLocked = computed(
-  () => workflow.value !== null && isWorkflowRunning(workflow.value.id),
-);
+const runLocked = computed(() => workflow.value !== null && isWorkflowRunning(workflow.value.id));
 
 const selectedNode = computed<WorkflowNode | null>(() => {
   if (selectedNodeId.value === null) return null;

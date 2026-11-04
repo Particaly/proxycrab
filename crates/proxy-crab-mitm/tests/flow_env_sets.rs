@@ -53,11 +53,17 @@ fn activation_preference_round_trips_and_refuses_unknown_sets() {
 
     // One-click activation, then switching sets.
     assert_eq!(
-        store.set_active_env_set(Some("env-dev")).unwrap().as_deref(),
+        store
+            .set_active_env_set(Some("env-dev"))
+            .unwrap()
+            .as_deref(),
         Some("env-dev")
     );
     assert_eq!(
-        store.set_active_env_set(Some("env-prod")).unwrap().as_deref(),
+        store
+            .set_active_env_set(Some("env-prod"))
+            .unwrap()
+            .as_deref(),
         Some("env-prod")
     );
 
@@ -88,7 +94,10 @@ fn deleting_the_active_set_clears_the_preference() {
 
     // Deleting an inactive set keeps the preference.
     store.delete_env_set("env-prod").unwrap();
-    assert_eq!(store.active_env_set_id().unwrap().as_deref(), Some("env-dev"));
+    assert_eq!(
+        store.active_env_set_id().unwrap().as_deref(),
+        Some("env-dev")
+    );
 
     // Deleting the active set auto-clears the preference (archived semantics).
     store.delete_env_set("env-dev").unwrap();
@@ -110,11 +119,16 @@ fn save_and_delete_preserve_globals_and_preference() {
 
     // Set writes keep globals + preference.
     let mut updated = sample_set("env-dev", "dev");
-    updated.values.insert("baseUrl".to_owned(), "http://x".to_owned());
+    updated
+        .values
+        .insert("baseUrl".to_owned(), "http://x".to_owned());
     store.save_env_set(&updated).unwrap();
     let globals = store.env_globals().unwrap();
     assert_eq!(globals.values.get("region").map(String::as_str), Some("cn"));
-    assert_eq!(store.active_env_set_id().unwrap().as_deref(), Some("env-dev"));
+    assert_eq!(
+        store.active_env_set_id().unwrap().as_deref(),
+        Some("env-dev")
+    );
 
     // Globals writes keep sets + preference.
     store
@@ -124,7 +138,10 @@ fn save_and_delete_preserve_globals_and_preference() {
         })
         .unwrap();
     assert_eq!(store.list_env_sets().unwrap().len(), 1);
-    assert_eq!(store.active_env_set_id().unwrap().as_deref(), Some("env-dev"));
+    assert_eq!(
+        store.active_env_set_id().unwrap().as_deref(),
+        Some("env-dev")
+    );
 
     // Empty variable keys are rejected on both tables.
     let bad_globals = EnvGlobalVariables {
@@ -146,7 +163,10 @@ fn unsupported_envelope_versions_are_refused_like_before() {
 
     fs::write(
         &path,
-        format!(r#"{{"schemaVersion":{},"sets":[]}}"#, ENV_SETS_SCHEMA_VERSION + 1),
+        format!(
+            r#"{{"schemaVersion":{},"sets":[]}}"#,
+            ENV_SETS_SCHEMA_VERSION + 1
+        ),
     )
     .unwrap();
     assert!(store.list_env_sets().unwrap().is_empty());
@@ -182,8 +202,10 @@ fn masked_reads_and_restored_writes_keep_secrets_intact() {
     let root = tempdir().unwrap();
     let store = FlowStore::open(root.path()).unwrap();
     let mut set = sample_set("env-dev", "dev");
-    set.values.insert("baseUrl".to_owned(), "http://localhost".to_owned());
-    set.secret_values.insert("password".to_owned(), "hunter2".to_owned());
+    set.values
+        .insert("baseUrl".to_owned(), "http://localhost".to_owned());
+    set.secret_values
+        .insert("password".to_owned(), "hunter2".to_owned());
     store.save_env_set(&set).unwrap();
 
     // Reads handed to the UI mask secret values only.
@@ -192,7 +214,10 @@ fn masked_reads_and_restored_writes_keep_secrets_intact() {
         masked.secret_values.get("password").map(String::as_str),
         Some(SECRET_MASK_PLACEHOLDER)
     );
-    assert_eq!(masked.values.get("baseUrl").map(String::as_str), Some("http://localhost"));
+    assert_eq!(
+        masked.values.get("baseUrl").map(String::as_str),
+        Some("http://localhost")
+    );
 
     // A masked write round trip restores the untouched secret and keeps the
     // explicit override.
@@ -210,8 +235,14 @@ fn masked_reads_and_restored_writes_keep_secrets_intact() {
     incoming.created_at = existing.created_at;
     store.save_env_set(&incoming).unwrap();
     let stored = &store.list_env_sets().unwrap()[0];
-    assert_eq!(stored.secret_values.get("password").map(String::as_str), Some("hunter2"));
-    assert_eq!(stored.secret_values.get("token").map(String::as_str), Some("new-token"));
+    assert_eq!(
+        stored.secret_values.get("password").map(String::as_str),
+        Some("hunter2")
+    );
+    assert_eq!(
+        stored.secret_values.get("token").map(String::as_str),
+        Some("new-token")
+    );
 
     // Globals mask/restore behaves the same.
     store
@@ -222,7 +253,10 @@ fn masked_reads_and_restored_writes_keep_secrets_intact() {
         .unwrap();
     let masked_globals = mask_globals(&store.env_globals().unwrap());
     assert_eq!(
-        masked_globals.secret_values.get("license").map(String::as_str),
+        masked_globals
+            .secret_values
+            .get("license")
+            .map(String::as_str),
         Some(SECRET_MASK_PLACEHOLDER)
     );
     assert_eq!(
@@ -240,13 +274,17 @@ fn write_back_batches_persist_serially_with_secret_routing() {
     let root = tempdir().unwrap();
     let store = FlowStore::open(root.path()).unwrap();
     let mut set = sample_set("env-dev", "dev");
-    set.secret_values.insert("password".to_owned(), "hunter2".to_owned());
+    set.secret_values
+        .insert("password".to_owned(), "hunter2".to_owned());
     store.save_env_set(&set).unwrap();
     store.set_active_env_set(Some("env-dev")).unwrap();
 
     // The dispatch-time active snapshot feeds the run chain (Task 19).
     let snapshot = store.active_env_snapshot().unwrap();
-    assert_eq!(snapshot.values.get("password").map(String::as_str), Some("hunter2"));
+    assert_eq!(
+        snapshot.values.get("password").map(String::as_str),
+        Some("hunter2")
+    );
     assert_eq!(snapshot.secret_values, vec!["hunter2".to_owned()]);
 
     // Submit several batches; application order follows submission order.
@@ -261,7 +299,10 @@ fn write_back_batches_persist_serially_with_secret_routing() {
         )
         .unwrap();
     store
-        .submit_env_write_back("env-dev", writes(&[("baseUrl", json!("http://localhost:5173"))]))
+        .submit_env_write_back(
+            "env-dev",
+            writes(&[("baseUrl", json!("http://localhost:5173"))]),
+        )
         .unwrap();
     // Unknown set ids are accepted at submit time (committed) and dropped at flush.
     store
@@ -273,7 +314,11 @@ fn write_back_batches_persist_serially_with_secret_routing() {
             .submit_env_write_back("../escape", writes(&[("x", json!(1))]))
             .is_err()
     );
-    assert!(store.submit_env_write_back("env-dev", BTreeMap::new()).is_err());
+    assert!(
+        store
+            .submit_env_write_back("env-dev", BTreeMap::new())
+            .is_err()
+    );
 
     let flush = store.flush_env_write_backs().unwrap();
     assert_eq!(flush.applied, 2);
@@ -288,12 +333,18 @@ fn write_back_batches_persist_serially_with_secret_routing() {
     // Numbers are stringified like the archived contract.
     assert_eq!(stored.values.get("count").map(String::as_str), Some("42"));
     // Keys already in the secret table keep their secret marking.
-    assert_eq!(stored.secret_values.get("password").map(String::as_str), Some("hunter3"));
+    assert_eq!(
+        stored.secret_values.get("password").map(String::as_str),
+        Some("hunter3")
+    );
     assert!(!stored.values.contains_key("password"));
 
     // The set was rewritten (updatedAt bumped) and preference untouched.
     assert!(stored.updated_at > 1);
-    assert_eq!(store.active_env_set_id().unwrap().as_deref(), Some("env-dev"));
+    assert_eq!(
+        store.active_env_set_id().unwrap().as_deref(),
+        Some("env-dev")
+    );
 
     // A drained queue flushes nothing.
     let flush = store.flush_env_write_backs().unwrap();
@@ -340,7 +391,8 @@ fn write_back_to_a_deleted_set_is_dropped_without_resurrection() {
 fn resolve_active_env_snapshot_matches_the_archived_semantics() {
     let mut set = sample_set("env-dev", "dev");
     set.values.insert("a".to_owned(), "normal".to_owned());
-    set.secret_values.insert("b".to_owned(), "secret".to_owned());
+    set.secret_values
+        .insert("b".to_owned(), "secret".to_owned());
     // Unknown active id: empty snapshot (no environment).
     assert_eq!(
         resolve_active_env_snapshot(std::slice::from_ref(&set), Some("env-x")),

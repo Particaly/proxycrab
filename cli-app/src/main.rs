@@ -365,11 +365,8 @@ mod tests {
     #[test]
     fn startup_redaction_requires_valid_file_and_pins_its_contents() {
         let dir = tempfile::tempdir().unwrap();
-        let runtime = ProxyCrab::open(
-            dir.path().join("workspace"),
-            Arc::new(LogBuffer::default()),
-        )
-        .unwrap();
+        let runtime =
+            ProxyCrab::open(dir.path().join("workspace"), Arc::new(LogBuffer::default())).unwrap();
         let manager = MitmManager::new(runtime);
         let path = dir.path().join("mask.lua");
         assert!(load_redaction_script(&manager, &path).is_err());

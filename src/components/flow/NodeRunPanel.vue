@@ -124,7 +124,11 @@ async function pinOutput(): Promise<void> {
           ...candidate,
           config: {
             ...candidate.config,
-            pinnedOutput: { value: checkpoint.output, pinnedAt: Date.now(), sourceRunId: props.run.id },
+            pinnedOutput: {
+              value: checkpoint.output,
+              pinnedAt: Date.now(),
+              sourceRunId: props.run.id,
+            },
           },
         }
       : candidate,
@@ -173,9 +177,7 @@ function toggleIteration(index: number): void {
 
 /** 迭代项的行内预览文本（截断包装改道其 preview 前段，不解析 preview）。 */
 function previewText(value: unknown, max = 48): string {
-  const text = isTruncatedSnapshot(value)
-    ? value.preview
-    : safeStringify(value);
+  const text = isTruncatedSnapshot(value) ? value.preview : safeStringify(value);
   return text.length <= max ? text : `${text.slice(0, max)}…`;
 }
 
@@ -201,28 +203,43 @@ function safeStringify(value: unknown): string {
             :class="dotClass"
             :aria-label="nodeRunStatusLabel(nodeRun.status, runInterrupted)"
           />
-          <span
-            v-else
-            class="nrp-dot none"
-            aria-label="本次运行未执行该节点"
-          />
+          <span v-else class="nrp-dot none" aria-label="本次运行未执行该节点" />
           <span class="nrp-name" :title="displayName">{{ displayName }}</span>
           <span v-if="isTypeLabel" class="nrp-short-id mono">{{ shortId(nodeId) }}</span>
-          <button class="btn icon nrp-close" title="收起节点详情" aria-label="收起节点详情" @click="emit('close')">
+          <button
+            class="btn icon nrp-close"
+            title="收起节点详情"
+            aria-label="收起节点详情"
+            @click="emit('close')"
+          >
             ✕
           </button>
         </div>
         <div class="nrp-meta-row">
           <span :data-status="nodeRun?.status ?? 'none'">
-            {{ nodeRun === undefined ? "未执行" : nodeRunStatusLabel(nodeRun.status, runInterrupted) }}
+            {{
+              nodeRun === undefined ? "未执行" : nodeRunStatusLabel(nodeRun.status, runInterrupted)
+            }}
           </span>
           <span v-if="durationLabel !== null" class="mono">{{ durationLabel }}</span>
           <span
             v-if="iterationsProgress !== null"
             class="mono"
-            :title="formatLoopIterationProgress(iterationsProgress.done, iterationsProgress.total, iterationsProgress.capped)"
+            :title="
+              formatLoopIterationProgress(
+                iterationsProgress.done,
+                iterationsProgress.total,
+                iterationsProgress.capped,
+              )
+            "
           >
-            {{ formatLoopIterationProgress(iterationsProgress.done, iterationsProgress.total, iterationsProgress.capped) }}
+            {{
+              formatLoopIterationProgress(
+                iterationsProgress.done,
+                iterationsProgress.total,
+                iterationsProgress.capped,
+              )
+            }}
           </span>
         </div>
       </div>
@@ -263,13 +280,16 @@ function safeStringify(value: unknown): string {
       <div class="nrp-viewer">
         <!-- 前置区（错误 / 逐迭代明细）：随内容定高，空间不足时自身滚动 -->
         <div v-if="nodeRun.error || nodeRun.iterations" class="nrp-preamble">
-          <div v-if="nodeRun.error" class="nrp-error" :title="nodeRun.error">{{ nodeRun.error }}</div>
+          <div v-if="nodeRun.error" class="nrp-error" :title="nodeRun.error">
+            {{ nodeRun.error }}
+          </div>
 
           <!-- 循环节点的逐迭代明细（进度 / 截断标注 / 逐轮查看） -->
           <div v-if="nodeRun.iterations" class="nrp-iterations">
             <div class="nrp-iteration-summary">
               <span>
-                逐迭代明细：共 {{ nodeRun.iterations.total }} 轮 · 已结算 {{ nodeRun.iterations.done }} 轮{{
+                逐迭代明细：共 {{ nodeRun.iterations.total }} 轮 · 已结算
+                {{ nodeRun.iterations.done }} 轮{{
                   nodeRun.iterations.capped ? "（轮数受上限截断）" : ""
                 }}
               </span>
@@ -277,10 +297,7 @@ function safeStringify(value: unknown): string {
                 明细已截断（仅前 {{ nodeRun.iterations.records.length }} 轮）
               </span>
             </div>
-            <p
-              v-if="nodeRun.iterations.records.length === 0"
-              class="nrp-iteration-pending"
-            >
+            <p v-if="nodeRun.iterations.records.length === 0" class="nrp-iteration-pending">
               逐轮明细在运行结束后随终态快照可见（当前进度见头部「已迭代」计数）。
             </p>
             <template v-else>
@@ -300,7 +317,13 @@ function safeStringify(value: unknown): string {
                 >
                   <span
                     class="nrp-dot"
-                    :class="record.status === 'failed' ? 'failed' : record.status === 'success' ? 'success' : 'neutral'"
+                    :class="
+                      record.status === 'failed'
+                        ? 'failed'
+                        : record.status === 'success'
+                          ? 'success'
+                          : 'neutral'
+                    "
                   />
                   <span class="nrp-iteration-label">第 {{ record.index + 1 }} 轮</span>
                   <span class="nrp-iteration-item mono" :title="previewText(record.item, 400)">
@@ -322,7 +345,11 @@ function safeStringify(value: unknown): string {
                 </button>
                 <!-- 展开轮的迭代项 / 聚合输出双 tab JSON 树（重跑该轮入口见 RERUN_SEAM） -->
                 <div v-if="expandedIteration === record.index" class="nrp-iteration-detail">
-                  <div class="nrp-tabs" role="tablist" :aria-label="`第 ${record.index + 1} 轮快照分页`">
+                  <div
+                    class="nrp-tabs"
+                    role="tablist"
+                    :aria-label="`第 ${record.index + 1} 轮快照分页`"
+                  >
                     <button
                       v-for="tab in [
                         { id: 'output', label: '聚合输出' },
@@ -342,7 +369,11 @@ function safeStringify(value: unknown): string {
                   <JsonTree
                     :value="iterationTab === 'item' ? record.item : record.output"
                     :test-id="`iteration-json-tree-${iterationTab}`"
-                    :search-label="iterationTab === 'item' ? '搜索迭代项的键、值或路径' : '搜索聚合输出的键、值或路径'"
+                    :search-label="
+                      iterationTab === 'item'
+                        ? '搜索迭代项的键、值或路径'
+                        : '搜索聚合输出的键、值或路径'
+                    "
                   />
                 </div>
               </div>
@@ -372,7 +403,9 @@ function safeStringify(value: unknown): string {
           class="nrp-tree"
           :value="valueTab === 'input' ? nodeRun.input : nodeRun.output"
           :test-id="`node-json-tree-${valueTab}`"
-          :search-label="valueTab === 'input' ? '搜索入参的键、值或路径' : '搜索返回值的键、值或路径'"
+          :search-label="
+            valueTab === 'input' ? '搜索入参的键、值或路径' : '搜索返回值的键、值或路径'
+          "
           fill-height
         />
       </div>

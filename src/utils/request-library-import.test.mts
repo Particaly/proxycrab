@@ -147,7 +147,9 @@ describe("parseCurlCommand 请求体", () => {
       expect(ok.request.body).toBe(`name=A-1&note=${encodeURIComponent("hello world")}`);
       expect(ok.request.method).toBe("POST");
     }
-    expect(expectError("curl -F 'avatar=@a.png' https://a.dev/upload")).toContain("不支持从文件读取");
+    expect(expectError("curl -F 'avatar=@a.png' https://a.dev/upload")).toContain(
+      "不支持从文件读取",
+    );
   });
 
   it("-d @file / <file 与 -b cookiejar 返回明确错误", () => {
@@ -177,11 +179,7 @@ describe("parseCurlCommand 请求体", () => {
 describe("parseCurlCommand 词法与续行", () => {
   it("多行续行与单双引号混用（'\\'' 惯用法）", () => {
     const result = parseCurlCommand(
-      [
-        "curl https://a.dev/api \\",
-        "  -H 'A: it'\\''s' \\",
-        '  -d "line1\\nline2"',
-      ].join("\n"),
+      ["curl https://a.dev/api \\", "  -H 'A: it'\\''s' \\", '  -d "line1\\nline2"'].join("\n"),
     );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -225,7 +223,9 @@ describe("parseCurlCommand -G 与错误路径", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.request.method).toBe("GET");
-    expect(result.request.url).toBe(`https://a.dev/search?q=${encodeURIComponent("kw word")}&page=2`);
+    expect(result.request.url).toBe(
+      `https://a.dev/search?q=${encodeURIComponent("kw word")}&page=2`,
+    );
     expect(result.request.queryString).toEqual([
       { name: "q", value: "kw word" },
       { name: "page", value: "2" },
@@ -302,10 +302,15 @@ describe("parseHarImport", () => {
     expect(item.status).toBe(200);
     expect(item.entry.startedDateTime).toBe("2026-11-01T00:00:00Z");
     expect(item.entry.time).toBe(120);
-    expect(item.entry.request.headers).toEqual([{ name: "Content-Type", value: "application/json" }]);
+    expect(item.entry.request.headers).toEqual([
+      { name: "Content-Type", value: "application/json" },
+    ]);
     expect(item.entry.request.queryString).toEqual([{ name: "dry", value: "1" }]);
     expect(item.entry.request.cookies).toEqual([{ name: "sid", value: "abc" }]);
-    expect(item.entry.request.postData).toEqual({ mimeType: "application/json", text: '{"sku":"A-1"}' });
+    expect(item.entry.request.postData).toEqual({
+      mimeType: "application/json",
+      text: '{"sku":"A-1"}',
+    });
     expect(item.entry.response).toMatchObject({
       status: 200,
       statusText: "OK",
@@ -345,7 +350,11 @@ describe("parseHarImport", () => {
 
   it("条目级失败跳过并记录原因，不中断其余条目", () => {
     const result = parseHarImport(
-      harText(["nope", { request: { url: "https://a.dev" } }, { request: { method: "GET", url: "https://b.dev" } }]),
+      harText([
+        "nope",
+        { request: { url: "https://a.dev" } },
+        { request: { method: "GET", url: "https://b.dev" } },
+      ]),
     );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -358,7 +367,10 @@ describe("parseHarImport", () => {
 
   it("文件级失败：空 / 非 JSON / 缺 log / 缺 entries", () => {
     expect(parseHarImport("")).toMatchObject({ ok: false, error: "HAR 文件内容为空" });
-    expect(parseHarImport("not json")).toMatchObject({ ok: false, error: "文件内容不是有效的 JSON" });
+    expect(parseHarImport("not json")).toMatchObject({
+      ok: false,
+      error: "文件内容不是有效的 JSON",
+    });
     expect(parseHarImport("{}")).toMatchObject({ ok: false });
     expect(parseHarImport('{"log":{}}')).toMatchObject({ ok: false });
   });
@@ -374,7 +386,12 @@ describe("parsePostmanImport", () => {
             name: "Create order",
             request: {
               method: "POST",
-              url: { raw: "https://api.example.com/v1/orders?dry=1", host: ["api", "example", "com"], path: ["v1", "orders"], query: [{ key: "dry", value: "1" }] },
+              url: {
+                raw: "https://api.example.com/v1/orders?dry=1",
+                host: ["api", "example", "com"],
+                path: ["v1", "orders"],
+                query: [{ key: "dry", value: "1" }],
+              },
               header: [
                 { key: "Content-Type", value: "application/json" },
                 { key: "X-Drop", value: "skip", disabled: true },
@@ -392,9 +409,14 @@ describe("parsePostmanImport", () => {
     expect(item.method).toBe("POST");
     expect(item.entry.request.url).toBe("https://api.example.com/v1/orders?dry=1");
     expect(item.entry.request.queryString).toEqual([{ name: "dry", value: "1" }]);
-    expect(item.entry.request.headers).toEqual([{ name: "Content-Type", value: "application/json" }]);
+    expect(item.entry.request.headers).toEqual([
+      { name: "Content-Type", value: "application/json" },
+    ]);
     expect(item.entry.request.cookies).toEqual([{ name: "sid", value: "abc" }]);
-    expect(item.entry.request.postData).toEqual({ mimeType: "application/json", text: '{"sku":"A-1"}' });
+    expect(item.entry.request.postData).toEqual({
+      mimeType: "application/json",
+      text: '{"sku":"A-1"}',
+    });
   });
 
   it("urlencoded 补 params 与编码正文；raw 无 language 时回退 Content-Type 头", () => {
@@ -505,15 +527,23 @@ describe("parsePostmanImport", () => {
 
   it("文件级失败：空 / 非 JSON / 缺 item 数组", () => {
     expect(parsePostmanImport("")).toMatchObject({ ok: false });
-    expect(parsePostmanImport("[[[")).toMatchObject({ ok: false, error: "文件内容不是有效的 JSON" });
-    expect(parsePostmanImport('{"info":{}}')).toMatchObject({ ok: false, error: "Postman Collection 格式不正确：缺少 item 数组" });
+    expect(parsePostmanImport("[[[")).toMatchObject({
+      ok: false,
+      error: "文件内容不是有效的 JSON",
+    });
+    expect(parsePostmanImport('{"info":{}}')).toMatchObject({
+      ok: false,
+      error: "Postman Collection 格式不正确：缺少 item 数组",
+    });
   });
 });
 
 describe("去重策略", () => {
   /** 组装单条测试条目（借 HAR 路径构建最小合法形状）。 */
   function item(method: string, url: string) {
-    const result = parseHarImport(JSON.stringify({ log: { entries: [{ request: { method, url } }] } }));
+    const result = parseHarImport(
+      JSON.stringify({ log: { entries: [{ request: { method, url } }] } }),
+    );
     if (!result.ok) throw new Error("构建测试条目失败");
     return result.items[0];
   }
@@ -537,9 +567,14 @@ describe("buildCurlItem", () => {
     expect(built.method).toBe("POST");
     expect(built.status).toBe(-1);
     expect(built.entry.response).toBeUndefined();
-    expect(built.entry.request.headers).toEqual([{ name: "Content-Type", value: "application/json" }]);
+    expect(built.entry.request.headers).toEqual([
+      { name: "Content-Type", value: "application/json" },
+    ]);
     expect(built.entry.request.queryString).toEqual([{ name: "dry", value: "1" }]);
-    expect(built.entry.request.postData).toEqual({ mimeType: "application/json", text: '{"sku":"A-1"}' });
+    expect(built.entry.request.postData).toEqual({
+      mimeType: "application/json",
+      text: '{"sku":"A-1"}',
+    });
   });
 
   it("表单体补 params 键值对（URL 解码后的展示形态）；Cookie 透传", () => {
@@ -562,5 +597,3 @@ describe("buildCurlItem", () => {
     expect(built.entry.request.cookies).toBeUndefined();
   });
 });
-
-

@@ -256,7 +256,10 @@ export function resolveRunGraph(run: FlowRunRecord, workflow: Workflow | null): 
 }
 
 /** 详情页顶部的图来源披露文案（空数组 = 无需披露）。 */
-export function runGraphDisclosures(resolved: ResolvedRunGraph, hasWorkflowCapability: boolean): string[] {
+export function runGraphDisclosures(
+  resolved: ResolvedRunGraph,
+  hasWorkflowCapability: boolean,
+): string[] {
   if (resolved.source === "snapshot") {
     return resolved.truncated
       ? ["图快照已降级：超过落库体积上限，仅保留节点与连线骨架，节点配置未随快照保存"]
@@ -371,8 +374,7 @@ export function sortNodeRunsByExecution(nodeRuns: FlowNodeRunRecord[]): NodeRunE
     .map((nodeRun) => ({ nodeId: nodeRun.nodeId, nodeRun }))
     .sort(
       (a, b) =>
-        (a.nodeRun.startedAt ?? 0) - (b.nodeRun.startedAt ?? 0) ||
-        a.nodeId.localeCompare(b.nodeId),
+        (a.nodeRun.startedAt ?? 0) - (b.nodeRun.startedAt ?? 0) || a.nodeId.localeCompare(b.nodeId),
     );
 }
 

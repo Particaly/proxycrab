@@ -50,8 +50,10 @@ fn workflow(id: &str, nodes: Vec<WorkflowNode>, edges: Vec<WorkflowEdge>) -> Wor
 }
 
 fn read_raw(root: &std::path::Path, id: &str) -> serde_json::Value {
-    serde_json::from_slice(&fs::read(root.join("flow/workflows").join(format!("{id}.json"))).unwrap())
-        .unwrap()
+    serde_json::from_slice(
+        &fs::read(root.join("flow/workflows").join(format!("{id}.json"))).unwrap(),
+    )
+    .unwrap()
 }
 
 /// All nine node types persist their config with the exact camelCase field
@@ -60,7 +62,11 @@ fn read_raw(root: &std::path::Path, id: &str) -> serde_json::Value {
 fn all_node_config_fields_round_trip_as_camel_case() {
     let configs: Vec<(WorkflowNodeType, NodeConfig, serde_json::Value)> = vec![
         // start：空配置
-        (WorkflowNodeType::Start, NodeConfig::default(), serde_json::json!({})),
+        (
+            WorkflowNodeType::Start,
+            NodeConfig::default(),
+            serde_json::json!({}),
+        ),
         // httpReplay：请求引用 / 覆盖 / 保真 / cookie / 脚本 / 超时 / failPolicy / 重试 / 固定输出
         (
             WorkflowNodeType::HttpReplay,
@@ -195,7 +201,10 @@ fn all_node_config_fields_round_trip_as_camel_case() {
         (
             WorkflowNodeType::Loop,
             NodeConfig {
-                items: Some(LoopItems::Array(vec![serde_json::json!(1), serde_json::json!({"k":"v"})])),
+                items: Some(LoopItems::Array(vec![
+                    serde_json::json!(1),
+                    serde_json::json!({"k":"v"}),
+                ])),
                 max_iterations: Some(50),
                 csv_text: Some("id,name\n1,a".into()),
                 csv_delimiter: Some(CsvDelimiter::Semicolon),
@@ -215,7 +224,10 @@ fn all_node_config_fields_round_trip_as_camel_case() {
         // delay
         (
             WorkflowNodeType::Delay,
-            NodeConfig { duration_ms: Some(3000), ..NodeConfig::default() },
+            NodeConfig {
+                duration_ms: Some(3000),
+                ..NodeConfig::default()
+            },
             serde_json::json!({ "durationMs": 3000 }),
         ),
         // setVariable
@@ -297,7 +309,10 @@ fn all_node_config_fields_round_trip_as_camel_case() {
             NodeConfig {
                 text: Some("token 10 分钟过期".into()),
                 color: Some("amber".into()),
-                size: Some(StickyNoteSize { width: 220.0, height: 140.0 }),
+                size: Some(StickyNoteSize {
+                    width: 220.0,
+                    height: 140.0,
+                }),
                 ..NodeConfig::default()
             },
             serde_json::json!({
@@ -326,11 +341,13 @@ fn all_node_config_fields_round_trip_as_camel_case() {
     let raw = read_raw(root.path(), "wf-all");
     for (index, (_, _, expected)) in configs.iter().enumerate() {
         assert_eq!(
-            raw["nodes"][index]["config"],
-            *expected,
+            raw["nodes"][index]["config"], *expected,
             "node {index} config shape"
         );
-        assert_eq!(raw["nodes"][index]["position"], serde_json::json!({ "x": 1.5, "y": -2.5 }));
+        assert_eq!(
+            raw["nodes"][index]["position"],
+            serde_json::json!({ "x": 1.5, "y": -2.5 })
+        );
     }
 
     // Typed round-trip is lossless.
@@ -348,7 +365,10 @@ fn all_node_config_fields_round_trip_as_camel_case() {
         source_handle: Some(ConditionBranchHandle::False),
     });
     store.put_workflow(&with_branch).unwrap();
-    assert_eq!(read_raw(root.path(), "wf-branch")["edges"][0]["sourceHandle"], "false");
+    assert_eq!(
+        read_raw(root.path(), "wf-branch")["edges"][0]["sourceHandle"],
+        "false"
+    );
     assert_eq!(
         store.get_workflow("wf-branch").unwrap().unwrap().edges[0].source_handle,
         Some(ConditionBranchHandle::False)
@@ -404,7 +424,10 @@ fn legacy_config_values_read_tolerantly() {
     );
     assert_eq!(
         migrated.nodes[1].config.items,
-        Some(LoopItems::Array(vec![serde_json::json!("a"), serde_json::json!(2)]))
+        Some(LoopItems::Array(vec![
+            serde_json::json!("a"),
+            serde_json::json!(2)
+        ]))
     );
     // Backfilled refIds are five letters and unique within the workflow.
     let ref_ids: Vec<_> = migrated
@@ -464,7 +487,10 @@ fn illegal_fail_policy_values_reject_the_document() {
     )
     .unwrap();
     let error = format!("{:#}", store.get_workflow("wf-badfail").unwrap_err());
-    assert!(error.contains("failPolicy") || error.contains("unknown variant"), "{error}");
+    assert!(
+        error.contains("failPolicy") || error.contains("unknown variant"),
+        "{error}"
+    );
     assert!(store.list_workflows().unwrap().is_empty());
 }
 
@@ -532,13 +558,19 @@ fn old_documents_migrate_ref_ids_and_template_refs_idempotently() {
         Some(serde_json::json!(expected_value))
     );
     // Prefix-similar ids are untouched (token-boundary rewrite).
-    assert_eq!(read_raw(root.path(), "wf-old")["schemaVersion"], WORKFLOW_SCHEMA_VERSION);
+    assert_eq!(
+        read_raw(root.path(), "wf-old")["schemaVersion"],
+        WORKFLOW_SCHEMA_VERSION
+    );
 
     // Second read is idempotent: the stored document matches the migrated one.
     let again = store.get_workflow("wf-old").unwrap().unwrap();
     assert_eq!(again, migrated);
     // list returns documents as stored (already migrated at this point).
-    assert_eq!(store.list_workflows().unwrap()[0].schema_version, WORKFLOW_SCHEMA_VERSION);
+    assert_eq!(
+        store.list_workflows().unwrap()[0].schema_version,
+        WORKFLOW_SCHEMA_VERSION
+    );
 }
 
 /// Documents written by a newer schema version are refused instead of being

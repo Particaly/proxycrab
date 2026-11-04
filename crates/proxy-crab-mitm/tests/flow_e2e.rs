@@ -14,6 +14,7 @@ mod flow_e2e {
     };
 
     use proxy_crab_mitm::{
+        ProxyCrab,
         flow::{
             model::{
                 AssertionRule, ConditionBranchHandle, JsonPathAssertionRule, JsonPathOperator,
@@ -23,15 +24,14 @@ mod flow_e2e {
             },
             request_library::CapturedRequest,
             run::{FlowRunEvent, FlowRunManager},
-            store::{generate_flow_id, FlowStore},
+            store::{FlowStore, generate_flow_id},
         },
         log_buffer::LogBuffer,
         model::{BodySourceType, HeaderValues, NewSession, RequestData, ResponseData},
         storage::{BodySide, CaptureStore},
-        ProxyCrab,
     };
     use serde_json::{Value as JsonValue, json};
-    use tempfile::{tempdir, TempDir};
+    use tempfile::{TempDir, tempdir};
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpListener,
@@ -110,16 +110,24 @@ mod flow_e2e {
         runtime.replace_config(config).await.unwrap();
         runtime.start_proxy().await.unwrap();
         let session = runtime.create_session(NewSession::default()).unwrap();
-        let manager = Arc::new(FlowRunManager::open(root.path().to_path_buf(), runtime.clone()));
+        let manager = Arc::new(FlowRunManager::open(
+            root.path().to_path_buf(),
+            runtime.clone(),
+        ));
         (root, runtime, manager, session.id)
     }
 
     fn put_workflow(root: &Path, workflow: &Workflow) {
-        FlowStore::open(root).unwrap().put_workflow(workflow).unwrap();
+        FlowStore::open(root)
+            .unwrap()
+            .put_workflow(workflow)
+            .unwrap();
     }
 
     /// 逐个收取进度事件，直到 `finished`；断言运行在时限内定稿。
-    async fn collect_until_finished(rx: &mut broadcast::Receiver<FlowRunEvent>) -> Vec<FlowRunEvent> {
+    async fn collect_until_finished(
+        rx: &mut broadcast::Receiver<FlowRunEvent>,
+    ) -> Vec<FlowRunEvent> {
         let deadline = std::time::Instant::now() + SETTLE_TIMEOUT;
         let mut events = Vec::new();
         loop {
@@ -219,7 +227,12 @@ mod flow_e2e {
 
         // 阶段一：采集一个请求并入库，形成请求库条目（流程请求节点的基线来源）。
         let captures = CaptureStore::open(session, root.path()).unwrap();
-        let capture_id = begin(&captures, "GET", "https://api.example.com/v1/login", "HTTP/1.1");
+        let capture_id = begin(
+            &captures,
+            "GET",
+            "https://api.example.com/v1/login",
+            "HTTP/1.1",
+        );
         complete_ok(&captures, capture_id);
         let store = FlowStore::open(root.path()).unwrap();
         let entry = store
@@ -314,7 +327,10 @@ mod flow_e2e {
         assert_eq!(record.session_id, Some(session));
 
         // 图快照与定义一致：节点 / 连线齐全，条件真分支手柄在场。
-        let snapshot = record.graph_snapshot.clone().expect("graph snapshot stored");
+        let snapshot = record
+            .graph_snapshot
+            .clone()
+            .expect("graph snapshot stored");
         let snapshot_nodes = snapshot
             .get("nodes")
             .and_then(JsonValue::as_array)
@@ -346,12 +362,22 @@ mod flow_e2e {
 
         // 阶段四：等终态，校验运行记录、节点检查点与出站数据流。
         let events = collect_until_finished(&mut rx).await;
-        assert_eq!(events.first().map(|event| event.kind.as_str()), Some("started"));
-        assert_eq!(events.last().map(|event| event.kind.as_str()), Some("finished"));
+        assert_eq!(
+            events.first().map(|event| event.kind.as_str()),
+            Some("started")
+        );
+        assert_eq!(
+            events.last().map(|event| event.kind.as_str()),
+            Some("finished")
+        );
 
         let detail = manager.get_run_detail(&record.id).await.unwrap().unwrap();
         assert_eq!(detail.run.id, record.id);
-        assert_eq!(detail.run.status, "success", "run error: {:?}", detail.run.error);
+        assert_eq!(
+            detail.run.status, "success",
+            "run error: {:?}",
+            detail.run.error
+        );
         assert!(detail.run.finished_at.is_some());
         let checkpoint = |node_id: &str| {
             detail
@@ -372,7 +398,10 @@ mod flow_e2e {
         let condition_output = checkpoint("c").output.as_ref().expect("condition output");
         assert_eq!(condition_output["branch"], json!("true"));
         // 循环节点：两轮迭代全部结算，逐轮明细按 items 序。
-        let iterations = checkpoint("L").iterations.as_ref().expect("loop iterations");
+        let iterations = checkpoint("L")
+            .iterations
+            .as_ref()
+            .expect("loop iterations");
         assert_eq!(iterations["total"], json!(2));
         assert_eq!(iterations["done"], json!(2));
         assert_eq!(iterations["capped"], json!(false));

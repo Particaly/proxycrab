@@ -226,7 +226,9 @@ impl NodeCookieMode {
 
 impl<'de> Deserialize<'de> for NodeCookieMode {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Ok(Self::deserialize_lenient(&String::deserialize(deserializer)?))
+        Ok(Self::deserialize_lenient(&String::deserialize(
+            deserializer,
+        )?))
     }
 }
 
@@ -438,7 +440,9 @@ impl CsvDelimiter {
 
 impl<'de> Deserialize<'de> for CsvDelimiter {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Ok(Self::deserialize_lenient(&String::deserialize(deserializer)?))
+        Ok(Self::deserialize_lenient(&String::deserialize(
+            deserializer,
+        )?))
     }
 }
 
@@ -680,7 +684,10 @@ pub fn generate_ref_id(exclude: &BTreeSet<String>) -> String {
 /// 映射表时替换，token 是到下一个「.」或表达式结束为止的完整片段（不误替换
 /// 仅前缀相同的 id）；根不是 node / 未命中 / 语法不符的表达式原样保留；
 /// 未闭合的 `{{` 尾部文本整体按字面量保留。
-pub fn rewrite_template_node_refs(raw: &str, ref_id_by_node_id: &BTreeMap<String, String>) -> String {
+pub fn rewrite_template_node_refs(
+    raw: &str,
+    ref_id_by_node_id: &BTreeMap<String, String>,
+) -> String {
     if !raw.contains("{{") || ref_id_by_node_id.is_empty() {
         return raw.to_owned();
     }
@@ -870,7 +877,10 @@ mod tests {
             "{{  node.abcde  }}"
         );
         // 未闭合的 {{ 尾部整体按字面量保留。
-        assert_eq!(rewrite_template_node_refs("x {{ node.n1", &map), "x {{ node.n1");
+        assert_eq!(
+            rewrite_template_node_refs("x {{ node.n1", &map),
+            "x {{ node.n1"
+        );
         // 无 {{ 时零拷贝语义（原样返回）。
         assert_eq!(rewrite_template_node_refs("plain", &map), "plain");
     }

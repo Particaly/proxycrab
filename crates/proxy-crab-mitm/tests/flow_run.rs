@@ -14,17 +14,17 @@ mod flow_run {
     use std::{path::Path, sync::Arc, time::Duration};
 
     use proxy_crab_mitm::{
+        ProxyCrab,
         flow::{
             model::{NodeConfig, Position, Workflow, WorkflowEdge, WorkflowNode, WorkflowNodeType},
             run::{FlowRunEvent, FlowRunManager, RunTriggerError},
             run_store::{FlowRunRecord, RunStore},
-            store::{generate_flow_id, FlowStore},
+            store::{FlowStore, generate_flow_id},
         },
         log_buffer::LogBuffer,
         model::NewSession,
-        ProxyCrab,
     };
-    use tempfile::{tempdir, TempDir};
+    use tempfile::{TempDir, tempdir};
     use tokio::{sync::broadcast, time::timeout};
 
     /// 运行终态等待上限（取消路径含轮询感知延迟，留足余量）。
@@ -91,16 +91,24 @@ mod flow_run {
         runtime.replace_config(config).await.unwrap();
         runtime.start_proxy().await.unwrap();
         let session = runtime.create_session(NewSession::default()).unwrap();
-        let manager = Arc::new(FlowRunManager::open(root.path().to_path_buf(), runtime.clone()));
+        let manager = Arc::new(FlowRunManager::open(
+            root.path().to_path_buf(),
+            runtime.clone(),
+        ));
         (root, runtime, manager, session.id)
     }
 
     fn put_workflow(root: &Path, workflow: &Workflow) {
-        FlowStore::open(root).unwrap().put_workflow(workflow).unwrap();
+        FlowStore::open(root)
+            .unwrap()
+            .put_workflow(workflow)
+            .unwrap();
     }
 
     /// 逐个收取进度事件，直到 `finished`；断言运行在时限内定稿。
-    async fn collect_until_finished(rx: &mut broadcast::Receiver<FlowRunEvent>) -> Vec<FlowRunEvent> {
+    async fn collect_until_finished(
+        rx: &mut broadcast::Receiver<FlowRunEvent>,
+    ) -> Vec<FlowRunEvent> {
         let deadline = std::time::Instant::now() + SETTLE_TIMEOUT;
         let mut events = Vec::new();
         loop {
@@ -141,20 +149,42 @@ mod flow_run {
         assert_eq!(record.status, "running");
         assert_eq!(record.trigger, "manual");
         assert_eq!(record.session_id, Some(session));
-        let snapshot = record.graph_snapshot.clone().expect("graph snapshot stored");
-        assert!(snapshot.get("nodes").and_then(|nodes| nodes.as_array()).is_some());
+        let snapshot = record
+            .graph_snapshot
+            .clone()
+            .expect("graph snapshot stored");
+        assert!(
+            snapshot
+                .get("nodes")
+                .and_then(|nodes| nodes.as_array())
+                .is_some()
+        );
         assert!(snapshot.get("truncated").is_none());
 
         let events = collect_until_finished(&mut rx).await;
-        assert_eq!(events.first().map(|event| event.kind.as_str()), Some("started"));
-        assert_eq!(events.last().map(|event| event.kind.as_str()), Some("finished"));
+        assert_eq!(
+            events.first().map(|event| event.kind.as_str()),
+            Some("started")
+        );
+        assert_eq!(
+            events.last().map(|event| event.kind.as_str()),
+            Some("finished")
+        );
         // 节点事件先于终态（写队列 FIFO 的可观测次序）。
         let finished_index = events.len() - 1;
-        assert!(events[..finished_index].iter().all(|event| event.kind != "finished"));
+        assert!(
+            events[..finished_index]
+                .iter()
+                .all(|event| event.kind != "finished")
+        );
 
         let detail = manager.get_run_detail(&record.id).await.unwrap().unwrap();
         assert_eq!(detail.run.id, record.id);
-        assert_eq!(detail.run.status, "success", "run error: {:?}", detail.run.error);
+        assert_eq!(
+            detail.run.status, "success",
+            "run error: {:?}",
+            detail.run.error
+        );
         assert!(detail.run.finished_at.is_some());
         // 逐节点 checkpoint 落库：start 与 delay 节点都以终态快照收口。
         assert_eq!(detail.node_runs.len(), 2);
@@ -201,7 +231,10 @@ mod flow_run {
         assert!(manager.cancel(&record.id));
 
         let events = collect_until_finished(&mut rx).await;
-        assert_eq!(events.last().map(|event| event.kind.as_str()), Some("finished"));
+        assert_eq!(
+            events.last().map(|event| event.kind.as_str()),
+            Some("finished")
+        );
         let detail = manager.get_run_detail(&record.id).await.unwrap().unwrap();
         // 取消优先：无论引擎侧延迟节点以何种形态收场，终态恒归 cancelled。
         assert_eq!(detail.run.status, "cancelled");
@@ -228,7 +261,10 @@ mod flow_run {
         let record = manager.trigger(&wf.id, Some(session)).await.unwrap();
 
         let events = collect_until_finished(&mut rx).await;
-        assert_eq!(events.last().map(|event| event.kind.as_str()), Some("finished"));
+        assert_eq!(
+            events.last().map(|event| event.kind.as_str()),
+            Some("finished")
+        );
         // 并发 checkpoint 全部串行落库：两个分支节点的终态快照都在场且不互踩。
         let detail = manager.get_run_detail(&record.id).await.unwrap().unwrap();
         assert_eq!(detail.run.status, "success");
@@ -259,7 +295,10 @@ mod flow_run {
             error: None,
             graph_snapshot: None,
         };
-        RunStore::open(root.path()).unwrap().insert_run(&orphan).unwrap();
+        RunStore::open(root.path())
+            .unwrap()
+            .insert_run(&orphan)
+            .unwrap();
 
         // 重新打开管理器（等同重启进程）：收敛扫描立即把孤儿行归 interrupted。
         let reopened = FlowRunManager::open(root.path().to_path_buf(), runtime.clone());
@@ -284,7 +323,10 @@ mod flow_run {
     async fn trigger_prechecks_reject_without_creating_runs() {
         let root = tempdir().unwrap();
         let runtime = ProxyCrab::open(root.path(), Arc::new(LogBuffer::default())).unwrap();
-        let manager = Arc::new(FlowRunManager::open(root.path().to_path_buf(), runtime.clone()));
+        let manager = Arc::new(FlowRunManager::open(
+            root.path().to_path_buf(),
+            runtime.clone(),
+        ));
         let wf = workflow(
             vec![node("s", WorkflowNodeType::Start, NodeConfig::default())],
             vec![],
@@ -307,12 +349,19 @@ mod flow_run {
 
         // 图不合法（缺开始节点）：校验失败不建单。
         let invalid = workflow(
-            vec![node("note", WorkflowNodeType::StickyNote, NodeConfig::default())],
+            vec![node(
+                "note",
+                WorkflowNodeType::StickyNote,
+                NodeConfig::default(),
+            )],
             vec![],
         );
         put_workflow(root.path(), &invalid);
         let session = runtime.create_session(NewSession::default()).unwrap();
-        let error = manager.trigger(&invalid.id, Some(session.id)).await.unwrap_err();
+        let error = manager
+            .trigger(&invalid.id, Some(session.id))
+            .await
+            .unwrap_err();
         let RunTriggerError::NotValid(message) = error else {
             panic!("expected NotValid, got {error:?}")
         };

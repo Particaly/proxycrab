@@ -12,7 +12,11 @@ import {
  * 前端 warning / info）、服务端结果合并去重、节点归属投影、徽标过滤 info。
  */
 
-function node(id: string, type: WorkflowNode["type"], extra: Partial<WorkflowNode> = {}): WorkflowNode {
+function node(
+  id: string,
+  type: WorkflowNode["type"],
+  extra: Partial<WorkflowNode> = {},
+): WorkflowNode {
   return { id, type, position: { x: 0, y: 0 }, config: {}, ...extra };
 }
 
@@ -98,17 +102,25 @@ describe("collectLocalIssues：前端视角（warning / info）", () => {
 
 describe("mergeIssues：服务端结果合并", () => {
   it("后端已知 code 映射 error，未知 code 回退 warning", () => {
-    const merged = mergeIssues([], [
-      { code: "refid-conflict", message: "短码冲突", nodeIds: ["a", "b"] },
-      { code: "future-rule", message: "未知规则", nodeIds: [] },
-    ]);
+    const merged = mergeIssues(
+      [],
+      [
+        { code: "refid-conflict", message: "短码冲突", nodeIds: ["a", "b"] },
+        { code: "future-rule", message: "未知规则", nodeIds: [] },
+      ],
+    );
     expect(merged[0]?.level).toBe("error");
     expect(merged[1]?.level).toBe("warning");
   });
 
   it("与本地同 code 且同归属节点的问题去重（保留服务端文案）", () => {
     const local = collectLocalIssues(
-      [node("s", "start"), node("note", "stickyNote"), node("a", "httpReplay"), node("b", "httpReplay")],
+      [
+        node("s", "start"),
+        node("note", "stickyNote"),
+        node("a", "httpReplay"),
+        node("b", "httpReplay"),
+      ],
       [edge("e1", "note", "a")],
     );
     const merged = mergeIssues(local, [

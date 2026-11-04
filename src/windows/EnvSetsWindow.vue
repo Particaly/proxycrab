@@ -1,6 +1,13 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
-import { Io5Add, Io5CheckmarkCircle, Io5Close, Io5Copy, Io5Save, Io5Trash } from "vue-icons-plus/io5";
+import {
+  Io5Add,
+  Io5CheckmarkCircle,
+  Io5Close,
+  Io5Copy,
+  Io5Save,
+  Io5Trash,
+} from "vue-icons-plus/io5";
 import { useBackend } from "../api";
 import type { EnvSetsPayload, EnvVariableSet } from "../api/types";
 import { reportError } from "../stores/app";
@@ -280,12 +287,10 @@ onBeforeUnmount(() => {
             />
           </span>
           <span class="ev-row-name" :title="set.name">{{ set.name }}</span>
-          <span class="badge">{{ Object.keys(set.values).length + Object.keys(set.secretValues).length }}</span>
-          <button
-            class="btn icon danger ev-delete"
-            title="删除集合"
-            @click.stop="removeSet(set)"
-          >
+          <span class="badge">{{
+            Object.keys(set.values).length + Object.keys(set.secretValues).length
+          }}</span>
+          <button class="btn icon danger ev-delete" title="删除集合" @click.stop="removeSet(set)">
             <Io5Trash :size="13" />
           </button>
         </div>
@@ -315,12 +320,7 @@ onBeforeUnmount(() => {
     <section class="ev-main">
       <template v-if="selection.kind === 'set' && currentSet">
         <div class="ev-toolbar">
-          <input
-            v-model="draftName"
-            class="input ev-name"
-            aria-label="集合名称"
-            maxlength="128"
-          />
+          <input v-model="draftName" class="input ev-name" aria-label="集合名称" maxlength="128" />
           <span v-if="isActive" class="ev-active-label">激活中</span>
           <span v-if="dirty" class="ev-dirty">未保存</span>
           <span class="ev-spacer" />
@@ -338,7 +338,9 @@ onBeforeUnmount(() => {
       <template v-else>
         <div class="ev-toolbar">
           <span class="ev-title">全局变量</span>
-          <span class="text-faint">跨项目共享的最低优先级变量，模板以 <code>{{ VAR_REFERENCE_HINT }}</code> 引用</span>
+          <span class="text-faint"
+            >跨项目共享的最低优先级变量，模板以 <code>{{ VAR_REFERENCE_HINT }}</code> 引用</span
+          >
           <span v-if="dirty" class="ev-dirty">未保存</span>
           <span class="ev-spacer" />
           <button class="btn primary" :disabled="saving || !dirty" @click="save">

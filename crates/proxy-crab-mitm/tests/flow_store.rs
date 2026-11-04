@@ -5,7 +5,7 @@
 use std::{collections::BTreeMap, fs, path::Path, thread};
 
 use proxy_crab_mitm::flow::model::{
-    WORKFLOW_SCHEMA_VERSION, ConditionBranchHandle, NodeConfig, Position, Workflow, WorkflowEdge,
+    ConditionBranchHandle, NodeConfig, Position, WORKFLOW_SCHEMA_VERSION, Workflow, WorkflowEdge,
     WorkflowNode, WorkflowNodeType,
 };
 use proxy_crab_mitm::flow::request_library::{HarEntry, HarLog, HarRequest, HarSnapshot};
@@ -120,7 +120,11 @@ fn v3_workspace_advances_to_v4_on_open_without_touching_existing_data() {
         br#"{"id":1,"name":"capture","created_at":1}"#,
     )
     .unwrap();
-    fs::write(root.path().join("workspace_schema.json"), b"{\"version\":3}").unwrap();
+    fs::write(
+        root.path().join("workspace_schema.json"),
+        b"{\"version\":3}",
+    )
+    .unwrap();
 
     let workspace = Workspace::open(root.path()).unwrap();
     assert_eq!(schema_version(root.path()), 4);
@@ -171,10 +175,9 @@ fn project_crud_round_trip() {
     assert!(store.delete_project("proj-0").is_err());
 
     // Projects persist as camelCase JSON.
-    let raw: serde_json::Value = serde_json::from_slice(
-        &fs::read(root.path().join("flow/projects/proj-1.json")).unwrap(),
-    )
-    .unwrap();
+    let raw: serde_json::Value =
+        serde_json::from_slice(&fs::read(root.path().join("flow/projects/proj-1.json")).unwrap())
+            .unwrap();
     assert_eq!(raw["id"], "proj-1");
     assert!(raw.get("secretVariables").is_some());
 }
@@ -232,7 +235,9 @@ fn flow_definitions_persist_as_camel_case_json() {
     let store = FlowStore::open(root.path()).unwrap();
 
     let mut workflow = sample_workflow("wf-1");
-    workflow.secret_variables.insert("token".into(), "s3cret".into());
+    workflow
+        .secret_variables
+        .insert("token".into(), "s3cret".into());
     workflow.edges.push(WorkflowEdge {
         id: "e1".into(),
         source: "a".into(),
@@ -241,10 +246,9 @@ fn flow_definitions_persist_as_camel_case_json() {
     });
     store.put_workflow(&workflow).unwrap();
 
-    let raw: serde_json::Value = serde_json::from_slice(
-        &fs::read(root.path().join("flow/workflows/wf-1.json")).unwrap(),
-    )
-    .unwrap();
+    let raw: serde_json::Value =
+        serde_json::from_slice(&fs::read(root.path().join("flow/workflows/wf-1.json")).unwrap())
+            .unwrap();
     assert_eq!(raw["id"], "wf-1");
     assert_eq!(raw["projectId"], "proj-1");
     assert_eq!(raw["schemaVersion"], WORKFLOW_SCHEMA_VERSION);
@@ -254,12 +258,11 @@ fn flow_definitions_persist_as_camel_case_json() {
     assert_eq!(raw["edges"][0]["sourceHandle"], "true");
 
     let mut set = sample_env_set("env-dev", "dev");
-    set.secret_values.insert("password".into(), "hunter2".into());
+    set.secret_values
+        .insert("password".into(), "hunter2".into());
     store.save_env_set(&set).unwrap();
-    let raw: serde_json::Value = serde_json::from_slice(
-        &fs::read(root.path().join("flow/env-sets.json")).unwrap(),
-    )
-    .unwrap();
+    let raw: serde_json::Value =
+        serde_json::from_slice(&fs::read(root.path().join("flow/env-sets.json")).unwrap()).unwrap();
     assert_eq!(raw["schemaVersion"], ENV_SETS_SCHEMA_VERSION);
     assert!(raw["sets"][0].get("secretValues").is_some());
 }
@@ -305,8 +308,12 @@ fn env_sets_crud_upsert_and_delete() {
     let store = FlowStore::open(root.path()).unwrap();
     assert!(store.list_env_sets().unwrap().is_empty());
 
-    store.save_env_set(&sample_env_set("env-dev", "dev")).unwrap();
-    store.save_env_set(&sample_env_set("env-prod", "prod")).unwrap();
+    store
+        .save_env_set(&sample_env_set("env-dev", "dev"))
+        .unwrap();
+    store
+        .save_env_set(&sample_env_set("env-prod", "prod"))
+        .unwrap();
     store
         .save_env_set(&sample_env_set("env-staging", "staging"))
         .unwrap();
@@ -343,7 +350,9 @@ fn env_sets_crud_upsert_and_delete() {
 fn corrupt_env_sets_degrade_reads_and_refuse_saving() {
     let root = tempdir().unwrap();
     let store = FlowStore::open(root.path()).unwrap();
-    store.save_env_set(&sample_env_set("env-dev", "dev")).unwrap();
+    store
+        .save_env_set(&sample_env_set("env-dev", "dev"))
+        .unwrap();
     let path = root.path().join("flow/env-sets.json");
 
     fs::write(&path, b"{not json").unwrap();
@@ -357,11 +366,18 @@ fn corrupt_env_sets_degrade_reads_and_refuse_saving() {
     // A newer envelope version is refused for both reads and writes.
     fs::write(
         &path,
-        format!(r#"{{"schemaVersion":{},"sets":[]}}"#, ENV_SETS_SCHEMA_VERSION + 1),
+        format!(
+            r#"{{"schemaVersion":{},"sets":[]}}"#,
+            ENV_SETS_SCHEMA_VERSION + 1
+        ),
     )
     .unwrap();
     assert!(store.list_env_sets().unwrap().is_empty());
-    assert!(store.save_env_set(&sample_env_set("env-prod", "prod")).is_err());
+    assert!(
+        store
+            .save_env_set(&sample_env_set("env-prod", "prod"))
+            .is_err()
+    );
 
     // Corrupt individual entries are dropped; healthy ones survive a save.
     fs::write(
@@ -375,10 +391,7 @@ fn corrupt_env_sets_degrade_reads_and_refuse_saving() {
         .save_env_set(&sample_env_set("env-prod", "prod"))
         .unwrap();
     let sets = store.list_env_sets().unwrap();
-    let ids = sets
-        .iter()
-        .map(|set| set.id.as_str())
-        .collect::<Vec<_>>();
+    let ids = sets.iter().map(|set| set.id.as_str()).collect::<Vec<_>>();
     assert_eq!(ids, vec!["env-dev", "env-prod"]);
 }
 
@@ -402,7 +415,10 @@ fn invalid_shapes_and_ids_are_rejected_on_write() {
     workflow.nodes[0].id = String::new();
     assert!(store.put_workflow(&workflow).is_err());
     workflow.nodes[0].id = "start".into();
-    workflow.nodes[0].position = Position { x: f64::NAN, y: 0.0 };
+    workflow.nodes[0].position = Position {
+        x: f64::NAN,
+        y: 0.0,
+    };
     assert!(store.put_workflow(&workflow).is_err());
 
     let mut set = sample_env_set("env-dev", "dev");
@@ -450,7 +466,10 @@ fn concurrent_env_set_saves_do_not_lose_updates() {
     });
     let sets = store.list_env_sets().unwrap();
     assert_eq!(sets.len(), 8);
-    assert_eq!(sets[0].values.get("baseUrl").map(String::as_str), Some("https://example.com"));
+    assert_eq!(
+        sets[0].values.get("baseUrl").map(String::as_str),
+        Some("https://example.com")
+    );
 }
 
 #[test]

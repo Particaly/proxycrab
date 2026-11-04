@@ -40,7 +40,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use crate::{
     flow::{
         env_sets::{EnvGlobalVariables, validate_variables_table},
-        model::{Project, Workflow, WorkflowNode, WORKFLOW_SCHEMA_VERSION, migrate_workflow},
+        model::{Project, WORKFLOW_SCHEMA_VERSION, Workflow, WorkflowNode, migrate_workflow},
     },
     workspace::write_json_atomic,
 };
@@ -245,7 +245,9 @@ pub(crate) fn validate_flow_id(id: &str) -> Result<()> {
             .chars()
             .all(|character| character.is_alphanumeric() || matches!(character, '-' | '_' | '.'))
     {
-        bail!(crate::error::Error::InvalidArgument(format!("invalid flow id {id:?}")));
+        bail!(crate::error::Error::InvalidArgument(format!(
+            "invalid flow id {id:?}"
+        )));
     }
     Ok(())
 }
@@ -273,8 +275,11 @@ pub(crate) fn put_entity<T: FlowEntity>(flow_root: &Path, value: &T) -> Result<(
 /// ingestion holds it across name dedup, blob write and entry write).
 pub(crate) fn put_entity_locked<T: FlowEntity>(flow_root: &Path, value: &T) -> Result<()> {
     value.validate()?;
-    write_json_atomic(&entity_path(flow_root, T::DIRECTORY, value.flow_id()), value)
-        .with_context(|| format!("failed to save {} {}", T::LABEL, value.flow_id()))
+    write_json_atomic(
+        &entity_path(flow_root, T::DIRECTORY, value.flow_id()),
+        value,
+    )
+    .with_context(|| format!("failed to save {} {}", T::LABEL, value.flow_id()))
 }
 
 pub(crate) fn get_entity<T: FlowEntity>(flow_root: &Path, id: &str) -> Result<Option<T>> {
@@ -311,8 +316,8 @@ fn parse_entity<T: FlowEntity>(bytes: &[u8], id: &str) -> Result<T> {
 pub(crate) fn list_entities<T: FlowEntity>(flow_root: &Path) -> Result<Vec<T>> {
     let directory = flow_root.join(T::DIRECTORY);
     let mut values: Vec<T> = Vec::new();
-    for entry in fs::read_dir(&directory)
-        .with_context(|| format!("failed to list flow {}", T::DIRECTORY))?
+    for entry in
+        fs::read_dir(&directory).with_context(|| format!("failed to list flow {}", T::DIRECTORY))?
     {
         let entry = entry?;
         if !entry.file_type()?.is_file() {

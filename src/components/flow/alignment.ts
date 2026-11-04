@@ -91,10 +91,7 @@ function snapAxis(
  * 独立判定）。无命中时返回原坐标与空辅助线。宽度 / 高度缺省取画布节点卡
  * 基准尺寸（FLOW_NODE_SIZE）。
  */
-export function snapPosition(
-  moving: SnapRect,
-  others: readonly SnapRect[],
-): SnapResult {
+export function snapPosition(moving: SnapRect, others: readonly SnapRect[]): SnapResult {
   const width = moving.width ?? FLOW_NODE_SIZE.width;
   const height = moving.height ?? FLOW_NODE_SIZE.height;
   const result: SnapResult = { x: moving.x, y: moving.y, guides: [] };

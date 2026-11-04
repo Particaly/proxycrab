@@ -1,10 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { WorkflowEdge, WorkflowNode } from "../../api/types";
-import {
-  AUTO_LAYOUT_COLUMN_GAP,
-  AUTO_LAYOUT_ROW_GAP,
-  autoLayout,
-} from "./auto-layout";
+import { AUTO_LAYOUT_COLUMN_GAP, AUTO_LAYOUT_ROW_GAP, autoLayout } from "./auto-layout";
 import { FLOW_NODE_SIZE } from "./graph-model";
 
 /**
@@ -14,7 +10,8 @@ import { FLOW_NODE_SIZE } from "./graph-model";
  */
 
 /** 列 x 坐标：列号 * (节点宽 + 层间距) */
-const columnX = (column: number): number => column * (FLOW_NODE_SIZE.width + AUTO_LAYOUT_COLUMN_GAP);
+const columnX = (column: number): number =>
+  column * (FLOW_NODE_SIZE.width + AUTO_LAYOUT_COLUMN_GAP);
 /** 行 y 坐标：行号 * (节点高 + 行距) */
 const rowY = (row: number): number => row * (FLOW_NODE_SIZE.height + AUTO_LAYOUT_ROW_GAP);
 
@@ -97,11 +94,7 @@ describe("autoLayout: 环与容错", () => {
 
   it("三节点环不挂起（BFS 排空后按数组顺序强制分层）", () => {
     const nodes = [makeNode("a"), makeNode("b"), makeNode("c")];
-    const edges = [
-      makeEdge("e1", "a", "b"),
-      makeEdge("e2", "b", "c"),
-      makeEdge("e3", "c", "a"),
-    ];
+    const edges = [makeEdge("e1", "a", "b"), makeEdge("e2", "b", "c"), makeEdge("e3", "c", "a")];
     const result = autoLayout(nodes, edges);
     expect(Object.keys(result)).toHaveLength(3);
   });

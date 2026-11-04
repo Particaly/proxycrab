@@ -579,8 +579,7 @@ export function createHttpBackend(
     flowRuns: {
       list: (filter: FlowRunListQuery) =>
         call<FlowRunPage>(query("/api/flow/runs", filter as unknown as Record<string, unknown>)),
-      get: (id: string) =>
-        call<FlowRunDetail>(`/api/flow/runs/${encodeURIComponent(id)}`),
+      get: (id: string) => call<FlowRunDetail>(`/api/flow/runs/${encodeURIComponent(id)}`),
       trigger: (request: FlowRunTriggerRequest) =>
         call<FlowRunRecord>("/api/flow/runs", json("POST", request)),
       cancel: async (id: string) => {

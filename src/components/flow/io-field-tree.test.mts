@@ -111,12 +111,7 @@ describe("flattenFieldTree", () => {
 
   it("顶层默认展开的行清单：子行紧随父行（先序），深层容器保持收起", () => {
     const rows = flattenFieldTree(createSampleTree(), (node) => node.depth === 0);
-    expect(rows.map((row) => row.path)).toEqual([
-      "body",
-      "body.token",
-      "body.items",
-      "status",
-    ]);
+    expect(rows.map((row) => row.path)).toEqual(["body", "body.token", "body.items", "status"]);
     expect(rows[0]!.expanded).toBe(true);
     expect(rows[2]!.expanded).toBe(false);
   });

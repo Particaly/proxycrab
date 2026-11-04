@@ -25,11 +25,11 @@ use axum::{
 };
 use bytes::Bytes;
 use futures::{StreamExt, stream};
-use proxy_crab_mitm::model::{InterceptorKind, InterceptorScriptContent, SessionFilter};
-use proxy_crab_mitm::storage::{BodySide, BodySource, BodySourceData};
-use proxy_crab_mitm::flow::run::FlowRunEvent;
 use proxy_crab_mitm::flow::mcp_audit::MCP_AUDIT_MAX_ENTRIES;
 use proxy_crab_mitm::flow::mcp_tiers::McpTiers;
+use proxy_crab_mitm::flow::run::FlowRunEvent;
+use proxy_crab_mitm::model::{InterceptorKind, InterceptorScriptContent, SessionFilter};
+use proxy_crab_mitm::storage::{BodySide, BodySource, BodySourceData};
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, BufReader};
@@ -42,21 +42,19 @@ use tokio_util::{
 use crate::{
     clash_subscription::{EnableClashSubscriptionRequest, SaveClashConfigRequest},
     dto::{
-        ActiveSession, AssetQuery, BodyQuery, BreakpointQuery, BypassQuery,
-        CreateEnvSetRequest, CreateRequestLibraryRequest, CreateSessionRequest,
-        DebugFilterScriptRequest, DeleteBypassRequest, EnvWriteBackRequest, ErrorCode,
-        ExecuteTemporaryScriptRequest, ExtendBreakpointRequest, FlowListQuery,
-        FlowProjectCreateRequest, FlowProjectUpdateRequest, HttpApiChange, HttpApiResource,
-        IngestCaptureRequest, InterceptorCreateRequest, InterceptorUpdateRequest,
-        FlowRunListQuery, FlowRunTriggerRequest,
-        FlowScriptDryRunRequest, LogIdsRequest, LogViewsRequest, ManagerError, ManagerResult,
-        ReplaceActiveEnvSetRequest, ReplaceEnvGlobalsRequest,
-        ReplaceSessionInterceptorsRequest, ReplaceSessionViewRequest, ReplayRequestPayload,
-        RequestLibraryBodyQuery, RequestLibraryQuery, RoutingSelection, SaveEnvSetRequest,
-        ScriptRequest, SessionQuery, SystemLogsQuery, UpdateRequestLibraryRequest,
-        UpdateScriptRequest, UpdateSessionRequest, WebSocketQuery, WorkflowCreateRequest,
-        WorkflowExportQuery, WorkflowImportRequest, WorkflowListQuery, WorkflowUpdateRequest,
-        default_body_max_size,
+        ActiveSession, AssetQuery, BodyQuery, BreakpointQuery, BypassQuery, CreateEnvSetRequest,
+        CreateRequestLibraryRequest, CreateSessionRequest, DebugFilterScriptRequest,
+        DeleteBypassRequest, EnvWriteBackRequest, ErrorCode, ExecuteTemporaryScriptRequest,
+        ExtendBreakpointRequest, FlowListQuery, FlowProjectCreateRequest, FlowProjectUpdateRequest,
+        FlowRunListQuery, FlowRunTriggerRequest, FlowScriptDryRunRequest, HttpApiChange,
+        HttpApiResource, IngestCaptureRequest, InterceptorCreateRequest, InterceptorUpdateRequest,
+        LogIdsRequest, LogViewsRequest, ManagerError, ManagerResult, ReplaceActiveEnvSetRequest,
+        ReplaceEnvGlobalsRequest, ReplaceSessionInterceptorsRequest, ReplaceSessionViewRequest,
+        ReplayRequestPayload, RequestLibraryBodyQuery, RequestLibraryQuery, RoutingSelection,
+        SaveEnvSetRequest, ScriptRequest, SessionQuery, SystemLogsQuery,
+        UpdateRequestLibraryRequest, UpdateScriptRequest, UpdateSessionRequest, WebSocketQuery,
+        WorkflowCreateRequest, WorkflowExportQuery, WorkflowImportRequest, WorkflowListQuery,
+        WorkflowUpdateRequest, default_body_max_size,
     },
     manager::ProxyCrabManager,
     mcp,
@@ -524,10 +522,7 @@ fn router_with_changes_and_extra(
             get(workflow_runs).post(trigger_workflow_run),
         )
         .route("/api/flow/runs/{id}", get(workflow_run_detail))
-        .route(
-            "/api/flow/runs/{id}/cancel",
-            post(cancel_workflow_run),
-        )
+        .route("/api/flow/runs/{id}/cancel", post(cancel_workflow_run))
         .route("/api/workflows/export", get(export_workflows))
         .route("/api/workflows/import", post(import_workflows))
         .route(
@@ -907,7 +902,9 @@ fn change_for_request(method: &Method, path: &str, query: Option<&str>) -> Optio
         (&Method::POST, "/api/flow/runs") => vec![HttpApiResource::FlowRuns],
         (&Method::POST, value)
             if value.starts_with("/api/flow/runs/") && value.ends_with("/cancel") =>
-            vec![HttpApiResource::FlowRuns],
+        {
+            vec![HttpApiResource::FlowRuns]
+        }
         _ => return None,
     };
     Some(HttpApiChange {
@@ -1751,10 +1748,7 @@ async fn create_workflow(
     success(manager.create_workflow(request).await?)
 }
 
-async fn workflow(
-    State(manager): State<ManagerState>,
-    ApiPath(id): ApiPath<String>,
-) -> ApiResult {
+async fn workflow(State(manager): State<ManagerState>, ApiPath(id): ApiPath<String>) -> ApiResult {
     success(manager.workflow(id).await?)
 }
 
@@ -1878,7 +1872,10 @@ async fn save_env_set(
     success(manager.save_env_set(id, request).await?)
 }
 
-async fn delete_env_set(State(manager): State<ManagerState>, ApiPath(id): ApiPath<String>) -> ApiResult {
+async fn delete_env_set(
+    State(manager): State<ManagerState>,
+    ApiPath(id): ApiPath<String>,
+) -> ApiResult {
     manager.delete_env_set(id).await?;
     success(json!({}))
 }
@@ -1987,12 +1984,11 @@ async fn request_library_body(
         )));
     }
     let source = manager
-        .request_library_body_source(
-            id,
-            query.max_size.unwrap_or_else(default_body_max_size),
-        )
+        .request_library_body_source(id, query.max_size.unwrap_or_else(default_body_max_size))
         .await?;
-    body_response(source, &headers, query.max_size).await.map_err(ApiError)
+    body_response(source, &headers, query.max_size)
+        .await
+        .map_err(ApiError)
 }
 
 async fn not_found() -> ApiResult {
@@ -2306,7 +2302,10 @@ async fn mcp_endpoint(
     // MCP 暴露档位随请求读取（工作区小 JSON 文件，plan Task 25 Step 2）；
     // 读取失败降级为缺省档并告警（缺省关写/执行，fail-safe）。
     let tiers = manager.mcp_tiers().await.unwrap_or_else(|error| {
-        tracing::warn!("degrading MCP exposure tiers to defaults: {}", error.message);
+        tracing::warn!(
+            "degrading MCP exposure tiers to defaults: {}",
+            error.message
+        );
         McpTiers::default()
     });
     let context = mcp::tools::ToolCallContext {
@@ -2825,10 +2824,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
-        let envelope: Value = serde_json::from_slice(
-            &to_bytes(response.into_body(), usize::MAX).await.unwrap(),
-        )
-        .unwrap();
+        let envelope: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
         assert_eq!(envelope["ok"], json!(true), "envelope: {envelope}");
         assert_eq!(envelope["data"]["ok"], json!(true), "envelope: {envelope}");
         assert_eq!(
@@ -2922,10 +2920,9 @@ mod tests {
             .await
             .unwrap();
         let status = response.status();
-        let payload: Value = serde_json::from_slice(
-            &to_bytes(response.into_body(), usize::MAX).await.unwrap(),
-        )
-        .unwrap_or(Value::Null);
+        let payload: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap_or(Value::Null);
         (status, payload)
     }
 
@@ -2982,7 +2979,10 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         let issues = payload["data"]["issues"].as_array().unwrap();
-        let codes: Vec<&str> = issues.iter().map(|issue| issue["code"].as_str().unwrap()).collect();
+        let codes: Vec<&str> = issues
+            .iter()
+            .map(|issue| issue["code"].as_str().unwrap())
+            .collect();
         assert_eq!(
             codes,
             vec!["missing-start", "dangling-edge"],
@@ -3054,8 +3054,12 @@ mod tests {
         assert_eq!(payload["data"]["issues"], json!([]));
 
         // Permission checks resolved the concrete route actions.
-        let recorded_ids: Vec<&'static str> =
-            recorded.lock().unwrap().iter().map(|item| item.id).collect();
+        let recorded_ids: Vec<&'static str> = recorded
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|item| item.id)
+            .collect();
         assert!(recorded_ids.contains(&"POST /api/flow-projects"));
         assert!(recorded_ids.contains(&"POST /api/workflows/{id}/validate"));
         assert!(recorded_ids.contains(&"PUT /api/workflows/{id}"));
@@ -3198,8 +3202,7 @@ mod tests {
         assert_eq!(envelope["workflows"].as_array().unwrap().len(), 1);
         assert_eq!(envelope["workflows"][0]["id"], workflow_id.as_str());
         assert_eq!(
-            envelope["workflows"][0]["secretVariables"]["token"],
-            "",
+            envelope["workflows"][0]["secretVariables"]["token"], "",
             "secret variable values are blanked, names kept"
         );
         assert_eq!(envelope["requests"].as_array().unwrap().len(), 1);
@@ -3236,8 +3239,8 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(payload["error"]["code"], "not_found");
-        let (status, payload) = flow_request(app.clone(), Method::GET, "/api/workflows/export", None)
-            .await;
+        let (status, payload) =
+            flow_request(app.clone(), Method::GET, "/api/workflows/export", None).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(payload["error"]["code"], "bad_request");
 
@@ -3290,10 +3293,12 @@ mod tests {
         // skipped with a reason and nothing is overwritten.
         assert_eq!(data["requests"]["imported"], 0);
         assert_eq!(data["requests"]["skipped"][0]["id"], request_id.as_str());
-        assert!(data["requests"]["skipped"][0]["reason"]
-            .as_str()
-            .unwrap()
-            .contains("请求库条目已存在"));
+        assert!(
+            data["requests"]["skipped"][0]["reason"]
+                .as_str()
+                .unwrap()
+                .contains("请求库条目已存在")
+        );
         assert_eq!(data["envSets"]["imported"], 0);
         assert_eq!(data["envSets"]["skipped"][0]["id"], env_set_id.as_str());
 
@@ -3312,8 +3317,7 @@ mod tests {
         assert_eq!(rebuilt["projectId"], project_id.as_str());
         assert_eq!(rebuilt["variables"]["env"], "dev");
         assert_eq!(
-            rebuilt["secretVariables"]["token"],
-            "",
+            rebuilt["secretVariables"]["token"], "",
             "imported secret variables stay blank placeholders"
         );
         let nodes = rebuilt["nodes"].as_array().unwrap();
@@ -3393,15 +3397,21 @@ mod tests {
         assert_eq!(skipped.len(), 1);
         assert_eq!(skipped[0]["index"], 0);
         assert_eq!(skipped[0]["name"], "坏流程");
-        assert!(skipped[0]["issues"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|issue| issue.as_str().unwrap().contains("nodes 必须是数组")));
+        assert!(
+            skipped[0]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| issue.as_str().unwrap().contains("nodes 必须是数组"))
+        );
 
         // Permission checks resolved the concrete transfer actions.
-        let recorded_ids: Vec<&'static str> =
-            recorded.lock().unwrap().iter().map(|item| item.id).collect();
+        let recorded_ids: Vec<&'static str> = recorded
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|item| item.id)
+            .collect();
         assert!(recorded_ids.contains(&"GET /api/workflows/export"));
         assert!(recorded_ids.contains(&"POST /api/workflows/import"));
     }
@@ -5996,7 +6006,8 @@ mod tests {
                 .iter()
                 .any(|tool| tool["name"] == "workflow_runs_list")
         );
-        let (status, payload) = flow_request(app.clone(), Method::GET, "/api/mcp-tiers", None).await;
+        let (status, payload) =
+            flow_request(app.clone(), Method::GET, "/api/mcp-tiers", None).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(
             payload["data"],
@@ -6099,8 +6110,7 @@ mod tests {
         crate::mcp::tools::slow_tool_stub::reset();
         let body =
             br#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"test_slow_tool","arguments":{}}}"#;
-        let mut stream =
-            std::net::TcpStream::connect(("127.0.0.1", handle.port)).unwrap();
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", handle.port)).unwrap();
         write!(
             stream,
             "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
@@ -6332,7 +6342,11 @@ mod tests {
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let value: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(value["ok"], false, "{value}");
-        (status, value["error"]["code"].as_str().unwrap().to_owned(), value)
+        (
+            status,
+            value["error"]["code"].as_str().unwrap().to_owned(),
+            value,
+        )
     }
 
     fn har_json(method: &str, url: &str) -> Value {
@@ -6380,8 +6394,13 @@ mod tests {
             }]}
         });
         let created = ok_data(
-            request_library_json(&app, "POST", "/api/request-library", Some(json!({"har": har})))
-                .await,
+            request_library_json(
+                &app,
+                "POST",
+                "/api/request-library",
+                Some(json!({"har": har})),
+            )
+            .await,
         )
         .await;
         assert!(created["id"].as_str().unwrap().starts_with("req-"));
@@ -6448,7 +6467,10 @@ mod tests {
             .await,
         )
         .await;
-        assert_eq!((status, code.as_str()), (StatusCode::BAD_REQUEST, "bad_request"));
+        assert_eq!(
+            (status, code.as_str()),
+            (StatusCode::BAD_REQUEST, "bad_request")
+        );
         let (status, code, _) = error_of(
             request_library_json(
                 &app,
@@ -6459,12 +6481,15 @@ mod tests {
             .await,
         )
         .await;
-        assert_eq!((status, code.as_str()), (StatusCode::BAD_REQUEST, "bad_request"));
+        assert_eq!(
+            (status, code.as_str()),
+            (StatusCode::BAD_REQUEST, "bad_request")
+        );
 
         // List: total, keyword (case-insensitive over name and URL), tag AND
         // semantics, source filter.
-        let listed = ok_data(request_library_json(&app, "GET", "/api/request-library", None).await)
-            .await;
+        let listed =
+            ok_data(request_library_json(&app, "GET", "/api/request-library", None).await).await;
         assert_eq!(listed["total"], 3);
         assert_eq!(listed["entries"].as_array().unwrap().len(), 3);
         let listed = ok_data(
@@ -6474,8 +6499,13 @@ mod tests {
         assert_eq!(listed["total"], 1);
         assert_eq!(listed["entries"][0]["name"], "checkout call");
         let listed = ok_data(
-            request_library_json(&app, "GET", "/api/request-library?query=api.example.com", None)
-                .await,
+            request_library_json(
+                &app,
+                "GET",
+                "/api/request-library?query=api.example.com",
+                None,
+            )
+            .await,
         )
         .await;
         assert_eq!(listed["total"], 3);
@@ -6498,7 +6528,10 @@ mod tests {
             request_library_json(&app, "GET", "/api/request-library?source=bogus", None).await,
         )
         .await;
-        assert_eq!((status, code.as_str()), (StatusCode::BAD_REQUEST, "bad_request"));
+        assert_eq!(
+            (status, code.as_str()),
+            (StatusCode::BAD_REQUEST, "bad_request")
+        );
 
         // Pagination bounds: the hard caps reject, offset/limit slice.
         for limit in ["limit=0", "limit=1001"] {
@@ -6521,16 +6554,19 @@ mod tests {
         assert_eq!(listed["entries"].as_array().unwrap().len(), 2);
 
         // Read one; a missing id is a plain 404.
-        let fetched =
-            ok_data(request_library_json(&app, "GET", &format!("/api/request-library/{id}"), None)
-                .await)
-            .await;
+        let fetched = ok_data(
+            request_library_json(&app, "GET", &format!("/api/request-library/{id}"), None).await,
+        )
+        .await;
         assert_eq!(fetched, created);
         let (status, code, _) = error_of(
             request_library_json(&app, "GET", "/api/request-library/req-missing", None).await,
         )
         .await;
-        assert_eq!((status, code.as_str()), (StatusCode::NOT_FOUND, "not_found"));
+        assert_eq!(
+            (status, code.as_str()),
+            (StatusCode::NOT_FOUND, "not_found")
+        );
 
         // Partial update: name/tags change, identity fields never do.
         let created_at = created["createdAt"].as_u64().unwrap();
@@ -6577,39 +6613,45 @@ mod tests {
             .await,
         )
         .await;
-        assert_eq!((status, code.as_str()), (StatusCode::NOT_FOUND, "not_found"));
+        assert_eq!(
+            (status, code.as_str()),
+            (StatusCode::NOT_FOUND, "not_found")
+        );
 
         // Delete removes the entry; deleting again is a typed 404.
-        let deleted =
-            ok_data(request_library_json(&app, "DELETE", &format!("/api/request-library/{id}"), None)
-                .await)
-            .await;
+        let deleted = ok_data(
+            request_library_json(&app, "DELETE", &format!("/api/request-library/{id}"), None).await,
+        )
+        .await;
         assert_eq!(deleted, json!({}));
         let (status, code, _) = error_of(
             request_library_json(&app, "GET", &format!("/api/request-library/{id}"), None).await,
         )
         .await;
-        assert_eq!((status, code.as_str()), (StatusCode::NOT_FOUND, "not_found"));
+        assert_eq!(
+            (status, code.as_str()),
+            (StatusCode::NOT_FOUND, "not_found")
+        );
         let (status, code, _) = error_of(
             request_library_json(&app, "DELETE", &format!("/api/request-library/{id}"), None).await,
         )
         .await;
-        assert_eq!((status, code.as_str()), (StatusCode::NOT_FOUND, "not_found"));
+        assert_eq!(
+            (status, code.as_str()),
+            (StatusCode::NOT_FOUND, "not_found")
+        );
     }
 
     #[tokio::test]
     async fn request_library_list_pages_with_default_limit_and_caps() {
         let directory = tempdir().unwrap();
         let runtime = ProxyCrab::open(directory.path(), Arc::new(LogBuffer::default())).unwrap();
-        let store = proxy_crab_mitm::flow::store::FlowStore::open(runtime.workspace().root())
-            .unwrap();
+        let store =
+            proxy_crab_mitm::flow::store::FlowStore::open(runtime.workspace().root()).unwrap();
         for index in 0..205 {
             let snapshot: proxy_crab_mitm::flow::request_library::HarSnapshot =
-                serde_json::from_value(har_json(
-                    "GET",
-                    &format!("https://p.example.com/{index}"),
-                ))
-                .unwrap();
+                serde_json::from_value(har_json("GET", &format!("https://p.example.com/{index}")))
+                    .unwrap();
             store
                 .add_request(
                     snapshot,
@@ -6623,16 +6665,15 @@ mod tests {
         let app = router(MitmManager::new(runtime), allow_all());
 
         // The default page size keeps one response bounded; total is unfiltered.
-        let listed = ok_data(request_library_json(&app, "GET", "/api/request-library", None).await)
-            .await;
+        let listed =
+            ok_data(request_library_json(&app, "GET", "/api/request-library", None).await).await;
         assert_eq!(listed["total"], 205);
         assert_eq!(listed["entries"].as_array().unwrap().len(), 200);
 
         // Offset pages are disjoint slices of the same sorted set.
-        let first = ok_data(
-            request_library_json(&app, "GET", "/api/request-library?limit=3", None).await,
-        )
-        .await;
+        let first =
+            ok_data(request_library_json(&app, "GET", "/api/request-library?limit=3", None).await)
+                .await;
         let second = ok_data(
             request_library_json(&app, "GET", "/api/request-library?limit=3&offset=3", None).await,
         )
@@ -6661,8 +6702,7 @@ mod tests {
         let directory = tempdir().unwrap();
         let runtime = ProxyCrab::open(directory.path(), Arc::new(LogBuffer::default())).unwrap();
         let session = runtime.create_session(NewSession::default()).unwrap();
-        let captures =
-            CaptureStore::open(session.id, runtime.workspace().root()).unwrap();
+        let captures = CaptureStore::open(session.id, runtime.workspace().root()).unwrap();
         let mut headers = HeaderValues::new();
         headers.insert("content-type".into(), vec!["application/json".into()]);
         headers.insert(
@@ -6752,10 +6792,7 @@ mod tests {
             entry["har"]["log"]["entries"][0]["request"]["postData"]["text"],
             "{\"user\":\"u\"}"
         );
-        assert_eq!(
-            entry["har"]["log"]["entries"][0]["response"]["status"],
-            200
-        );
+        assert_eq!(entry["har"]["log"]["entries"][0]["response"]["status"], 200);
         assert_eq!(
             entry["har"]["log"]["entries"][0]["response"]["content"]["size"],
             2
@@ -6792,7 +6829,10 @@ mod tests {
             .await,
         )
         .await;
-        assert_eq!((status, code.as_str()), (StatusCode::NOT_FOUND, "not_found"));
+        assert_eq!(
+            (status, code.as_str()),
+            (StatusCode::NOT_FOUND, "not_found")
+        );
         let (status, code, _) = error_of(
             request_library_json(
                 &app,
@@ -6803,7 +6843,10 @@ mod tests {
             .await,
         )
         .await;
-        assert_eq!((status, code.as_str()), (StatusCode::NOT_FOUND, "not_found"));
+        assert_eq!(
+            (status, code.as_str()),
+            (StatusCode::NOT_FOUND, "not_found")
+        );
         let (status, code, _) = error_of(
             request_library_json(
                 &app,
@@ -6876,22 +6919,32 @@ mod tests {
             large.get("bodyRef").is_some(),
             "over-limit bodies are blob-referenced"
         );
-        let large_id_path = format!("/api/request-library/{}/body", large["id"].as_str().unwrap());
+        let large_id_path = format!(
+            "/api/request-library/{}/body",
+            large["id"].as_str().unwrap()
+        );
         let response = request_library_json(&app, "GET", &large_id_path, None).await;
         assert_eq!(response.status(), StatusCode::OK);
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         assert_eq!(&bytes[..], &large_bytes[..]);
         let (status, code, payload) = error_of(
-            request_library_json(&app, "GET", &format!("{large_id_path}?max_size=1024"), None).await,
+            request_library_json(&app, "GET", &format!("{large_id_path}?max_size=1024"), None)
+                .await,
         )
         .await;
-        assert_eq!((status, code.as_str()), (StatusCode::PAYLOAD_TOO_LARGE, "body_too_large"));
+        assert_eq!(
+            (status, code.as_str()),
+            (StatusCode::PAYLOAD_TOO_LARGE, "body_too_large")
+        );
         assert_eq!(payload["error"]["max_size"], 1024);
         let (status, code, _) = error_of(
             request_library_json(&app, "GET", &format!("{large_id_path}?max_size=0"), None).await,
         )
         .await;
-        assert_eq!((status, code.as_str()), (StatusCode::BAD_REQUEST, "bad_request"));
+        assert_eq!(
+            (status, code.as_str()),
+            (StatusCode::BAD_REQUEST, "bad_request")
+        );
 
         // Archiving the Session keeps both ingestion and the library intact.
         drop(captures);
@@ -6925,9 +6978,13 @@ mod tests {
                 std::time::Instant::now() < deadline,
                 "run {run_id} did not settle in time"
             );
-            let (status, payload) =
-                flow_request(app.clone(), Method::GET, &format!("/api/flow/runs/{run_id}"), None)
-                    .await;
+            let (status, payload) = flow_request(
+                app.clone(),
+                Method::GET,
+                &format!("/api/flow/runs/{run_id}"),
+                None,
+            )
+            .await;
             assert_eq!(status, StatusCode::OK);
             if payload["data"]["status"] != "running" {
                 return payload;
@@ -7023,9 +7080,13 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::CONFLICT);
         assert_eq!(payload["error"]["code"], "proxy_not_running");
-        let (status, payload) = flow_request(app.clone(), Method::GET, "/api/flow/runs", None).await;
+        let (status, payload) =
+            flow_request(app.clone(), Method::GET, "/api/flow/runs", None).await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(payload["data"]["total"], 0, "no run row is created on guards");
+        assert_eq!(
+            payload["data"]["total"], 0,
+            "no run row is created on guards"
+        );
 
         // 代理运行后：无活动 Session → 409 conflict（会话检查先于图校验）。
         let mut config = runtime.config();
@@ -7062,7 +7123,9 @@ mod tests {
             app.clone(),
             Method::POST,
             "/api/flow/runs",
-            Some(&format!(r#"{{"workflowId":"{workflow_id}","sessionId":999999}}"#)),
+            Some(&format!(
+                r#"{{"workflowId":"{workflow_id}","sessionId":999999}}"#
+            )),
         )
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
@@ -7091,8 +7154,12 @@ mod tests {
         assert_eq!(payload["data"]["status"], "success");
 
         // 权限检查按具体路由模板解析。
-        let recorded_ids: Vec<&'static str> =
-            recorded.lock().unwrap().iter().map(|item| item.id).collect();
+        let recorded_ids: Vec<&'static str> = recorded
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|item| item.id)
+            .collect();
         assert!(recorded_ids.contains(&"POST /api/flow/runs"));
         assert!(recorded_ids.contains(&"GET /api/flow/runs"));
     }
@@ -7196,13 +7263,8 @@ mod tests {
         assert_eq!(payload["data"]["runs"].as_array().unwrap().len(), 1);
 
         // 未知运行：详情与取消都是 404。
-        let (status, _) = flow_request(
-            app.clone(),
-            Method::GET,
-            "/api/flow/runs/run-ghost",
-            None,
-        )
-        .await;
+        let (status, _) =
+            flow_request(app.clone(), Method::GET, "/api/flow/runs/run-ghost", None).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         let (status, _) = flow_request(
             app.clone(),
@@ -7331,6 +7393,4 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0]["tool"], "sessions_list");
     }
-
 }
-

@@ -57,7 +57,10 @@ export function importedScriptKey(
 }
 
 /** 读取一个脚本种类的字段值；缺失或空串视为未配置（对齐后端 config_script）。 */
-function readConfigScript(config: Record<string, unknown>, kind: ImportedScriptKind): string | null {
+function readConfigScript(
+  config: Record<string, unknown>,
+  kind: ImportedScriptKind,
+): string | null {
   const value = config[kind];
   return typeof value === "string" && value.length > 0 ? value : null;
 }

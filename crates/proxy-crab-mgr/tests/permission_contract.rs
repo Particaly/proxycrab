@@ -335,7 +335,11 @@ fn permission_lookup_uses_both_method_and_route_template() {
         ("GET", "/api/flow/runs", PermissionMode::Allow),
         ("POST", "/api/flow/runs", PermissionMode::Approval),
         ("GET", "/api/flow/runs/{id}", PermissionMode::Allow),
-        ("POST", "/api/flow/runs/{id}/cancel", PermissionMode::Approval),
+        (
+            "POST",
+            "/api/flow/runs/{id}/cancel",
+            PermissionMode::Approval,
+        ),
     ];
     for (method, route, mode) in run_modes {
         assert_eq!(

@@ -9,10 +9,7 @@ import {
   operatorNeedsRight,
   validateConditionTree,
 } from "../../../../flow-engine/src/condition-builder";
-import type {
-  ConditionGroup,
-  ConditionOperator,
-} from "../../../../flow-engine/src/types";
+import type { ConditionGroup, ConditionOperator } from "../../../../flow-engine/src/types";
 import type { ConditionPath } from "./condition-tree";
 import {
   appendGroup,

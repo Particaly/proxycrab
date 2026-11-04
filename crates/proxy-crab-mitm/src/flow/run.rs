@@ -40,10 +40,10 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{anyhow, Result};
-use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use anyhow::{Result, anyhow};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use serde::Serialize;
-use serde_json::{json, Value as JsonValue};
+use serde_json::{Value as JsonValue, json};
 use tokio::sync::{broadcast, mpsc};
 
 use crate::{
@@ -53,8 +53,8 @@ use crate::{
         host::{FlowCancel, FlowError, FlowErrorKind, FlowHost},
         model::Workflow,
         run_record::{
-            cap_node_runs_for_record, DEGRADED_SNAPSHOT_BYTES, RUN_RECORD_MAX_BYTES,
-            SNAPSHOT_MAX_BYTES,
+            DEGRADED_SNAPSHOT_BYTES, RUN_RECORD_MAX_BYTES, SNAPSHOT_MAX_BYTES,
+            cap_node_runs_for_record,
         },
         run_store::{FlowNodeRunRecord, FlowRunRecord, RunStore},
         runtime::{FlowLimits, FlowRuntime},
@@ -62,7 +62,7 @@ use crate::{
         validate::validate_workflow_graph,
     },
     model::ProxyStatus,
-    proxy::replay::{ReplayAwaitError, ReplayBody, ReplayRequest, REPLAY_DEFAULT_TIMEOUT},
+    proxy::replay::{REPLAY_DEFAULT_TIMEOUT, ReplayAwaitError, ReplayBody, ReplayRequest},
     workspace::now_millis,
 };
 
@@ -139,13 +139,25 @@ pub struct FlowRunDetail {
 /// 写队列内部消息（宿主 emit / 编排任务 → 本次运行的唯一消费者）。
 #[derive(Debug)]
 enum RunEvent {
-    NodeStart { node_id: String, input: JsonValue },
-    NodeFinish { node_id: String, run: JsonValue },
-    RunFinish { summary: JsonValue },
+    NodeStart {
+        node_id: String,
+        input: JsonValue,
+    },
+    NodeFinish {
+        node_id: String,
+        run: JsonValue,
+    },
+    RunFinish {
+        summary: JsonValue,
+    },
     /// 引擎未产出终态（VM 基础设施失败 / 驱动异常）时由编排任务补发。
-    RunAbort { message: String },
+    RunAbort {
+        message: String,
+    },
     /// 脚本 env 写回（落库到激活集合）。
-    EnvWrite { writes: JsonValue },
+    EnvWrite {
+        writes: JsonValue,
+    },
 }
 
 /// 活跃运行注册表条目：取消句柄（AbortController 等价物）。
@@ -228,9 +240,12 @@ impl FlowRunManager {
         // 图定义与运行输入读取走阻塞线程（小 JSON 文件）。
         let root = self.workspace_root.clone();
         let workflow_id = workflow_id.to_owned();
-        let (workflow, inputs) = tokio::task::spawn_blocking(move || load_run_inputs(&root, &workflow_id))
-            .await
-            .map_err(|error| RunTriggerError::Storage(anyhow!("运行输入任务失败: {error}")))??;
+        let (workflow, inputs) =
+            tokio::task::spawn_blocking(move || load_run_inputs(&root, &workflow_id))
+                .await
+                .map_err(|error| {
+                    RunTriggerError::Storage(anyhow!("运行输入任务失败: {error}"))
+                })??;
 
         // 前提校验（Step 3）：代理运行中、目标 Session 存在、图合法。
         if !matches!(self.runtime.proxy_status(), ProxyStatus::Running { .. }) {
@@ -279,13 +294,24 @@ impl FlowRunManager {
         self.active
             .lock()
             .expect("flow run registry poisoned")
-            .insert(record.id.clone(), ActiveRun { cancel: cancel.clone() });
+            .insert(
+                record.id.clone(),
+                ActiveRun {
+                    cancel: cancel.clone(),
+                },
+            );
         self.broadcast(FlowRunEvent {
             run_id: record.id.clone(),
             kind: "started".into(),
             node_id: None,
         });
-        tokio::spawn(self.clone().execute_run(record.clone(), workflow, session_id, inputs, cancel));
+        tokio::spawn(self.clone().execute_run(
+            record.clone(),
+            workflow,
+            session_id,
+            inputs,
+            cancel,
+        ));
         Ok(record)
     }
 
@@ -309,8 +335,10 @@ impl FlowRunManager {
         limit: usize,
         offset: usize,
     ) -> Result<(Vec<FlowRunRecord>, usize)> {
-        self.store_call(move |store| store.list_runs(workflow_id.as_deref(), status.as_deref(), limit, offset))
-            .await
+        self.store_call(move |store| {
+            store.list_runs(workflow_id.as_deref(), status.as_deref(), limit, offset)
+        })
+        .await
     }
 
     /// 读取一条运行记录。
@@ -371,7 +399,9 @@ impl FlowRunManager {
         if let Err(error) = outcome {
             // 引擎未产出终态（载荷加载失败 / VM 失败 / 取消竞速退出）：
             // 补发中止事件，由消费者定稿（取消优先于失败）。
-            let _ = tx.send(RunEvent::RunAbort { message: error.message });
+            let _ = tx.send(RunEvent::RunAbort {
+                message: error.message,
+            });
         }
         drop(tx);
         let _ = consumer.await;
@@ -468,7 +498,11 @@ impl FlowRunManager {
                 }
                 RunEvent::RunAbort { message } => {
                     // 取消优先于失败（终态归 cancelled）。
-                    let status = if cancel.is_cancelled() { "cancelled" } else { "failed" };
+                    let status = if cancel.is_cancelled() {
+                        "cancelled"
+                    } else {
+                        "failed"
+                    };
                     self.finalize(&run_id, status, Some(masked_text(&message, &secrets)))
                         .await;
                     finalized = true;
@@ -478,7 +512,11 @@ impl FlowRunManager {
         }
         if !finalized {
             // 通道关闭且未收到终态：宿主/VM 异常退出，按取消状态兜底定稿。
-            let status = if cancel.is_cancelled() { "cancelled" } else { "failed" };
+            let status = if cancel.is_cancelled() {
+                "cancelled"
+            } else {
+                "failed"
+            };
             let message = if status == "cancelled" {
                 "运行已被取消".to_owned()
             } else {
@@ -495,7 +533,9 @@ impl FlowRunManager {
     /// 单节点 checkpoint 串行落库；失败只记日志（记录缺失不阻断运行）。
     async fn write_node_record(&self, record: &FlowNodeRunRecord) {
         let record = record.clone();
-        let result = self.store_call(move |store| store.upsert_node_run(&record)).await;
+        let result = self
+            .store_call(move |store| store.upsert_node_run(&record))
+            .await;
         if let Err(error) = result {
             tracing::warn!("flow node checkpoint dropped: {error:#}");
         }
@@ -670,7 +710,9 @@ impl FlowHost for RunHost {
             // base64）；字节体按 UTF-8 有损文本化重放（信封能力所限，见计划
             // Task 20 的信封字节通道）。
             body: if let Some(text) = payload.get("body").and_then(JsonValue::as_str) {
-                Some(ReplayBody::Text { text: text.to_owned() })
+                Some(ReplayBody::Text {
+                    text: text.to_owned(),
+                })
             } else {
                 payload
                     .get("bodyBase64")
@@ -686,7 +728,11 @@ impl FlowHost for RunHost {
             .and_then(JsonValue::as_u64)
             .map(Duration::from_millis)
             .unwrap_or(REPLAY_DEFAULT_TIMEOUT);
-        match self.runtime.replay_await(self.session_id, request, timeout).await {
+        match self
+            .runtime
+            .replay_await(self.session_id, request, timeout)
+            .await
+        {
             Ok(response) => serde_json::to_value(&response)
                 .map_err(|error| FlowError::unknown(format!("重放信封不可序列化：{error}"))),
             Err(ReplayAwaitError::Timeout) => Err(FlowError::timeout(format!(
@@ -759,7 +805,11 @@ impl FlowHost for RunHost {
 /// 丢弃），加载引擎载荷后注入参数并执行驱动脚本。载荷加载预算独立
 /// （30s）；工作流执行依赖 VM 三重上限与取消竞速，不设整体硬超时
 /// （长运行是合法形态，取消入口始终可用）。
-async fn drive_vm(host: Arc<RunHost>, cancel: FlowCancel, bootstrap: String) -> Result<(), FlowError> {
+async fn drive_vm(
+    host: Arc<RunHost>,
+    cancel: FlowCancel,
+    bootstrap: String,
+) -> Result<(), FlowError> {
     let vm = FlowRuntime::new(host, cancel, FlowLimits::default()).await?;
     tokio::time::timeout(PAYLOAD_LOAD_BUDGET, vm.run(FLOW_ENGINE_JS))
         .await
@@ -777,7 +827,8 @@ fn build_args_bootstrap(workflow: &Workflow, inputs: &RunInputs) -> Result<Strin
         "env": inputs.env,
         "harEntries": inputs.har_entries,
     });
-    let text = serde_json::to_string(&args).map_err(|error| anyhow!("运行参数不可序列化: {error}"))?;
+    let text =
+        serde_json::to_string(&args).map_err(|error| anyhow!("运行参数不可序列化: {error}"))?;
     Ok(format!("globalThis.__runArgs = {text};"))
 }
 
@@ -843,9 +894,8 @@ fn masked_node_record(
 ) -> FlowNodeRunRecord {
     let field = |name: &str| node_run.get(name);
     let secret_list = secrets_list(secrets);
-    let masked_value = |value: Option<JsonValue>| {
-        value.map(|value| mask_secrets_deep(&value, &secret_list))
-    };
+    let masked_value =
+        |value: Option<JsonValue>| value.map(|value| mask_secrets_deep(&value, &secret_list));
     FlowNodeRunRecord {
         run_id: run_id.to_owned(),
         node_id: node_id.to_owned(),
@@ -880,7 +930,10 @@ fn finalized_node_run_map(
         .iter()
         .map(|(node_id, node_run)| {
             let record = masked_node_record(run_id, node_id, node_run, secrets);
-            (node_id.clone(), serde_json::to_value(&record).unwrap_or_default())
+            (
+                node_id.clone(),
+                serde_json::to_value(&record).unwrap_or_default(),
+            )
         })
         .collect();
     cap_node_runs_for_record(
@@ -928,7 +981,9 @@ fn build_run_inputs(store: &FlowStore, workflow: &Workflow) -> Result<RunInputs>
     }
     let mut secrets: Vec<String> = globals.secret_values.values().cloned().collect();
     if let Ok(projects) = store.list_projects()
-        && let Some(project) = projects.iter().find(|project| project.id == workflow.project_id)
+        && let Some(project) = projects
+            .iter()
+            .find(|project| project.id == workflow.project_id)
     {
         for (key, value) in &project.variables {
             variables.insert(key.clone(), value.clone());
@@ -947,10 +1002,7 @@ fn build_run_inputs(store: &FlowStore, workflow: &Workflow) -> Result<RunInputs>
     secrets.extend(workflow.secret_variables.values().cloned());
 
     // 环境快照（派发时定格；读取失败按空环境降级，不阻断运行）。
-    let (env, active_set_id) = match (
-        store.active_env_set_id(),
-        store.active_env_snapshot(),
-    ) {
+    let (env, active_set_id) = match (store.active_env_set_id(), store.active_env_snapshot()) {
         (Ok(id), Ok(snapshot)) => {
             secrets.extend(snapshot.secret_values.iter().cloned());
             (snapshot.values, id)
@@ -1092,7 +1144,10 @@ mod tests {
         let snapshot = graph_snapshot(&workflow);
         assert_eq!(snapshot["truncated"], json!(true));
         // 骨架只保留定位所需的最小字段。
-        assert_eq!(snapshot["nodes"][1], json!({ "id": "r", "type": "httpReplay" }));
+        assert_eq!(
+            snapshot["nodes"][1],
+            json!({ "id": "r", "type": "httpReplay" })
+        );
         assert_eq!(snapshot["edges"][0]["target"], json!("r"));
         assert!(snapshot.get("config").is_none());
     }
@@ -1118,7 +1173,10 @@ mod tests {
         assert_eq!(record.node_id, "n1");
         assert_eq!(record.status, "success");
         assert_eq!(record.input, Some(json!({ "password": "******" })));
-        assert_eq!(record.output, Some(json!({ "text": "prefix-******-suffix" })));
+        assert_eq!(
+            record.output,
+            Some(json!({ "text": "prefix-******-suffix" }))
+        );
         assert_eq!(record.error.as_deref(), Some("boom ******"));
         assert_eq!(record.started_at, Some(11));
         assert_eq!(record.duration_ms, Some(22));
