@@ -834,9 +834,12 @@ pub(crate) mod slow_tool_stub {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dto::ScriptRequest;
     use crate::manager::MitmManager;
     use async_trait::async_trait;
     use proxy_crab_mitm::log_buffer::LogBuffer;
+    use proxy_crab_mitm::model::{HeaderValues, NewSession, RequestData};
+    use proxy_crab_mitm::storage::CaptureStore;
     use proxy_crab_mitm::ProxyCrab;
     use tempfile::tempdir;
 
@@ -846,6 +849,31 @@ mod tests {
     impl PermissionManager for AllowTools {
         async fn check_permission(&self, _: PermissionAction) -> Option<PermissionDenied> {
             None
+        }
+    }
+
+    struct DenyTools;
+
+    #[async_trait]
+    impl PermissionManager for DenyTools {
+        async fn check_permission(&self, _: PermissionAction) -> Option<PermissionDenied> {
+            Some(PermissionDenied::forbidden("test_denied", "denied by test"))
+        }
+    }
+
+    /// 模拟带脱敏绑定的调用者身份（与 http.rs 的 BoundReads 同构）。
+    struct BoundRedaction;
+
+    #[async_trait]
+    impl PermissionManager for BoundRedaction {
+        async fn check_permission(&self, _: PermissionAction) -> Option<PermissionDenied> {
+            None
+        }
+        async fn redaction_script(
+            &self,
+            _: &ManagementCredential,
+        ) -> Result<Option<String>, PermissionDenied> {
+            Ok(Some("mask".into()))
         }
     }
 
@@ -1284,5 +1312,128 @@ mod tests {
             MAX_IN_FLIGHT_TOOL_CALLS,
             "permits must be released once in-flight calls end"
         );
+    }
+
+    #[tokio::test]
+    async fn ok_calls_append_one_audit_entry() {
+        let app_data = tempdir().unwrap();
+        let runtime = ProxyCrab::open(app_data.path(), Arc::new(LogBuffer::default())).unwrap();
+        let manager = MitmManager::new(runtime);
+        let context = test_context(
+            manager.clone(),
+            Arc::new(Semaphore::new(MAX_IN_FLIGHT_TOOL_CALLS)),
+        );
+        let request = RpcRequest {
+            id: json!(5),
+            method: "tools/call".into(),
+            params: json!({ "name": "workflows_list", "arguments": {} }),
+        };
+        let response = call(&request, &context, TOOL_CALL_TIMEOUT).await;
+        assert!(response.get("error").is_none());
+        assert!(response["result"]["isError"].is_null());
+        // 执行完成落一条审计：身份 local、判定 allowed、结果 ok。
+        let entries = manager.mcp_audit(10).await.unwrap();
+        assert_eq!(entries.len(), 1);
+        let entry = &entries[0];
+        assert_eq!(entry.tool, "workflows_list");
+        assert_eq!(entry.identity, "local");
+        assert_eq!(entry.decision, "allowed");
+        assert_eq!(entry.outcome, "ok");
+        assert_eq!(entry.reason, None);
+        assert_eq!(entry.arguments_summary, "{}");
+        assert!(entry.timestamp_ms > 0);
+    }
+
+    #[tokio::test]
+    async fn denied_calls_append_one_audit_entry() {
+        let app_data = tempdir().unwrap();
+        let runtime = ProxyCrab::open(app_data.path(), Arc::new(LogBuffer::default())).unwrap();
+        let manager = MitmManager::new(runtime);
+        let mut context = test_context(
+            manager.clone(),
+            Arc::new(Semaphore::new(MAX_IN_FLIGHT_TOOL_CALLS)),
+        );
+        context.permissions = Arc::new(DenyTools);
+        let request = RpcRequest {
+            id: json!(6),
+            method: "tools/call".into(),
+            params: json!({ "name": "sessions_list", "arguments": { "x": "y" } }),
+        };
+        let response = call(&request, &context, TOOL_CALL_TIMEOUT).await;
+        assert_eq!(response["result"]["isError"], true);
+        assert!(
+            response["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("denied by test")
+        );
+        // 拒绝也落一条审计：decision/outcome 均为 denied，reason 为拒绝文案。
+        let entries = manager.mcp_audit(10).await.unwrap();
+        assert_eq!(entries.len(), 1);
+        let entry = &entries[0];
+        assert_eq!(entry.tool, "sessions_list");
+        assert_eq!(entry.identity, "local");
+        assert_eq!(entry.decision, "denied");
+        assert_eq!(entry.outcome, "denied");
+        assert_eq!(
+            entry.reason.as_deref(),
+            Some("permission denied: denied by test")
+        );
+        assert_eq!(entry.arguments_summary, r#"{"x":"y"}"#);
+    }
+
+    #[tokio::test]
+    async fn bound_callers_read_tools_through_the_redaction_path() {
+        let app_data = tempdir().unwrap();
+        let runtime = ProxyCrab::open(app_data.path(), Arc::new(LogBuffer::default())).unwrap();
+        let session = runtime.create_session(NewSession::default()).unwrap();
+        let store = CaptureStore::open(session.id, runtime.workspace().root()).unwrap();
+        let id = store
+            .begin(
+                "client",
+                &RequestData {
+                    method: "GET".into(),
+                    uri: "https://example.com/secret".into(),
+                    version: "HTTP/1.1".into(),
+                    headers: HeaderValues::new(),
+                    tags: Default::default(),
+                },
+                "request",
+            )
+            .unwrap();
+        let manager = MitmManager::new(runtime);
+        // context.api 断言为 "mcp"：绑定未走 reader 路径时脚本会失败。
+        manager
+            .create_redaction_script(ScriptRequest {
+                name: "mask".into(),
+                content:
+                    "assert(context.api == 'mcp'); req.uri = 'https://example.com/masked'".into(),
+            })
+            .await
+            .unwrap();
+        let mut context = test_context(
+            manager.clone(),
+            Arc::new(Semaphore::new(MAX_IN_FLIGHT_TOOL_CALLS)),
+        );
+        context.permissions = Arc::new(BoundRedaction);
+        context.credential = ManagementCredential::Bearer("pcrab_test".into());
+        let request = RpcRequest {
+            id: json!(7),
+            method: "tools/call".into(),
+            params: json!({ "name": "log_detail", "arguments": { "id": id, "session_id": session.id } }),
+        };
+        let response = call(&request, &context, TOOL_CALL_TIMEOUT).await;
+        assert!(response.get("error").is_none());
+        assert!(response["result"]["isError"].is_null());
+        let text = response["result"]["content"][0]["text"].as_str().unwrap();
+        // 结果经 reader 脱敏路径返回，与 HTTP API 同路。
+        assert!(text.contains("masked"), "{text}");
+        assert!(!text.contains("secret"), "{text}");
+        // Bearer 无分享身份：审计身份记 unresolved，结果仍 ok。
+        let entries = manager.mcp_audit(10).await.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].identity, "unresolved");
+        assert_eq!(entries[0].outcome, "ok");
+        assert_eq!(entries[0].decision, "allowed");
     }
 }
