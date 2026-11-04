@@ -229,6 +229,7 @@ revision-based proxy-change long poll and then reloads its Session-scoped status
 | `PUT /api/session-interceptors` | Target Session pipeline | Refreshes the pipeline only when that Session is being viewed |
 | `DELETE /api/system-logs` | System-log viewer | Clears and reloads an open log window |
 | Request library create/ingest/update/delete | Request library | Reloads the request library window (reserved for the flow windows; the request library window itself arrives with the flow milestone) |
+| Workflow run trigger/cancel, plus every run progress event (`started`/`node`/`finished`) | Flow runs | Reloads the run list and any open run detail; progress events are folded into one `FlowRuns` resource so node-level updates do not need per-event modeling |
 
 If HTTP archives the viewed Session, the frontend selects the first remaining Session.
 
@@ -305,6 +306,9 @@ browser UI.
 | `/api/request-library/from-capture` | `POST` ingest one capture (default: `approval`) |
 | `/api/request-library/{id}/body` | `GET` raw stored request body (default: `allow`) |
 | `/api/flow/script/dry-run` | `POST` dry-run one pre/post script against a sample payload in a throwaway flow VM (default: `approval`; request body is excluded from the audit preview) |
+| `/api/flow/runs`, `/api/flow/runs/{id}` | workflow run list/detail (`GET` default: `allow`) |
+| `/api/flow/runs` | `POST` trigger one run (default: `approval`) |
+| `/api/flow/runs/{id}/cancel` | `POST` request cancellation (default: `approval`) |
 
 System logs accept `after_seq` and are capped at 10,000 entries.
 
@@ -1095,6 +1099,27 @@ non-finite positions) return `400 bad_request`; the structural graph validator i
 not gate saves — only runs use it. These endpoints are not registered on the read-only
 `/share-api/*` surface, and they do not yet publish UI change events (the workflow editor windows
 land in a later task and will pick those up).
+
+## Workflow runs
+
+Workflow runs execute a stored definition through the flow engine payload inside a dedicated VM,
+replaying requests through the target Session's pipeline. Run records persist in the workspace
+`flow/runs.db` (one `flow_runs` row per run plus one `flow_node_runs` row per node checkpoint,
+last-write-wins per `(runId, nodeId)`). Wire shapes are camelCase. `trigger` is `manual` (or
+`debug`); `status` moves `running → success | failed | cancelled | interrupted`.
+
+| Endpoint | Default | Contract |
+| --- | --- | --- |
+| `POST /api/flow/runs` | `approval` | body `{workflowId,sessionId?}`; `sessionId` defaults to the active Session. Preconditions are checked before the run row is created: the proxy must be running (`409 proxy_not_running`), a target Session must exist (`404 not_found` for a missing/archived id, `409 conflict` when none is active), the graph must validate (`422 workflow_graph_invalid` with the joined issue messages). Success returns the run record (`id` `run-…`, status `running`, graph snapshot captured at dispatch) |
+| `GET /api/flow/runs` | `allow` | `{runs:[FlowRunRecord],total}`, newest first; `workflowId` and `status` filter before pagination, `limit` defaults to 200 (capped at 1000, `400 bad_request` outside 1–1000), `offset` skips entries |
+| `GET /api/flow/runs/{id}` | `allow` | run detail: the flattened `FlowRunRecord` plus `nodeRuns:[FlowNodeRunRecord]` (per-node `status`/`input`/`output`/`error`/`startedAt`/`durationMs`/`iterations`; snapshots are secret-masked). `404 not_found` when absent |
+| `POST /api/flow/runs/{id}/cancel` | `approval` | requests cancellation; the engine stops scheduling at the next batch boundary (the current node completes) and the run settles `cancelled` (cancel wins over failure). `404 not_found` when the run is unknown or already finished. Idempotence is not promised — a second cancel after the run settled returns `404` |
+
+Triggering and cancelling broadcast a `FlowRuns` UI change on success. In addition, the run
+orchestrator bridges node-level and run-level progress events (`started`/`node`/`finished`) into
+the same change channel as one `FlowRuns` resource, so the UI reloads the run list / open run
+detail as the run progresses. Stored snapshots (node input/output, error text) are masked against
+the run's secret inventory before persistence and broadcast.
 
 ## Redaction library and bindings
 
