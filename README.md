@@ -230,6 +230,7 @@ proxycrab-cli install-skill --parent ~/.agents/skills
 ## 文档
 
 - [管理 API、权限与 Session 分享](docs/backend-api.md)
+- [MCP 接入](docs/mcp.md)
 - [Lua API 与示例](docs/lua-api.md)
 - [Session 配置分享与导入](docs/session-config-bundles.md)
 - [Agent Skill 与操作流程](skills/proxycrab/SKILL.md)
