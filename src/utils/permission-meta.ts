@@ -138,6 +138,12 @@ export const ACTION_META: Readonly<Record<string, PermissionActionMeta>> = {
   "PUT /api/workflows/{id}": { label: "保存工作流图（整体替换）", impact: "write" },
   "DELETE /api/workflows/{id}": { label: "删除工作流定义", impact: "write" },
   "POST /api/workflows/{id}/validate": { label: "运行工作流图校验", impact: "read" },
+  "GET /api/workflows/export": { label: "导出工作流（含引用条目与环境集）", impact: "read" },
+  "POST /api/workflows/import": { label: "导入工作流（脚本需逐条确认）", impact: "write" },
+  "GET /api/flow/runs": { label: "列出工作流运行记录", impact: "read" },
+  "POST /api/flow/runs": { label: "触发工作流运行", impact: "write" },
+  "GET /api/flow/runs/{id}": { label: "读取工作流运行详情", impact: "read" },
+  "POST /api/flow/runs/{id}/cancel": { label: "取消工作流运行", impact: "write" },
   "POST /api/flow/script/dry-run": { label: "试跑流程脚本", impact: "write" },
 };
 
@@ -190,7 +196,7 @@ export const FUNCTION_GROUPS: FunctionGroupDef[] = [
   {
     key: "flow",
     label: "工作流",
-    prefixes: ["/api/flow-projects", "/api/workflows", "/api/flow/script"],
+    prefixes: ["/api/flow-projects", "/api/workflows", "/api/flow/script", "/api/flow/runs"],
   },
   { key: "system_logs", label: "系统日志", prefixes: ["/api/system-logs"] },
 ];
