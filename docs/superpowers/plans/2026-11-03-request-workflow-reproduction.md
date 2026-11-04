@@ -234,11 +234,11 @@
 - Modify: `src/components/flow/Canvas.vue`、新增 `src/components/flow/{NodePanel.vue,CanvasToolbar.vue,node-issue-badge.ts,auto-layout.ts,graph-history.ts,node-clipboard.ts}`
 - Create: `src/components/flow/*.test.mts`（纯函数部分）
 
-- [ ] **Step 1: 编辑**：拖入节点面板、连线（条件节点真/假双出口带标签）、框选/多选、删除、双击重命名、拖线到空白弹添加菜单并自动连线。
-- [ ] **Step 2: 视图**：缩放/平移/小地图/自动布局/对齐辅助线/视口持久化（按流程 id）。
-- [ ] **Step 3: 一致性**：撤销/重做（图快照历史）、复制/粘贴（剪贴板）、常驻校验徽标（error/warn/info 三级）。
-- [ ] **Step 4: 运行期锁定**：运行中拦截结构性编辑（粘贴/撤销/删除/drop/连线）并给单例提示。
-- [ ] **Step 5: 测试**：自动布局、图历史、剪贴板、校验徽标纯函数。
+- [x] **Step 1: 编辑**：拖入节点面板、连线（条件节点真/假双出口带标签）、框选/多选、删除、双击重命名、拖线到空白弹添加菜单并自动连线。
+- [x] **Step 2: 视图**：缩放/平移/小地图/自动布局/对齐辅助线/视口持久化（按流程 id）。
+- [x] **Step 3: 一致性**：撤销/重做（图快照历史）、复制/粘贴（剪贴板）、常驻校验徽标（error/warn/info 三级）。
+- [x] **Step 4: 运行期锁定**：运行中拦截结构性编辑（粘贴/撤销/删除/drop/连线）并给单例提示。
+- [x] **Step 5: 测试**：自动布局、图历史、剪贴板、校验徽标纯函数。
 
 ### Task 14: 节点配置面（请求类）
 
