@@ -1,6 +1,7 @@
 import type { LogDetail } from "../api/types";
 
-function shellQuote(value: string): string {
+/** POSIX shell 单引号包裹：内部单引号按 `'"'"'` 惯用法转义（导出生成器共用）。 */
+export function shellQuote(value: string): string {
   return `'${value.split("'").join(`'"'"'`)}'`;
 }
 
