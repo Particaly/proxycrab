@@ -1720,3 +1720,21 @@ Share configuration accepts `session_share_config.session_config_share: {assets:
 `POST /api/imports` takes multipart `file` plus required `accepted_intent_ids` (a nonempty JSON string array). Only user-accepted intents and their dependencies are imported. It executes when conflict-free, otherwise returns `{import_id, files, sessions:[]}`; files include `path`, `status` (`new`/`same`/`conflict`), `fingerprint`, `can_rename`. `POST /api/imports/{id}/resolve` takes an array of `{path,action,fingerprint,name?}`. Actions: `keep`, `overwrite`, or scripts-only `rename` with a new script name excluding `.lua`. Resources retain original asset IDs. Recheck changed conflicts; never guess decisions. Batch failure rolls back files and new sessions. Temporary packages expire after 30 minutes; import returns new local session IDs without activating them. Both management endpoints require their own write permission (default approval).
 
 Use `scripts/bundle-import.mjs --file bundle.zip --accepted-intent-ids '["session-123"]'`; resolve with `--import-id ID --resolutions-file choices.json`. Only submit IDs and conflict choices explicitly accepted by the user. Limits: 128 MiB compressed/uncompressed, 4096 entries; current workspace schema required.
+
+## MCP endpoint
+
+`POST /mcp` speaks JSON-RPC 2.0 (stateless, one request/response per call, no MCP SDK envelope). Authentication matches the `/api` routes: trusted local callers may omit `Authorization`; otherwise send exactly one `Authorization: Bearer <key>`. The endpoint itself is the permission action `POST /mcp` (default `allow`); per-tool authorization is a later slice. Bodies are capped at 1 MiB.
+
+MCP envelopes are raw JSON-RPC — `{jsonrpc:"2.0", id, result}` or `{jsonrpc:"2.0", id, error:{code,message}}` — never wrapped in the management `{ok,data}`/`{ok,error}` contract. Error codes follow JSON-RPC/MCP convention: `-32700` unparsable JSON (id is `null`), `-32600` invalid envelope, `-32601` unknown method, `-32602` invalid params, `-32603` internal. Messages without an `id` are notifications and get `202 Accepted` with no body.
+
+Methods: `initialize` (required first call) negotiates the protocol version — supported client versions `2024-11-05`, `2025-03-26`, `2025-06-18` are echoed verbatim; `latest`, missing, or unsupported versions fall back to `2025-06-18`. The result declares `capabilities.tools` and `serverInfo:{name:"proxy-crab",version}`. `tools/list` currently returns an empty `tools` array (curated surface pending). `tools/call` with `params.name` returns, for every tool name in this slice, the MCP tool-level failure shape — HTTP 200 with `result:{content:[{type:"text",text:...}],isError:true}` — instead of a protocol error; omitting an empty `name` is `-32602`.
+
+### `POST /mcp` example
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"agent","version":"0"}}}
+```
+
+```json
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"proxy-crab","version":"1.1.0"}}}
+```
