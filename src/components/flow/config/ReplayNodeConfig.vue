@@ -15,6 +15,8 @@ import AssetTreePicker from "../../AssetTreePicker.vue";
 import ExpressionInput from "../../expression-input/ExpressionInput.vue";
 import type { SuggestNodeOption } from "../../expression-input/expression-suggest";
 import { buildDropInsertPlan } from "../../expression-input/expression-suggest";
+import type { TemplateSampleContext } from "../../expression-input/use-expression-preview";
+import type { FlowTrialTarget } from "../../../stores/flow-trial";
 import { hasIoPathPayload, readIoPathPayload } from "../template-dnd";
 import { formatBytes, formatDateTime } from "../../../utils/format";
 import { REPLAY_METHODS } from "../../../utils/replay";
@@ -63,12 +65,18 @@ const props = defineProps<{
   takenKeys: ReadonlySet<string>;
   /** 置灰全部编辑（运行期锁定等场景）。 */
   disabled?: boolean;
+  /** 所属流程 id（脚本试跑样本并入会话态的归属键；缺省不并入）。 */
+  workflowId?: string;
   /** 上游可引用节点候选（模板引用键 refId ?? id + 展示名；透传表达式输入）。 */
   availableNodeIds?: ReadonlyArray<SuggestNodeOption>;
   /** 可引用变量名清单（流程级普通变量；透传表达式输入）。 */
   variableNames?: ReadonlyArray<string>;
   /** 激活环境集合 + 全局的键名清单（透传表达式输入）。 */
   envKeys?: ReadonlyArray<string>;
+  /** 入参字段路径清单（试跑样本派生；透传表达式输入的裸路径候选）。 */
+  inputPaths?: ReadonlyArray<string>;
+  /** 模板样本上下文（深路径候选 + 求值预览；透传表达式输入，缺省无预览）。 */
+  sample?: TemplateSampleContext | null;
 }>();
 
 const emit = defineEmits<{
@@ -77,6 +85,11 @@ const emit = defineEmits<{
 }>();
 
 const backend = useBackend();
+
+/** 脚本试跑样本归属（本节点；流程 id 由窗口注入，缺省不并入会话态）。 */
+const trialKey = computed<FlowTrialTarget | null>(() =>
+  props.workflowId ? { workflowId: props.workflowId, nodeId: props.node.id } : null,
+);
 
 /* ------------------------------ 表单草稿状态 ------------------------------ */
 
@@ -646,6 +659,8 @@ function toggleScript(section: "pre" | "post"): void {
             :available-node-ids="availableNodeIds"
             :variable-names="variableNames"
             :env-keys="envKeys"
+            :input-paths="inputPaths"
+            :sample="sample"
           />
         </div>
         <div v-if="urlWarning" class="rnc-warning">{{ urlWarning }}</div>
@@ -666,6 +681,8 @@ function toggleScript(section: "pre" | "post"): void {
         :available-node-ids="availableNodeIds"
         :variable-names="variableNames"
         :env-keys="envKeys"
+        :input-paths="inputPaths"
+        :sample="sample"
       />
       <div v-if="headerError" class="rnc-warning">{{ headerError }}</div>
       <div v-if="removedCapturedHeaders.length > 0" class="rnc-removed">
@@ -856,6 +873,7 @@ function toggleScript(section: "pre" | "post"): void {
             :model-value="side === 'pre' ? preProcess : postProcess"
             :disabled="disabled"
             editor-height="12em"
+            :trial-key="trialKey"
             @update:model-value="side === 'pre' ? (preProcess = $event) : (postProcess = $event)"
           />
         </div>

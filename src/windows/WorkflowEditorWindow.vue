@@ -12,6 +12,10 @@ import type {
 } from "../api/types";
 import Canvas from "../components/flow/Canvas.vue";
 import type { SuggestNodeOption } from "../components/expression-input/expression-suggest";
+import type {
+  NodeSampleEntry,
+  TemplateSampleContext,
+} from "../components/expression-input/use-expression-preview";
 import {
   commitGraph,
   createGraphHistory,
@@ -159,11 +163,17 @@ function upstreamClosure(nodeId: string): string[] {
   return order;
 }
 
+/** 选中节点的上游闭包集合（候选清单与样本上下文共用）。 */
+const selectedUpstreamIds = computed<ReadonlySet<string>>(() => {
+  const node = selectedNode.value;
+  return node ? new Set(upstreamClosure(node.id)) : new Set<string>();
+});
+
 /** 上游可引用节点候选（表达式提示第二级；id 为模板引用键 refId ?? id）。 */
 const selectedAvailableNodes = computed<SuggestNodeOption[]>(() => {
   const node = selectedNode.value;
   if (!node) return [];
-  return upstreamClosure(node.id)
+  return [...selectedUpstreamIds.value]
     .map((id) => nodes.value.find((item) => item.id === id))
     .filter((item): item is WorkflowNode => item !== undefined)
     .map((item) => ({ id: item.refId ?? item.id, label: nodeLabel(item) }));
@@ -173,6 +183,71 @@ const selectedAvailableNodes = computed<SuggestNodeOption[]>(() => {
 const selectedVariableNames = computed<readonly string[]>(() =>
   Object.keys(workflow.value?.variables ?? {}),
 );
+
+// ---------- 试跑样本会话态 → 表达式样本上下文（Task 15 薄片 C Step 4） ----------
+
+/**
+ * 激活环境集合 + 全局变量的普通键值表（env.<key> 求值样本；secret 值不入表
+ * 防明文回显）。服务端运行时的合并序以宿主供给为准，此处按「激活集合覆盖
+ * 全局」近似；能力位缺失或加载失败置 null（env 引用按无激活环境告警）。
+ */
+const activeEnvTable = ref<Record<string, string> | null>(null);
+
+async function loadActiveEnv(): Promise<void> {
+  const envSets = backend.envSets;
+  if (!envSets) {
+    activeEnvTable.value = null;
+    return;
+  }
+  try {
+    const payload = await envSets.get();
+    const active = payload.sets.find((set) => set.id === payload.activeSetId);
+    activeEnvTable.value = { ...payload.globals.values, ...(active ? active.values : {}) };
+  } catch {
+    activeEnvTable.value = null;
+  }
+}
+
+/** env. 键名候选（激活集合 + 全局；表未加载时不出现 env. 根）。 */
+const selectedEnvKeys = computed<readonly string[] | undefined>(() =>
+  activeEnvTable.value ? Object.keys(activeEnvTable.value) : undefined,
+);
+
+/** 入参字段路径候选（试跑样本派生；无样本为空清单）。 */
+const selectedInputPaths = computed<readonly string[]>(() =>
+  collectJsonPaths(selectedTrial.value?.input ?? null),
+);
+
+/**
+ * 选中节点的表达式样本上下文（配置面表达式输入的深路径候选 + 求值预览）。
+ * 样本当前仅来自编辑器内脚本试跑（节点级试跑 API 缺口见 stores/flow-trial.ts）：
+ * 入参 = pre 试跑样例 input；上游 / 全图节点输出 = 各节点 post 试跑返回值
+ * （键为模板引用键 refId ?? id，与执行器运行时上下文同口径；upstreamSamples
+ * 只含上游闭包，对齐运行时「渲染该节点时上下文里只有已完成节点」）。
+ */
+const selectedSample = computed<TemplateSampleContext | null>(() => {
+  const wf = workflow.value;
+  const node = selectedNode.value;
+  if (!wf || !node) return null;
+  const upstreamSamples: Record<string, NodeSampleEntry> = {};
+  const nodeSamples: Record<string, NodeSampleEntry> = {};
+  for (const item of nodes.value) {
+    const trial = flowTrialStore.get(wf.id, item.id);
+    if (trial?.output === undefined) continue;
+    const entry: NodeSampleEntry = { sample: trial.output, source: "run" };
+    nodeSamples[item.refId ?? item.id] = entry;
+    if (selectedUpstreamIds.value.has(item.id)) upstreamSamples[item.refId ?? item.id] = entry;
+  }
+  const trial = flowTrialStore.get(wf.id, node.id);
+  return {
+    input: trial?.input ?? null,
+    inputSource: trial?.input !== undefined ? "run" : "none",
+    upstreamSamples,
+    nodeSamples,
+    variables: { ...wf.variables },
+    ...(activeEnvTable.value !== null ? { env: activeEnvTable.value } : {}),
+  };
+});
 
 // ---------- IO 抽屉（Task 15 薄片 C Step 3/4） ----------
 
@@ -252,6 +327,7 @@ async function selectWorkflow(target: Workflow): Promise<void> {
     serverIssues.value = [];
     history.value = createGraphHistory(nodes.value, edges.value);
     canvasKey.value += 1;
+    void loadActiveEnv();
   } catch (error) {
     reportError(error, "加载流程失败");
   }
@@ -453,6 +529,7 @@ onMounted(() => {
   windowsStore.registerCloseGuard(WINDOW_ID, confirmDiscard);
   window.addEventListener("keydown", onKeydown);
   void refresh();
+  void loadActiveEnv();
 });
 
 onBeforeUnmount(() => {
@@ -642,8 +719,12 @@ onBeforeUnmount(() => {
           :key="selectedNode.id"
           :node="selectedNode"
           :taken-keys="selectedTakenKeys"
+          :workflow-id="workflow?.id"
           :available-node-ids="selectedAvailableNodes"
           :variable-names="selectedVariableNames"
+          :env-keys="selectedEnvKeys"
+          :input-paths="selectedInputPaths"
+          :sample="selectedSample"
           @update:config="updateSelectedConfig"
           @update:ref-id="updateSelectedRefId"
         />

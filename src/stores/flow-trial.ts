@@ -36,6 +36,12 @@ export interface FlowTrialPatch {
   output?: unknown;
 }
 
+/** 试跑样本的归属定位（产出方上抛时声明；编辑器内为流程 + 节点） */
+export interface FlowTrialTarget {
+  workflowId: string;
+  nodeId: string;
+}
+
 export const flowTrialStore = reactive({
   /** 按流程 id 分桶：workflowId → (nodeId → trial) */
   buckets: {} as Record<string, Record<string, FlowNodeTrial>>,
