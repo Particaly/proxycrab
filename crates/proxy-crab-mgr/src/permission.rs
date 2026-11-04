@@ -274,8 +274,9 @@ pub static API_ACTIONS: &[ApiAction] = &[
     action!("POST", "/api/flow/runs/{id}/cancel", Approval),
     // MCP endpoint (plan Task 24): the JSON-RPC transport re-uses the existing
     // identity system and is checked per request, so the endpoint itself is
-    // registered like other read-class routes (`allow`). Per-tool authorization
-    // inside `tools/call` is a later slice (Task 24 Step 3).
+    // registered like other read-class routes (`allow`). Inside `tools/call`
+    // each tool runs a second check against its mapped route's action
+    // (Task 24 Step 3); both checks must pass, so the stricter tier wins.
     action!("POST", "/mcp", Allow),
 ];
 

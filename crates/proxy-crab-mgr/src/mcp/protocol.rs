@@ -1,8 +1,9 @@
-//! MCP JSON-RPC 2.0 信封与方法分派（plan Task 24 Step 1）。
+//! MCP JSON-RPC 2.0 信封与方法分派（plan Task 24 Step 1/3）。
 //!
-//! 不引入 MCP SDK：信封解析/序列化与错误码在此自实现，覆盖 `initialize` /
-//! `tools/list` / `tools/call` 的分派骨架。请求期无状态；策展工具面（tools
-//! 实际清单与逐次鉴权）由后续薄片填充。
+//! 不引入 MCP SDK：信封解析/序列化与错误码在此自实现，覆盖 `initialize`
+//! / `tools/list` / `tools/call` 的分派。信封解析请求期无状态；`tools/call`
+//! 的策展工具调用链（注册表、逐次鉴权、执行）由 [`crate::mcp::tools`]
+//! 接管，`tools/list` 展示注册表策展清单。
 
 use serde_json::{Value, json};
 
@@ -110,9 +111,9 @@ pub fn handle(incoming: Incoming) -> Option<Value> {
 fn handle_request(request: RpcRequest) -> Value {
     match request.method.as_str() {
         "initialize" => initialize(&request),
-        // 策展工具面由后续薄片（Task 25）填充，本薄片返回空清单占位。
-        "tools/list" => success(&request.id, json!({ "tools": [] })),
-        "tools/call" => tools_call(&request),
+        // 策展清单由注册表（tools 模块）声明，Task 25 扩充工具面。
+        "tools/list" => success(&request.id, super::tools::list_envelope()),
+        // tools/call 在 mcp::respond 中先于本分派被接管（见 tools 模块）。
         _ => error(
             &request.id,
             METHOD_NOT_FOUND,
@@ -139,35 +140,6 @@ fn initialize(request: &RpcRequest) -> Value {
             "protocolVersion": negotiated,
             "capabilities": { "tools": {} },
             "serverInfo": { "name": SERVER_NAME, "version": SERVER_VERSION },
-        }),
-    )
-}
-
-/// `tools/call` 分派骨架：未知工具名按 MCP 约定返回 `isError` 结果形态
-/// （工具级失败），而非协议错误；带 `arguments` 的真实工具执行是后续薄片。
-fn tools_call(request: &RpcRequest) -> Value {
-    let Some(name) = request.params.get("name").and_then(Value::as_str) else {
-        return error(
-            &request.id,
-            INVALID_PARAMS,
-            "tools/call requires a tool name",
-        );
-    };
-    if name.is_empty() {
-        return error(
-            &request.id,
-            INVALID_PARAMS,
-            "tools/call requires a non-empty tool name",
-        );
-    }
-    success(
-        &request.id,
-        json!({
-            "content": [{
-                "type": "text",
-                "text": format!("tool '{name}' is not implemented yet"),
-            }],
-            "isError": true,
         }),
     )
 }
@@ -244,35 +216,10 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_is_an_empty_curated_placeholder_until_task_25() {
+    fn tools_list_declares_the_registry_curated_surface() {
         let response = handle(parse(&request("tools/list", json!({})))).unwrap();
-        assert_eq!(response["result"]["tools"], json!([]));
-    }
-
-    #[test]
-    fn tools_call_reports_unimplemented_tools_as_tool_level_errors() {
-        let response = handle(parse(&request(
-            "tools/call",
-            json!({ "name": "get_proxy_status", "arguments": {} }),
-        )))
-        .unwrap();
-        // 工具级失败：result.isError 形态，而非协议错误码。
-        assert!(response.get("error").is_none());
-        assert_eq!(response["result"]["isError"], true);
-        assert_eq!(response["result"]["content"][0]["type"], "text");
-        assert!(
-            response["result"]["content"][0]["text"]
-                .as_str()
-                .unwrap()
-                .contains("get_proxy_status")
-        );
-    }
-
-    #[test]
-    fn tools_call_without_a_name_is_invalid_params() {
-        for params in [json!({}), json!({ "name": "" })] {
-            let response = handle(parse(&request("tools/call", params))).unwrap();
-            assert_eq!(response["error"]["code"], INVALID_PARAMS);
-        }
+        let tools = response["result"]["tools"].as_array().unwrap();
+        assert_eq!(tools[0]["name"], "workflow_runs_list");
+        assert_eq!(tools[0]["inputSchema"]["properties"]["limit"]["type"], "integer");
     }
 }
