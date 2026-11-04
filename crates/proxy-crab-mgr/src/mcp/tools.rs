@@ -434,6 +434,86 @@ mod tests {
     }
 
     #[test]
+    fn tier_gate_matrix_matches_the_three_switches() {
+        let all_on = McpTiers {
+            read: true,
+            write: true,
+            execute: true,
+        };
+        let all_off = McpTiers {
+            read: false,
+            write: false,
+            execute: false,
+        };
+        // 缺省：读开 / 写关 / 执行关；全开全放行；全关全拒绝。
+        for (tier, default_allowed) in [
+            (ToolTier::Read, true),
+            (ToolTier::Write, false),
+            (ToolTier::Execute, false),
+        ] {
+            assert_eq!(
+                tier.enabled(&McpTiers::default()),
+                default_allowed,
+                "{tier:?} default"
+            );
+            assert!(tier.enabled(&all_on), "{tier:?} must pass when all on");
+            assert!(!tier.enabled(&all_off), "{tier:?} must fail when all off");
+        }
+    }
+
+    #[test]
+    fn tools_list_omits_tools_of_closed_tiers() {
+        // 缺省档（新工作区）：注册表中的读类工具在列。
+        assert_eq!(
+            list_envelope(&McpTiers::default())["tools"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        // 读档关闭：tools/list 不再出现该类别工具。
+        let read_off = McpTiers {
+            read: false,
+            ..McpTiers::default()
+        };
+        assert_eq!(
+            list_envelope(&read_off)["tools"].as_array().unwrap().len(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn call_hard_rejects_tools_of_closed_tiers() {
+        let app_data = tempdir().unwrap();
+        let runtime = ProxyCrab::open(app_data.path(), Arc::new(LogBuffer::default())).unwrap();
+        // 读档关闭：即使逐次鉴权全放行（AllowTools），tools/call 直呼工具
+        // 名也硬拒——档位门控独立于权限目录，先于执行段生效。
+        let context = test_context_with_tiers(
+            MitmManager::new(runtime),
+            McpTiers {
+                read: false,
+                write: true,
+                execute: true,
+            },
+            Arc::new(Semaphore::new(MAX_IN_FLIGHT_TOOL_CALLS)),
+        );
+        let request = RpcRequest {
+            id: json!(7),
+            method: "tools/call".into(),
+            params: json!({ "name": "workflow_runs_list", "arguments": {} }),
+        };
+        let response = call(&request, &context, TOOL_CALL_TIMEOUT).await;
+        assert_eq!(response["result"]["isError"], true);
+        assert!(response.get("error").is_none());
+        assert!(
+            response["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("该工具类别的 MCP 档位已关闭")
+        );
+    }
+
+    #[test]
     fn internal_error_reasons_never_leak_paths_or_credentials() {
         let error = ManagerError::new(
             ErrorCode::InternalError,

@@ -5937,6 +5937,83 @@ mod tests {
         );
     }
 
+    /// `tools/list` 的 HTTP 级助手：POST /mcp JSON-RPC 信封并返回应答。
+    async fn mcp_tools_list(app: axum::Router, id: i64) -> Value {
+        let mut request = Request::builder()
+            .method(Method::POST)
+            .uri("/mcp")
+            .header("host", "127.0.0.1:18089")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/list","params":{{}}}}"#)
+                    .into_bytes(),
+            ))
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(SocketAddr::from((
+                std::net::Ipv4Addr::LOCALHOST,
+                40000,
+            ))));
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn mcp_tools_list_and_call_follow_the_exposure_tiers() {
+        let app_data = tempdir().unwrap();
+        let runtime = ProxyCrab::open(app_data.path(), Arc::new(LogBuffer::default())).unwrap();
+        // router()（测试用）把请求标记为本机进程内调用，/api/* 无需身份头。
+        let app = router(MitmManager::new(runtime), allow_all());
+
+        // 新工作区缺省档：读开 / 写关 / 执行关，读类工具在 tools/list。
+        let payload = mcp_tools_list(app.clone(), 1).await;
+        assert_eq!(
+            payload["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|tool| tool["name"].clone())
+                .collect::<Vec<_>>(),
+            vec![json!("workflow_runs_list")]
+        );
+        let (status, payload) = flow_request(app.clone(), Method::GET, "/api/mcp-tiers", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            payload["data"],
+            json!({ "read": true, "write": false, "execute": false })
+        );
+
+        // 关闭读档：tools/list 不再出现该工具，tools/call 直呼工具名也硬拒。
+        let body = json!({ "read": false, "write": false, "execute": true }).to_string();
+        let (status, payload) =
+            flow_request(app.clone(), Method::PUT, "/api/mcp-tiers", Some(&body)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            payload["data"],
+            json!({ "read": false, "write": false, "execute": true })
+        );
+        let payload = mcp_tools_list(app.clone(), 2).await;
+        assert_eq!(payload["result"]["tools"].as_array().unwrap().len(), 0);
+        let payload = mcp_tools_call_workflow_runs_list(app.clone(), 3).await;
+        assert_eq!(payload["result"]["isError"], true);
+        assert!(
+            payload["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("该工具类别的 MCP 档位已关闭")
+        );
+
+        // 持久化往返：管理器每请求重读工作区文件，保存后读取一致。
+        let (status, payload) = flow_request(app, Method::GET, "/api/mcp-tiers", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            payload["data"],
+            json!({ "read": false, "write": false, "execute": true })
+        );
+    }
+
     #[tokio::test]
     async fn mcp_tools_call_maps_approval_timeout_to_a_tool_level_error() {
         let app_data = tempdir().unwrap();
