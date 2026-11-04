@@ -366,8 +366,8 @@
 - Create: `crates/proxy-crab-mgr/src/mcp.rs`、`crates/proxy-crab-mgr/src/mcp/protocol.rs`
 - Modify: `crates/proxy-crab-mgr/src/http.rs`、`crates/proxy-crab-mgr/src/permission.rs`、`crates/proxy-crab-mgr/src/dto.rs`、`docs/backend-api.md`
 
-- [ ] **Step 1: `POST /mcp` 端点**：JSON-RPC 2.0 自实现（不引入 MCP SDK），覆盖 `initialize` / `tools/list` / `tools/call`；请求期无状态，每请求独立鉴权。
-- [ ] **Step 2: 鉴权接线**：复用既有身份体系（`LocalLoopback` 或 `Bearer`），**不新建鉴权机制**；`POST /mcp` 自身登记为权限目录 action。
+- [x] **Step 1: `POST /mcp` 端点**：JSON-RPC 2.0 自实现（不引入 MCP SDK），覆盖 `initialize` / `tools/list` / `tools/call`；请求期无状态，每请求独立鉴权。
+- [x] **Step 2: 鉴权接线**：复用既有身份体系（`LocalLoopback` 或 `Bearer`），**不新建鉴权机制**；`POST /mcp` 自身登记为权限目录 action。
 - [ ] **Step 3: 逐次鉴权与审批**：工具调用按「被映射的路由」逐次走 `allow/approval/deny`（更严者生效），审批复用桌面审批窗；审批超时/被拒按 MCP 语义回 `isError` 与可读原因，不静默降级。
 - [ ] **Step 4: 边界**：工具超时、并发上限、客户端断开即取消底层运行；错误不泄漏内部路径与凭据。
 - [ ] **Step 5: 测试**：初始化握手（含协议版本协商）、未授权、审批超时、未知工具/参数、畸形 JSON-RPC、断连取消。
