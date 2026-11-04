@@ -7,8 +7,15 @@
 //! The graph snapshot captured at run creation is stored with the run row so a
 //! run can be rendered even after the workflow definition changes.
 //!
-//! Volume control (plan W5 / Task 21) is owned by the run record storage task;
-//! this module persists what the orchestration hands it. Convergence for orphan
+//! Volume control (plan W5 / Task 21): the write path (`upsert_node_run`)
+//! caps each node record via `cap_node_run_object` (256KB per snapshot) before
+//! it hits SQLite; the whole-record 2MB gate with degradation lives in the
+//! finalize path (`super::run`), the only place that sees every raw snapshot.
+//! Read-side contract (Step 2 「读侧可识别」): reads pass JSON through verbatim
+//! — a truncated snapshot keeps its self-describing
+//! `{ __truncated, preview, originalBytes }` wrapper and is recognized by
+//! `run_record::is_truncated_snapshot`; the read path never re-caps.
+//! Convergence for orphan
 //! `running` rows after a process restart is [`RunStore::converge_interrupted`]
 //! (called once when the run manager opens; plan Task 19 Step 5).
 //!
@@ -182,7 +189,25 @@ impl RunStore {
     }
 
     /// Upsert one node checkpoint (last write wins per `(run_id, node_id)`).
+    ///
+    /// Volume gate (plan Task 21 Step 2 / W5): before the row is written the
+    /// record is serialized to its JSON form and passed through
+    /// `cap_node_run_object`, so `input` / `output` / `iterations` each stay
+    /// within [`SNAPSHOT_MAX_BYTES`]. `None` fields are omitted by
+    /// `skip_serializing_if` and skipped by the cap's null filter alike — the
+    /// serialize round-trip is shape-stable (covered by tests).
     pub fn upsert_node_run(&self, node: &FlowNodeRunRecord) -> Result<()> {
+        let capped = super::run_record::cap_node_run_object(
+            &serde_json::to_value(node).context("serialize node run for volume cap")?,
+            super::run_record::SNAPSHOT_MAX_BYTES,
+            &node.node_id,
+        );
+        let snapshot = |key: &str| -> Option<String> {
+            capped
+                .get(key)
+                .filter(|value| !value.is_null())
+                .map(JsonValue::to_string)
+        };
         self.connection().execute(
             "INSERT INTO flow_node_runs (run_id, node_id, status, input, output, error,
                                          started_at, duration_ms, iterations, updated_at)
@@ -200,12 +225,12 @@ impl RunStore {
                 node.run_id,
                 node.node_id,
                 node.status,
-                node.input.as_ref().map(JsonValue::to_string),
-                node.output.as_ref().map(JsonValue::to_string),
+                snapshot("input"),
+                snapshot("output"),
                 node.error,
                 node.started_at.map(|value| value as i64),
                 node.duration_ms.map(|value| value as i64),
-                node.iterations.as_ref().map(JsonValue::to_string),
+                snapshot("iterations"),
                 node.updated_at as i64,
             ],
         )?;
@@ -343,6 +368,7 @@ fn node_from_row(row: &Row<'_>) -> rusqlite::Result<FlowNodeRunRecord> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::flow::run_record::{is_truncated_snapshot, SNAPSHOT_MAX_BYTES};
     use serde_json::json;
 
     fn sample_run(id: &str) -> FlowRunRecord {
@@ -445,5 +471,73 @@ mod tests {
 
         // Idempotent: nothing left to converge.
         assert_eq!(store.converge_interrupted("again").unwrap(), 0);
+    }
+
+    #[test]
+    fn oversized_node_snapshots_capped_on_write_and_idempotent() {
+        let root = tempfile::tempdir().unwrap();
+        let store = RunStore::open(root.path()).unwrap();
+        store.insert_run(&sample_run("run-1")).unwrap();
+        let oversized_output = json!({ "pad": "x".repeat(SNAPSHOT_MAX_BYTES + 1024) });
+        // 对象超限走截断包装（is_truncated_snapshot 识别口径）；字符串超限
+        // 走截断文本分支，由 run_record 纯函数层测试覆盖。
+        let oversized_item = json!({ "pad": "y".repeat(SNAPSHOT_MAX_BYTES + 1024) });
+        let record = FlowNodeRunRecord {
+            run_id: "run-1".into(),
+            node_id: "n1".into(),
+            status: "success".into(),
+            input: Some(json!({ "a": 1 })),
+            output: Some(oversized_output.clone()),
+            error: None,
+            started_at: Some(1),
+            duration_ms: Some(2),
+            iterations: Some(json!({
+                "total": 1,
+                "done": 1,
+                "records": [{ "index": 0, "item": oversized_item, "output": "ok" }]
+            })),
+            updated_at: 3,
+        };
+        store.upsert_node_run(&record).unwrap();
+        let nodes = store.get_node_runs("run-1").unwrap();
+        assert_eq!(nodes.len(), 1);
+        let stored = &nodes[0];
+
+        // output：读回为截断包装，originalBytes 为原值序列化字节数。
+        let output = stored.output.as_ref().unwrap();
+        let view = is_truncated_snapshot(output).expect("output becomes a truncated wrapper");
+        assert_eq!(view.original_bytes as usize, oversized_output.to_string().len());
+        assert!(output.to_string().len() <= SNAPSHOT_MAX_BYTES);
+        // input 小值透传；iterations 超限 item 收敛、普通字段保留。
+        assert_eq!(stored.input, Some(json!({ "a": 1 })));
+        let iterations = stored.iterations.as_ref().unwrap();
+        assert!(is_truncated_snapshot(&iterations["records"][0]["item"]).is_some());
+        assert_eq!(iterations["records"][0]["output"], json!("ok"));
+        assert_eq!(iterations["total"], 1);
+
+        // 幂等：同记录重复写入读回一致。
+        store.upsert_node_run(stored).unwrap();
+        assert_eq!(store.get_node_runs("run-1").unwrap()[0], *stored);
+    }
+
+    #[test]
+    fn small_node_records_pass_through_untouched() {
+        let root = tempfile::tempdir().unwrap();
+        let store = RunStore::open(root.path()).unwrap();
+        store.insert_run(&sample_run("run-1")).unwrap();
+        let record = FlowNodeRunRecord {
+            run_id: "run-1".into(),
+            node_id: "n1".into(),
+            status: "success".into(),
+            input: Some(json!({ "中文": "值" })),
+            output: Some(json!({ "b": [1, 2] })),
+            error: None,
+            started_at: Some(1),
+            duration_ms: Some(2),
+            iterations: Some(json!({ "records": [{ "index": 0, "item": "x" }] })),
+            updated_at: 3,
+        };
+        store.upsert_node_run(&record).unwrap();
+        assert_eq!(store.get_node_runs("run-1").unwrap()[0], record);
     }
 }

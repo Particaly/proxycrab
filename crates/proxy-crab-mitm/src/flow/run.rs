@@ -52,6 +52,10 @@ use crate::{
         env_sets::{mask_secrets_deep, mask_secrets_in_text},
         host::{FlowCancel, FlowError, FlowErrorKind, FlowHost},
         model::Workflow,
+        run_record::{
+            cap_node_runs_for_record, DEGRADED_SNAPSHOT_BYTES, RUN_RECORD_MAX_BYTES,
+            SNAPSHOT_MAX_BYTES,
+        },
         run_store::{FlowNodeRunRecord, FlowRunRecord, RunStore},
         runtime::{FlowLimits, FlowRuntime},
         store::FlowStore,
@@ -69,6 +73,12 @@ const PAYLOAD_LOAD_BUDGET: Duration = Duration::from_secs(30);
 /// 图快照字节上限（计划 W5 的第三档；三档截断体系由 Task 21 收口，此处
 /// 先落实「恒剥离 pinnedOutput + 超限降级骨架并自说明」）。
 const GRAPH_SNAPSHOT_MAX_BYTES: usize = 256 * 1024;
+
+/// 整条记录 2MB 闸的 run 行开销预留（Step 3）：run 行最大的单字段是建单图
+/// 快照列（上限同 [`GRAPH_SNAPSHOT_MAX_BYTES`]），其余为 id / 时间戳 / 状态
+/// / 错误文案等标量与 JSON 结构开销（留 64KB 余量）；节点快照表的预算即
+/// [`RUN_RECORD_MAX_BYTES`] 减去本预留。
+const RUN_ROW_RESERVED_BYTES: usize = GRAPH_SNAPSHOT_MAX_BYTES + 64 * 1024;
 
 /// 运行记录库不可用时的统一错误文案。
 const RUN_STORE_UNAVAILABLE: &str = "工作流运行记录库不可用";
@@ -491,8 +501,9 @@ impl FlowRunManager {
         }
     }
 
-    /// 以引擎终态摘要定稿：逐节点以摘要中的最终快照覆盖（含 skipped 兜底），
-    /// 再写 run 终态。
+    /// 以引擎终态摘要定稿：整表节点快照先过整条记录 2MB 闸（超限时单快照
+    /// 档逐级对半降级），再逐节点以摘要中的最终快照覆盖（含 skipped 兜底），
+    /// 最后写 run 终态。
     async fn finalize_from_summary(
         &self,
         run_id: &str,
@@ -505,8 +516,15 @@ impl FlowRunManager {
             .get("nodeRuns")
             .and_then(JsonValue::as_object)
             .unwrap_or(&empty);
-        for (node_id, node_run) in node_runs {
-            let record = masked_node_record(run_id, node_id, node_run, secrets);
+        // 整条记录 2MB 闸（Step 3）：定稿是唯一能看到全部原始节点快照的位置，
+        // 先对整表收敛，再逐节点落库；节点写路径的 256KB 档对本结果幂等透传
+        // （降级档 ≤ 64KB < 256KB，重入即原样返回）。
+        let node_runs = finalized_node_run_map(run_id, node_runs, secrets);
+        for (node_id, node_run) in &node_runs {
+            let Ok(record) = serde_json::from_value::<FlowNodeRunRecord>(node_run.clone()) else {
+                tracing::warn!("flow node checkpoint dropped: cap round-trip failed ({node_id})");
+                continue;
+            };
             self.write_node_record(&record).await;
             self.broadcast(FlowRunEvent {
                 run_id: run_id.to_owned(),
@@ -847,6 +865,32 @@ fn masked_node_record(
     }
 }
 
+/// 定稿侧整条记录 2MB 闸（plan Task 21 Step 3）：逐节点脱敏并序列化为落库
+/// 形态后，整张节点快照表过 [`cap_node_runs_for_record`]——单快照档
+/// （[`SNAPSHOT_MAX_BYTES`]）收敛仍超预算（[`RUN_RECORD_MAX_BYTES`] 预留
+/// run 行开销，见 [`RUN_ROW_RESERVED_BYTES`]）时，从 64KB 档逐级对半收紧
+/// 且每次从原始值重算。计划 Files 清单只列 run_store.rs，但 2MB 闸必须看到
+/// 全部原始快照，物理上只能接在定稿组装处（调度 / 取消 / 广播逻辑不动）。
+fn finalized_node_run_map(
+    run_id: &str,
+    node_runs: &serde_json::Map<String, JsonValue>,
+    secrets: &Mutex<Vec<String>>,
+) -> serde_json::Map<String, JsonValue> {
+    let masked: serde_json::Map<String, JsonValue> = node_runs
+        .iter()
+        .map(|(node_id, node_run)| {
+            let record = masked_node_record(run_id, node_id, node_run, secrets);
+            (node_id.clone(), serde_json::to_value(&record).unwrap_or_default())
+        })
+        .collect();
+    cap_node_runs_for_record(
+        &masked,
+        SNAPSHOT_MAX_BYTES,
+        RUN_RECORD_MAX_BYTES.saturating_sub(RUN_ROW_RESERVED_BYTES),
+        DEGRADED_SNAPSHOT_BYTES,
+    )
+}
+
 /// 引擎 env 写回载荷 → 落库表（非对象载荷视为无效写回，返回 `None` 丢弃）。
 fn env_write_table(writes: &JsonValue) -> Option<BTreeMap<String, JsonValue>> {
     Some(
@@ -964,6 +1008,7 @@ mod tests {
     use crate::flow::model::{
         NodeConfig, NodePinnedOutput, Position, WorkflowEdge, WorkflowNode, WorkflowNodeType,
     };
+    use crate::flow::run_record::is_truncated_snapshot;
     use serde_json::Value;
 
     fn sample_workflow() -> Workflow {
@@ -1095,5 +1140,43 @@ mod tests {
         assert_eq!(table["token"], json!("abc"));
         assert!(env_write_table(&json!([1, 2])).is_none());
         assert!(env_write_table(&Value::Null).is_none());
+    }
+
+    #[test]
+    fn finalize_record_gate_degrades_to_64kb_wrappers_over_2mb() {
+        let secrets = Mutex::new(Vec::new());
+        // 20 节点 × 300KB 输出：256KB 单快照档整表 ≈ 5MB 超预算，降级链在
+        // 64KB 档收敛（20 × 64KB ≈ 1.3MB ≤ 预留后的 record_max）。
+        let node_runs: serde_json::Map<String, JsonValue> = (0..20)
+            .map(|i| {
+                let node_id = format!("n{i}");
+                let record = masked_node_record(
+                    "run-1",
+                    &node_id,
+                    &json!({ "status": "success", "output": { "pad": "x".repeat(300 * 1024) } }),
+                    &secrets,
+                );
+                (node_id, serde_json::to_value(&record).unwrap())
+            })
+            .collect();
+        let capped = finalized_node_run_map("run-1", &node_runs, &secrets);
+        let total: usize = capped.values().map(|value| value.to_string().len()).sum();
+        assert!(total <= RUN_RECORD_MAX_BYTES);
+
+        // 逐节点落库并读回：64KB 档截断包装，originalBytes 保留原始字节数。
+        let root = tempfile::tempdir().unwrap();
+        let store = RunStore::open(root.path()).unwrap();
+        for value in capped.values() {
+            let record: FlowNodeRunRecord = serde_json::from_value(value.clone()).unwrap();
+            store.upsert_node_run(&record).unwrap();
+        }
+        let nodes = store.get_node_runs("run-1").unwrap();
+        assert_eq!(nodes.len(), 20);
+        for node in &nodes {
+            let output = node.output.as_ref().expect("output present");
+            let view = is_truncated_snapshot(output).expect("degraded wrapper");
+            assert_eq!(view.original_bytes as usize, 300 * 1024 + 10);
+            assert!(output.to_string().len() <= DEGRADED_SNAPSHOT_BYTES);
+        }
     }
 }
