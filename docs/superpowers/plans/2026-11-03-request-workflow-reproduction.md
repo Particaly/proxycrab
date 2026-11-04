@@ -258,9 +258,9 @@
 - Modify: `src/components/flow/config/*`
 
 - [x] **Step 1: 模板语义对齐**：四命名空间（`node.<refId>.<path>` / `input` / `var` / `env`）+ 裸路径与 `$json` 别名；渲染永不因缺数据失败（空串 + 分类 warning）。
-- [ ] **Step 2: 表达式输入**：建议（深路径补全、样本深度/条数上限）、防抖求值预览、缺失引用告警展示。
-- [ ] **Step 3: IO 面板**：节点入参/出参字段树、chip 复制、**拖拽映射**（自定义 MIME）、路径截断与搜索、试跑结果标注。
-- [ ] **Step 4: 试跑入参**：编辑器内试跑的结果并入会话态，供下游节点预览。
+- [x] **Step 2: 表达式输入**：建议（深路径补全、样本深度/条数上限）、防抖求值预览、缺失引用告警展示。
+- [x] **Step 3: IO 面板**：节点入参/出参字段树、chip 复制、**拖拽映射**（自定义 MIME）、路径截断与搜索、试跑结果标注。
+- [x] **Step 4: 试跑入参**：编辑器内试跑的结果并入会话态，供下游节点预览。
 
 ### Task 16: 逻辑节点配置（条件构建器 / 循环 / 延时 / 变量 / 断言 / 转换）
 
@@ -306,7 +306,7 @@
 - Modify: `crates/proxy-crab-mgr/src/{http.rs,permission.rs,manager.rs}`
 
 - [x] **Step 1: 运行生命周期**：建单（`running` + 图快照）→ 逐节点 checkpoint → 定稿；运行注册表与取消（AbortController 等价物，取消优先于失败）。
-- [ ] **Step 2: 进度事件**：节点级与运行级事件经既有变更广播机制推送到前端（复用 `proxycrab://http-api-change` / `/ui-api/changes` 形态）。
+- [x] **Step 2: 进度事件**：节点级与运行级事件经既有变更广播机制推送到前端（复用 `proxycrab://http-api-change` / `/ui-api/changes` 形态）。
 - [x] **Step 3: 前提校验**：代理运行中、目标 Session 存在、工作流图合法；不满足时明确报错不建单（或在建单后立即失败并给出原因）。
 - [x] **Step 4: 写队列**：逐 run 串行化写回，防 checkpoint 交叠丢失；定稿排在挂起写之后。
 - [x] **Step 5: 测试**：取消、并行度、写队列交错、进程重启后孤儿 `running` → `interrupted`（常驻进程下对应「重启扫描收敛」）。
