@@ -31,8 +31,26 @@ import {
 } from "../components/flow/node-issue-badge";
 import { notifyEditLocked } from "../components/flow/canvas-edit-lock";
 import { getWorkflowNodeMeta, nodeSummary } from "../components/flow/node-meta";
-import { takenRefKeys } from "../components/flow/config/node-config";
+import {
+  mergeConfigShard,
+  NODE_SHARD_KEYS,
+  takenRefKeys,
+} from "../components/flow/config/node-config";
 import ReplayNodeConfig from "../components/flow/config/ReplayNodeConfig.vue";
+import ConditionBuilder from "../components/flow/config/ConditionBuilder.vue";
+import LoopConfig from "../components/flow/config/LoopConfig.vue";
+import DelayConfig from "../components/flow/config/DelayConfig.vue";
+import SetVariableConfig from "../components/flow/config/SetVariableConfig.vue";
+import AssertConfig from "../components/flow/config/AssertConfig.vue";
+import TransformConfig from "../components/flow/config/TransformConfig.vue";
+import StickyNoteConfig from "../components/flow/config/StickyNoteConfig.vue";
+import type { ConditionConfigShard } from "../components/flow/config/condition-tree";
+import type { LoopConfigShard } from "../components/flow/config/loop-config";
+import type { DelayConfigShard } from "../components/flow/config/delay-config";
+import type { SetVariableConfigShard } from "../components/flow/config/set-variable-config";
+import type { AssertConfigShard } from "../components/flow/config/assert-config";
+import type { TransformConfigShard } from "../components/flow/config/transform-config";
+import type { StickyNoteConfigShard } from "../components/flow/config/sticky-note-config";
 import NodeIoDrawer from "../components/flow/NodeIoDrawer.vue";
 import { collectJsonPaths } from "../components/expression-input/input-paths";
 import { appStore, reportError } from "../stores/app";
@@ -133,6 +151,30 @@ function updateSelectedRefId(refId: string | null): void {
   if (refId === null) delete next.refId;
   else next.refId = refId;
   replaceNode(next);
+}
+
+// ---------- 逻辑节点配置表单接线（Task 16 薄片 B） ----------
+
+/** 逻辑节点配置表单的保存门控面（各 16A 表单 defineExpose validate()）。 */
+interface ConfigFormInstance {
+  validate: () => string | null;
+}
+
+/** 当前挂载的选中节点配置表单（按类型分派互斥，任意时刻至多挂一个）。 */
+const activeFormRef = ref<ConfigFormInstance | null>(null);
+
+/** 选中节点 config 的分片视图（表单按各自键域防御读取，多余键忽略）。 */
+function shardView<T extends object>(): T {
+  const config: WorkflowNodeConfig | undefined = selectedNode.value?.config;
+  return (config ?? {}) as T;
+}
+
+/** 分片表单上抛：按节点类型的分片键域合并回 config（缺席键删除），再走既有整体替换。 */
+function updateSelectedShard(shard: object): void {
+  const node = selectedNode.value;
+  const domainKeys = node ? NODE_SHARD_KEYS[node.type] : undefined;
+  if (!node || !domainKeys) return;
+  updateSelectedConfig(mergeConfigShard(node.config, shard, domainKeys));
 }
 
 function nodeLabel(node: WorkflowNode): string {
@@ -472,6 +514,12 @@ function redoWorkflow(): void {
 
 async function save(): Promise<void> {
   if (!workflow.value || saving.value || !dirty.value) return;
+  // 保存门控：选中节点的逻辑配置表单校验不过则阻止（错误已在表单内就地标出）。
+  const formError = activeFormRef.value?.validate() ?? null;
+  if (formError !== null) {
+    appStore.toast(`保存被阻止：${formError}`, "error");
+    return;
+  }
   saving.value = true;
   try {
     const updated = await api.saveWorkflowGraph(workflow.value.id, {
@@ -737,7 +785,67 @@ onBeforeUnmount(() => {
             <span class="wf-field-label">配置摘要</span>
             <span class="text-secondary">{{ nodeSummary(selectedNode) }}</span>
           </div>
-          <div class="wf-drawer-hint text-faint">节点配置编辑将在后续任务提供</div>
+          <ConditionBuilder
+            v-if="selectedNode.type === 'condition'"
+            :key="selectedNode.id"
+            ref="activeFormRef"
+            :model-value="shardView<ConditionConfigShard>()"
+            :variable-names="selectedVariableNames"
+            :input-paths="selectedInputPaths"
+            :available-node-ids="selectedAvailableNodes"
+            :disabled="runLocked"
+            @update:model-value="updateSelectedShard"
+          />
+          <LoopConfig
+            v-else-if="selectedNode.type === 'loop'"
+            :key="selectedNode.id"
+            ref="activeFormRef"
+            :model-value="shardView<LoopConfigShard>()"
+            :disabled="runLocked"
+            @update:model-value="updateSelectedShard"
+          />
+          <DelayConfig
+            v-else-if="selectedNode.type === 'delay'"
+            :key="selectedNode.id"
+            ref="activeFormRef"
+            :model-value="shardView<DelayConfigShard>()"
+            :disabled="runLocked"
+            @update:model-value="updateSelectedShard"
+          />
+          <SetVariableConfig
+            v-else-if="selectedNode.type === 'setVariable'"
+            :key="selectedNode.id"
+            ref="activeFormRef"
+            :model-value="shardView<SetVariableConfigShard>()"
+            :node-options="selectedAvailableNodes"
+            :disabled="runLocked"
+            @update:model-value="updateSelectedShard"
+          />
+          <AssertConfig
+            v-else-if="selectedNode.type === 'assert'"
+            :key="selectedNode.id"
+            ref="activeFormRef"
+            :model-value="shardView<AssertConfigShard>()"
+            :disabled="runLocked"
+            @update:model-value="updateSelectedShard"
+          />
+          <TransformConfig
+            v-else-if="selectedNode.type === 'transform'"
+            :key="selectedNode.id"
+            ref="activeFormRef"
+            :model-value="shardView<TransformConfigShard>()"
+            :disabled="runLocked"
+            @update:model-value="updateSelectedShard"
+          />
+          <StickyNoteConfig
+            v-else-if="selectedNode.type === 'stickyNote'"
+            :key="selectedNode.id"
+            ref="activeFormRef"
+            :model-value="shardView<StickyNoteConfigShard>()"
+            :disabled="runLocked"
+            @update:model-value="updateSelectedShard"
+          />
+          <div v-else class="wf-drawer-hint text-faint">节点配置编辑将在后续任务提供</div>
         </template>
       </div>
     </aside>

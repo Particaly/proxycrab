@@ -8,6 +8,8 @@ import {
   headerRowsFromBaseline,
   isSpecialHeader,
   manualHeadersFromRows,
+  mergeConfigShard,
+  NODE_SHARD_KEYS,
   overrideFromHeaderRows,
   parseRetryInput,
   parseTimeoutMs,
@@ -409,5 +411,59 @@ describe("refId 短码", () => {
     const generated = generateRefId(new Set(["aaaaa"]));
     expect(generated).toMatch(/^[A-Za-z]{5}$/);
     expect(generated).not.toBe("aaaaa");
+  });
+});
+
+describe("mergeConfigShard（Task 16 薄片 B 挂载接线）", () => {
+  const LOOP_KEYS = NODE_SHARD_KEYS.loop!;
+
+  it("分片给出的键覆盖，键域外既有字段原样保留", () => {
+    expect(
+      mergeConfigShard(
+        { items: [1], label: "keep", pinnedOutput: { value: 1 } },
+        { items: [2, 3], maxIterations: 5 },
+        LOOP_KEYS,
+      ),
+    ).toEqual({ items: [2, 3], maxIterations: 5, label: "keep", pinnedOutput: { value: 1 } });
+  });
+
+  it("分片缺席的键域键删除（清空不残留旧值），键域外字段不受影响", () => {
+    expect(
+      mergeConfigShard({ csvText: "a,b", csvDelimiter: "\t", items: [1] }, {}, LOOP_KEYS),
+    ).toEqual({});
+    expect(mergeConfigShard({ items: [1], preProcess: "x" }, { items: [2] }, LOOP_KEYS)).toEqual({
+      items: [2],
+      preProcess: "x",
+    });
+  });
+
+  it("分片显式 undefined 视作清空删除（缺席键同样按键域删除）", () => {
+    expect(
+      mergeConfigShard(
+        { items: [1], maxIterations: 3 },
+        { items: undefined, maxIterations: 5 },
+        LOOP_KEYS,
+      ),
+    ).toEqual({ maxIterations: 5 });
+  });
+
+  it("纯函数：不修改入参 config", () => {
+    const config: Record<string, unknown> = { durationMs: 100 };
+    mergeConfigShard(config, {}, NODE_SHARD_KEYS.delay!);
+    expect(config).toEqual({ durationMs: 100 });
+  });
+
+  it("NODE_SHARD_KEYS 覆盖七类逻辑节点", () => {
+    expect(Object.keys(NODE_SHARD_KEYS).sort()).toEqual([
+      "assert",
+      "condition",
+      "delay",
+      "loop",
+      "setVariable",
+      "stickyNote",
+      "transform",
+    ]);
+    expect(NODE_SHARD_KEYS.condition).toEqual(["condition", "conditionRules", "expression"]);
+    expect(NODE_SHARD_KEYS.delay).toEqual(["durationMs"]);
   });
 });
