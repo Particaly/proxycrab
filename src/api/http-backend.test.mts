@@ -218,7 +218,7 @@ test("MCP audit reads the recent-call list with an optional limit", async () => 
   };
   const fetchMock = vi
     .fn()
-    .mockResolvedValue(new Response(JSON.stringify({ ok: true, data: page })));
+    .mockImplementation(async () => new Response(JSON.stringify({ ok: true, data: page })));
   vi.stubGlobal("fetch", fetchMock);
   const backend = createHttpBackend("http://backend:18089", "test-key", {
     target: "cli",
