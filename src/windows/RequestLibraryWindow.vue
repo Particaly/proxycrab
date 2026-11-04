@@ -1,13 +1,21 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { Io5Download } from "vue-icons-plus/io5";
 import { useBackend } from "../api";
 import type { HttpApiChange, RequestLibraryEntry, RequestLibrarySource } from "../api/types";
 import { appStore, reportError } from "../stores/app";
-import { confirmDialog } from "../stores/dialog";
+import { confirmDialog, openDropdownMenu } from "../stores/dialog";
 import { HTTP_API_CHANGE_EVENT } from "../stores/http-api-sync";
 import RequestLibraryList from "../components/request-library/RequestLibraryList.vue";
 import RequestLibraryDetail from "../components/request-library/RequestLibraryDetail.vue";
 import RequestLibraryImportDialog from "../components/request-library/RequestLibraryImportDialog.vue";
+import { copyText as writeClipboardText } from "../utils/clipboard";
+import {
+  REQUEST_EXPORT_FORMATS,
+  exportRequestSnapshot,
+  type RequestExportFormatId,
+} from "../utils/request-export";
+import { downloadRequestExport } from "../utils/request-export-download";
 import {
   buildRequestGroups,
   requestMethod,
@@ -292,6 +300,66 @@ async function importRequests(payload: ImportSubmitPayload): Promise<ImportSubmi
   return { imported, failed, skipped: duplicates.length };
 }
 
+// ---- 导出入口（Task 9；独立区块，仅针对当前选中条目，与列表/导入逻辑无耦合） ----
+
+/** 结果反馈文案（null = 无反馈）；1.5s 后自动清除。 */
+const exportFeedback = ref<string | null>(null);
+const exportFailed = ref(false);
+let exportFeedbackTimer: number | undefined;
+
+/** 展示导出反馈并重置清除计时（重复触发时重置）。 */
+function showExportFeedback(message: string, failed: boolean): void {
+  exportFeedback.value = message;
+  exportFailed.value = failed;
+  if (exportFeedbackTimer !== undefined) window.clearTimeout(exportFeedbackTimer);
+  exportFeedbackTimer = window.setTimeout(() => {
+    exportFeedbackTimer = undefined;
+    exportFeedback.value = null;
+  }, 1500);
+}
+
+/** 「导出为…」下拉菜单：六格式按 REQUEST_EXPORT_FORMATS 顺序。 */
+function openExportMenu(event: MouseEvent): void {
+  if (!selected.value) return;
+  openDropdownMenu(
+    event.currentTarget as HTMLElement,
+    REQUEST_EXPORT_FORMATS.map((format) => ({
+      label: format.label,
+      action: () => void runExport(format.id),
+    })),
+  );
+}
+
+/**
+ * 执行一次导出：download 型（HAR / Postman）经既有 saveFile 通路保存（用户
+ * 取消时提示）；copy 型（cURL / fetch / axios / Python）复制到剪贴板。
+ * 快照无 entry 的条目（防御性形态）生成空串：不做任何动作。
+ */
+async function runExport(format: RequestExportFormatId): Promise<void> {
+  const entry = selected.value;
+  if (!entry) return;
+  const meta = REQUEST_EXPORT_FORMATS.find((candidate) => candidate.id === format);
+  if (meta?.kind === "download" && (format === "har" || format === "postman")) {
+    try {
+      const saved = await downloadRequestExport(backend, entry, format);
+      // 用户取消（saveFile 返回 null）不做反馈，与既有导出窗一致。
+      if (saved) showExportFeedback(`已开始下载 ${meta.label}`, false);
+    } catch (error) {
+      reportError(error, "导出请求失败");
+    }
+    return;
+  }
+  const content = exportRequestSnapshot(entry, format);
+  if (content === "") return;
+  try {
+    await writeClipboardText(content);
+    showExportFeedback(`已复制 ${meta?.label ?? format}`, false);
+  } catch {
+    appStore.toast("复制失败", "error");
+    showExportFeedback("复制失败", true);
+  }
+}
+
 function onHttpApiChange(event: Event): void {
   const { resources } = (event as CustomEvent<HttpApiChange>).detail;
   if (!resources.includes("all") && !resources.includes("request_library")) return;
@@ -307,6 +375,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   if (keywordTimer !== undefined) window.clearTimeout(keywordTimer);
+  if (exportFeedbackTimer !== undefined) window.clearTimeout(exportFeedbackTimer);
   window.removeEventListener(HTTP_API_CHANGE_EVENT, onHttpApiChange);
 });
 </script>
@@ -364,6 +433,18 @@ onBeforeUnmount(() => {
       :import-requests="importRequests"
       @close="importOpen = false"
     />
+    <!-- 导出（Task 9；独立区块：浮在详情右下角，仅当前选中条目可导出） -->
+    <div v-if="selected" class="rl-export-bar">
+      <span
+        v-if="exportFeedback"
+        class="rl-export-feedback"
+        :class="{ failed: exportFailed }"
+        aria-live="polite"
+      >
+        {{ exportFeedback }}
+      </span>
+      <button class="btn" @click="openExportMenu"><Io5Download :size="13" /> 导出为…</button>
+    </div>
   </div>
 </template>
 
@@ -373,6 +454,31 @@ onBeforeUnmount(() => {
   min-height: 0;
   min-width: 0;
   display: flex;
+  position: relative;
+}
+
+/* 导出区块：浮在详情右下角，不占用详情布局空间（独立于列表/详情/导入）。 */
+.rl-export-bar {
+  position: absolute;
+  right: var(--space-3);
+  bottom: var(--space-3);
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.rl-export-feedback {
+  font-size: 11px;
+  color: var(--success);
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 3px 8px;
+}
+
+.rl-export-feedback.failed {
+  color: var(--danger);
 }
 
 .rl-error {
