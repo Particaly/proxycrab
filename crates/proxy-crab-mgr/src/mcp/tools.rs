@@ -49,13 +49,26 @@ pub fn tool_call_permits() -> Arc<Semaphore> {
     TOOL_CALL_PERMITS.clone()
 }
 
-/// 单个策展工具的静态描述：名称、说明、映射路由与入参契约。
+/// 工具档位（plan Task 25 Step 2）：MCP 暴露三档开关按该分级门控。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ToolTier {
+    /// 读类：只读查询（如列表/详情）。
+    Read,
+    /// 写类：修改工作区状态（如保存/删除）。
+    Write,
+    /// 执行类：触发运行/工作流等有副作用的操作。
+    Execute,
+}
+
+/// 单个策展工具的静态描述：名称、说明、映射路由、档位分级与入参契约。
 pub struct ToolDescriptor {
     pub name: &'static str,
     pub description: &'static str,
     /// 映射的管理路由 `(METHOD, PATH)`；鉴权档位由 permission 层对该
     /// 路由登记的 action 决定，未登记路由的工具不得上架。
     pub route: (&'static str, &'static str),
+    /// 工具档位分级：read/write/execute，MCP 三档开关据此门控。
+    pub tier: ToolTier,
     /// 入参契约：`(参数名, JSON Schema 类型, 说明)`，与映射路由的
     /// 查询/请求体字段保持一致。
     pub params: &'static [(&'static str, &'static str, &'static str)],
@@ -66,6 +79,7 @@ const REGISTRY: &[ToolDescriptor] = &[ToolDescriptor {
     name: "workflow_runs_list",
     description: "List workflow runs, mirroring GET /api/flow/runs.",
     route: ("GET", "/api/flow/runs"),
+    tier: ToolTier::Read,
     params: &[
         ("workflowId", "string", "Filter by workflow id."),
         ("status", "string", "Filter by run status."),
@@ -280,6 +294,7 @@ const TEST_SLOW_TOOL: ToolDescriptor = ToolDescriptor {
     name: "test_slow_tool",
     description: "test-only long task stub",
     route: ("GET", "/api/flow/runs"),
+    tier: ToolTier::Read,
     params: &[],
 };
 
