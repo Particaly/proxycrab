@@ -13,6 +13,16 @@
 //! 超时（超时即丢弃执行 future，底层工作随之取消）、断连取消（工具
 //! 执行内联 await 于 HTTP 处理器，客户端断开时 axum/hyper 丢弃处理器
 //! future 即取消底层工作）、错误文案统一映射（不含文件路径与凭据）。
+//!
+//! 脱敏绑定与审计（plan Task 25 Step 4）：`tools/call` 执行前经
+//! `PermissionManager::redaction_script` 按调用者身份解析脱敏脚本绑定
+//! （与 HTTP API 的 `authorize_request` 对 `/api/*` 同源解析）。有绑定
+//! 时执行段改用 `manager.reader(Some(&script), "mcp")`，工具结果与
+//! `/api/*` 读路径同走脱敏（脚本内可用 `context.api == "mcp"` 区分入
+//! 口）；解析失败按 `ManagerError` 拒绝（fail closed），无绑定用原
+//! manager。每次调用（权限拒绝与执行完成）均落一条审计到工作区
+//! `flow/mcp-audit.json`：只存截断后的入参摘要，不存结果体；追加失败
+//! 仅告警，不阻断工具调用（审计是辅助观测数据，不是关键路径）。
 
 use std::{
     sync::{Arc, LazyLock},
@@ -24,6 +34,7 @@ use serde_json::{Value, json};
 use tokio::sync::Semaphore;
 
 use proxy_crab_mitm::{
+    flow::mcp_audit::McpAuditEntry,
     flow::mcp_tiers::McpTiers,
     storage::{BodySide, read_body_payload},
 };
@@ -437,6 +448,7 @@ pub async fn call(request: &RpcRequest, context: &ToolCallContext, timeout: Dura
             "tool route is missing from the permission catalog",
         );
     };
+    let arguments_json = arguments.to_string();
     let denied = context
         .permissions
         .check_permission(PermissionAction {
@@ -447,26 +459,130 @@ pub async fn call(request: &RpcRequest, context: &ToolCallContext, timeout: Dura
             source: None,
             content_type: Some("application/json".into()),
             content_length: None,
-            body_preview: Some(arguments.to_string()),
+            body_preview: Some(arguments_json.clone()),
             body_preview_truncated: false,
         })
         .await;
+    // 审计身份解析（plan Task 25 Step 4）：本地直连记 "local"，分享身份
+    // 记其稳定 id，解析失败记 "unresolved"。
+    let identity = match context.permissions.share_identity(&context.credential).await {
+        Ok(None) => "local".to_owned(),
+        Ok(Some(identity)) => identity.id,
+        Err(_) => "unresolved".to_owned(),
+    };
     if let Some(denied) = denied {
-        return tool_error(&request.id, name, &denial_reason(&denied));
+        let reason = denial_reason(&denied);
+        record_audit(
+            context,
+            McpAuditEntry::new(
+                name,
+                identity.as_str(),
+                &arguments_json,
+                "denied",
+                "denied",
+                Some(reason.clone()),
+            ),
+        )
+        .await;
+        return tool_error(&request.id, name, &reason);
     }
+    // 脱敏绑定（plan Task 25 Step 4）：有绑定时执行段换成 reader
+    // (Some(&script), "mcp")，工具结果与 HTTP API 同路径脱敏；reader 解析
+    // 失败按 ManagerError 走 tool_error（fail closed），无绑定用原 manager。
+    let manager = match context.permissions.redaction_script(&context.credential).await {
+        Ok(Some(script)) => match context.manager.reader(Some(&script), "mcp") {
+            Ok(reader) => reader,
+            Err(error) => {
+                let reason = manager_error_reason(&error);
+                record_audit(
+                    context,
+                    McpAuditEntry::new(
+                        name,
+                        identity.as_str(),
+                        &arguments_json,
+                        "error",
+                        "allowed",
+                        Some(reason.clone()),
+                    ),
+                )
+                .await;
+                return tool_error(&request.id, name, &reason);
+            }
+        },
+        Ok(None) => context.manager.clone(),
+        Err(denied) => {
+            let reason =
+                manager_error_reason(&ManagerError::internal(denied.message));
+            record_audit(
+                context,
+                McpAuditEntry::new(
+                    name,
+                    identity.as_str(),
+                    &arguments_json,
+                    "error",
+                    "allowed",
+                    Some(reason.clone()),
+                ),
+            )
+            .await;
+            return tool_error(&request.id, name, &reason);
+        }
+    };
     // 执行段带超时；超时即丢弃执行 future（底层工作随之取消）。整个
     // 调用内联 await 于 HTTP 处理器，客户端断开同样以丢弃取消底层。
-    match tokio::time::timeout(timeout, execute(tool.name, &arguments, &context.manager)).await {
-        Ok(Ok(value)) => protocol::success(
-            &request.id,
-            json!({ "content": [{ "type": "text", "text": value.to_string() }] }),
-        ),
-        Ok(Err(error)) => tool_error(&request.id, name, &manager_error_reason(&error)),
-        Err(_) => tool_error(
-            &request.id,
-            name,
-            &format!("execution timed out after {}s", timeout.as_secs()),
-        ),
+    match tokio::time::timeout(timeout, execute(tool.name, &arguments, &manager)).await {
+        Ok(Ok(value)) => {
+            record_audit(
+                context,
+                McpAuditEntry::new(name, identity.as_str(), &arguments_json, "ok", "allowed", None),
+            )
+            .await;
+            protocol::success(
+                &request.id,
+                json!({ "content": [{ "type": "text", "text": value.to_string() }] }),
+            )
+        }
+        Ok(Err(error)) => {
+            let reason = manager_error_reason(&error);
+            record_audit(
+                context,
+                McpAuditEntry::new(
+                    name,
+                    identity.as_str(),
+                    &arguments_json,
+                    "error",
+                    "allowed",
+                    Some(reason.clone()),
+                ),
+            )
+            .await;
+            tool_error(&request.id, name, &reason)
+        }
+        Err(_) => {
+            let reason = format!("execution timed out after {}s", timeout.as_secs());
+            record_audit(
+                context,
+                McpAuditEntry::new(
+                    name,
+                    identity.as_str(),
+                    &arguments_json,
+                    "error",
+                    "allowed",
+                    Some(reason.clone()),
+                ),
+            )
+            .await;
+            tool_error(&request.id, name, &reason)
+        }
+    }
+}
+
+/// 审计落盘（plan Task 25 Step 4，best-effort）：追加失败只告警，绝不
+/// 阻断工具调用——审计是辅助观测数据，不是关键路径。追加经 manager
+/// trait 走 blocking 通道（审计文件小，单次原子写，无需额外异步化）。
+async fn record_audit(context: &ToolCallContext, entry: McpAuditEntry) {
+    if let Err(error) = context.manager.append_mcp_audit(entry).await {
+        tracing::warn!("failed to append MCP tool call audit entry: {}", error.message);
     }
 }
 

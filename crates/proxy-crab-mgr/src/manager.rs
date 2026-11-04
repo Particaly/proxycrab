@@ -13,6 +13,7 @@ use proxy_crab_mitm::{
         env_sets::{
             self, EnvGlobalVariables, mask_env_set, mask_globals, restore_masked_secret_values,
         },
+        mcp_audit::McpAuditEntry,
         mcp_tiers::McpTiers,
         model::{Project, Workflow, WORKFLOW_SCHEMA_VERSION, generate_ref_id},
         request_library::{CapturedRequest, RequestLibraryEntry, RequestSource},
@@ -382,6 +383,11 @@ pub trait ProxyCrabManager: Send + Sync {
     async fn env_write_back(&self, request: EnvWriteBackRequest) -> ManagerResult<EnvWriteBackResult>;
     async fn mcp_tiers(&self) -> ManagerResult<McpTiers>;
     async fn replace_mcp_tiers(&self, tiers: McpTiers) -> ManagerResult<McpTiers>;
+    /// 追加一条 MCP 工具调用审计（plan Task 25 Step 4）。调用方（MCP 工具
+    /// 链）以 best-effort 语义使用：追加失败只告警，不阻断工具调用。
+    async fn append_mcp_audit(&self, entry: McpAuditEntry) -> ManagerResult<()>;
+    /// 查询 MCP 工具调用审计条目（seq 倒序，最新在前）。
+    async fn mcp_audit(&self, limit: usize) -> ManagerResult<Vec<McpAuditEntry>>;
 }
 
 #[derive(Clone)]
@@ -2959,6 +2965,26 @@ impl ProxyCrabManager for MitmManager {
             let store = FlowStore::open(&root).map_err(map_error)?;
             store.save_mcp_tiers(&tiers).map_err(map_error)?;
             Ok(tiers)
+        })
+        .await
+    }
+
+    async fn append_mcp_audit(&self, entry: McpAuditEntry) -> ManagerResult<()> {
+        let root = self.runtime.workspace().root().to_path_buf();
+        self.run_blocking("append mcp audit", move || {
+            FlowStore::open(&root)
+                .and_then(|store| store.append_mcp_audit(&entry))
+                .map_err(map_error)
+        })
+        .await
+    }
+
+    async fn mcp_audit(&self, limit: usize) -> ManagerResult<Vec<McpAuditEntry>> {
+        let root = self.runtime.workspace().root().to_path_buf();
+        self.run_blocking("read mcp audit", move || {
+            FlowStore::open(&root)
+                .and_then(|store| store.mcp_audit_entries(limit))
+                .map_err(map_error)
         })
         .await
     }}
