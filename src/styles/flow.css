@@ -7,8 +7,18 @@
  * 类名前缀 flow-，避免与全局样式冲突。
  */
 @import "@vue-flow/core/dist/style.css";
+@import "@vue-flow/minimap/dist/style.css";
 
 /* ---------- 画布容器 ---------- */
+
+.flow-canvas-root {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
 
 .flow-canvas {
   flex: 1;
@@ -58,6 +68,7 @@
 
 /* 卡片本体：176×56 基准，类型色描边 + 圆点由 --node-color 注入 */
 .flow-node {
+  position: relative;
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -156,4 +167,209 @@
   line-height: 1;
   color: var(--text-faint);
   pointer-events: none;
+}
+
+/* ---------- 常驻问题徽标（右上角悬浮计数） ---------- */
+
+.flow-node-issue {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--warning);
+  color: #1f2937;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 15px;
+  text-align: center;
+  cursor: help;
+}
+.flow-node-issue.error {
+  background: var(--danger);
+  color: #fff;
+}
+
+/* ---------- 行内重命名输入框 ---------- */
+
+.flow-node-name-input {
+  flex: 1;
+  min-width: 0;
+  height: 18px;
+  padding: 0 3px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  outline: none;
+}
+
+/* ---------- 节点面板（画布左上悬浮） ---------- */
+
+.flow-node-panel {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 10;
+  width: 92px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-popup);
+}
+
+.flow-node-panel-title {
+  padding: 2px 4px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-faint);
+}
+
+.flow-node-panel-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 4px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  color: var(--text);
+  cursor: grab;
+  user-select: none;
+}
+.flow-node-panel-item:hover {
+  background: var(--bg-hover);
+}
+.flow-node-panel-item.locked {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.flow-node-panel-dot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+}
+
+.flow-node-panel-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- 画布工具条（顶部居中悬浮） ---------- */
+
+.flow-toolbar {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-popup);
+}
+
+.flow-toolbar-divider {
+  width: 1px;
+  height: 16px;
+  margin: 0 3px;
+  background: var(--border);
+}
+
+/* ---------- 对齐辅助线 ---------- */
+
+.flow-alignment-guide {
+  position: absolute;
+  z-index: 5;
+  pointer-events: none;
+}
+.flow-alignment-guide.is-x {
+  border-left: 1px dashed var(--accent);
+}
+.flow-alignment-guide.is-y {
+  border-top: 1px dashed var(--accent);
+}
+
+/* ---------- 拖线到空白的添加菜单 ---------- */
+
+.flow-add-menu {
+  position: absolute;
+  z-index: 20;
+  min-width: 104px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-popup);
+}
+
+.flow-add-menu-title {
+  padding: 2px 4px 4px;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.flow-add-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  font-size: 12px;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.flow-add-menu-item:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+.flow-add-menu-item:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.flow-add-menu-dot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+}
+
+/* ---------- 框选矩形与小地图（Vue Flow 结构件的主题化） ---------- */
+
+.flow-canvas .vue-flow__selection {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+}
+
+.flow-canvas .vue-flow__minimap {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-panel);
+  overflow: hidden;
+}
+.flow-canvas .vue-flow__minimap-mask {
+  stroke: var(--accent);
+  fill: color-mix(in srgb, var(--bg-app) 72%, transparent);
 }

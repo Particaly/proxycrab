@@ -1,6 +1,5 @@
 import type { WorkflowEdge, WorkflowNode, WorkflowNodeType } from "../../api/types";
 import type { NodeIssue } from "./node-issue-badge";
-import { WORKFLOW_NODE_META } from "./node-meta";
 
 /**
  * 工作流图模型 ⇄ Vue Flow 视图模型的纯函数转换，以及脏比较口径。
@@ -173,7 +172,10 @@ export function applyNodePositions(
  * 图签名：把节点（含配置）与连线的语义内容归一为确定字符串，供脏比较。
  * 节点顺序无关（排序后拼接）；坐标以数值原样进入签名。
  */
-export function graphSignature(nodes: WorkflowNode[], edges: WorkflowEdge[]): string {
+export function graphSignature(
+  nodes: readonly WorkflowNode[],
+  edges: readonly WorkflowEdge[],
+): string {
   const nodePart = nodes
     .map(
       (node) =>

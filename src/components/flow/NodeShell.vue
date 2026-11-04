@@ -1,5 +1,16 @@
+<script lang="ts">
+import type { InjectionKey } from "vue";
+
+/**
+ * 节点重命名的注入键（Canvas provide，NodeShell inject）：双击节点名进入
+ * 行内编辑，提交时回调 (nodeId, label)。锁定等守卫由 Canvas 侧回调负责。
+ */
+export const NODE_RENAME_KEY: InjectionKey<(nodeId: string, label: string) => void> =
+  Symbol("flow-node-rename");
+</script>
+
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, inject, ref } from "vue";
 import { Handle, Position } from "@vue-flow/core";
 import type { NodeProps } from "@vue-flow/core";
 import type { WorkflowNode } from "../../api/types";
@@ -12,8 +23,12 @@ import { badgeIssues, type NodeIssue } from "./node-issue-badge";
  * 便签无手柄且以 config.color 为底色。不引入 Vue Flow 默认主题。
  * data.issues 为窗口合并后的节点粒度校验问题（视图层旁路注入，见
  * graph-model.toFlowNodes），据此渲染常驻问题徽标（error 红 / warning 琥珀）。
+ * 节点名双击进入行内编辑（Enter / 失焦提交、Esc 取消），经 NODE_RENAME_KEY
+ * 上抛画布 → 窗口落 domain 节点 label。
  */
 const props = defineProps<NodeProps<{ node: WorkflowNode; issues: NodeIssue[] }>>();
+
+const renameNode = inject(NODE_RENAME_KEY, null);
 
 const node = computed(() => props.data.node);
 const meta = computed(() => getWorkflowNodeMeta(node.value.type));
@@ -33,6 +48,29 @@ const stickyColor = computed(() => {
   const raw = node.value.config?.["color"];
   return typeof raw === "string" && /^#[0-9a-fA-F]{6}$/.test(raw) ? raw : "#f6e2a8";
 });
+
+/** 行内重命名编辑态：null 非编辑；编辑时持有草稿名。 */
+const draftName = ref<string | null>(null);
+
+/** 编辑框挂载即聚焦并全选（函数 ref）。 */
+function focusDraft(el: unknown): void {
+  if (el instanceof HTMLInputElement) el.select();
+}
+
+function startRename(): void {
+  if (renameNode === null) return;
+  draftName.value = label.value;
+}
+
+/** 提交重命名：空名 / 未变化不更新；Enter / 失焦提交，Esc 取消。 */
+function commitRename(): void {
+  if (draftName.value === null) return;
+  const draft = draftName.value;
+  draftName.value = null;
+  if (draft.trim() !== "" && draft.trim() !== label.value && renameNode !== null) {
+    renameNode(props.id, draft);
+  }
+}
 </script>
 
 <template>
@@ -54,7 +92,27 @@ const stickyColor = computed(() => {
     </span>
     <div class="flow-node-head">
       <span v-if="meta.handles !== 'none'" class="flow-node-dot" aria-hidden="true" />
-      <span class="flow-node-name" :title="label">{{ label }}</span>
+      <input
+        v-if="draftName !== null"
+        v-model="draftName"
+        class="flow-node-name-input nodrag nopan"
+        aria-label="节点名称"
+        :ref="focusDraft"
+        @click.stop
+        @dblclick.stop
+        @mousedown.stop
+        @keydown.enter.prevent="commitRename"
+        @keydown.esc.prevent="draftName = null"
+        @blur="commitRename"
+      />
+      <span
+        v-else
+        class="flow-node-name"
+        :title="`${label}（双击重命名）`"
+        @dblclick.stop="startRename"
+      >
+        {{ label }}
+      </span>
       <span v-if="badge !== undefined" class="flow-node-badge mono">{{ badge }}</span>
     </div>
     <div class="flow-node-summary mono" :title="summary">{{ summary }}</div>
