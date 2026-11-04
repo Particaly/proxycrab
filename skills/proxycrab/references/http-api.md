@@ -19,11 +19,13 @@ This reference documents the complete local HTTP surface used by ProxyCrab agent
 13. [Bypass traffic](#bypass-traffic)
 14. [Certificate authority](#certificate-authority)
 15. [System logs](#system-logs)
-16. [Workflow projects and definitions](#workflow-projects-and-definitions)
-17. [Workflow runs](#workflow-runs)
-18. [Errors and lifecycle notes](#errors-and-lifecycle-notes)
-19. [Clash subscription](#clash-subscription)
-20. [Redaction library and bindings](#redaction-library-and-bindings)
+16. [Request library](#request-library)
+17. [Environment variable sets and global variables](#environment-variable-sets-and-global-variables)
+18. [Workflow projects and definitions](#workflow-projects-and-definitions)
+19. [Workflow runs](#workflow-runs)
+20. [Errors and lifecycle notes](#errors-and-lifecycle-notes)
+21. [Clash subscription](#clash-subscription)
+22. [Redaction library and bindings](#redaction-library-and-bindings)
 
 ## Script relative paths
 
@@ -1301,6 +1303,155 @@ The in-memory ring retains at most the newest 10,000 entries. Entries are not pe
 
 Clears the in-memory ring and returns `{}`.
 
+## Request library
+
+The workspace-level request library stores replayable request entries under `<workspace>/flow/`,
+independent of Session archives and cleanup. One entry is
+`{id, name, tags, source, origin, har, bodyRef?, createdAt, updatedAt}` where `source` is `capture`,
+`import`, or `manual` and `har` is a minimal HAR 1.2 snapshot (`method`/`url`/`headers`/
+`queryString`/`cookies`/`postData` plus a response summary). UTF-8 text request bodies up to 64 KiB
+stay inline in `har.log.entries[0].request.postData.text`; binary or larger bodies live in
+`flow/request-library/bodies/{id}.body` and are referenced by `bodyRef`. Entry names default to
+`METHOD host+path`; duplicates get numeric suffixes (` 2`, ` 3`, …). Reads default to `allow`;
+writes and deletes default to `approval` and need desktop approval when the target runs the approval
+policy. Successful writes emit the `request_library` change resource. The read-only `/share-api/*`
+surface has no request-library routes.
+
+### `GET /api/request-library?query=&tags=&source=&limit=&offset=` (default `allow`)
+
+Returns one filtered page `{entries: [...], total}` sorted by `(createdAt, id)`. `query` matches the
+entry name and the first HAR request URL case-insensitively; `tags` is a comma-separated list and an
+entry must carry every requested tag; `source` is one of `capture`, `import`, `manual`. `limit`
+defaults to 200 and must stay between 1 and 1000 (`400 bad_request` otherwise); `total` reflects the
+filtered count before pagination.
+
+```text
+curl 'http://127.0.0.1:18089/api/request-library?tags=checkout&limit=50'
+```
+
+### `POST /api/request-library` (default `approval`)
+
+Creates a manual entry from `{har, name?, tags?, origin?}`. The HAR snapshot must carry at least one
+entry (`400 bad_request` otherwise); unknown request fields are rejected. The server assigns `id`,
+timestamps and `source: "manual"`, defaulting the name to `METHOD host+path`.
+
+```text
+curl -X POST http://127.0.0.1:18089/api/request-library -H 'Content-Type: application/json' -d '{"har":{"log":{"entries":[{"request":{"method":"GET","url":"https://example.com/health"}}]}},"name":"health-check"}'
+```
+
+### `POST /api/request-library/from-capture` (default `approval`)
+
+Ingests one completed capture into the library as a replayable entry:
+`{session_id?, capture_id, name?, tags?}`. `session_id` falls back to the active Session
+(`409 conflict` when none is active) and may name an archived Session, so ingestion keeps working
+after archiving; a missing capture or Session is `404 not_found`. The snapshot normalizes the
+`Cookie` header into structured cookies and records the response summary when one exists. Bundled
+helper: `node request-library-ingest.mjs --capture-id 42 --session-id 3`.
+
+```text
+curl -X POST http://127.0.0.1:18089/api/request-library/from-capture -H 'Content-Type: application/json' -d '{"capture_id":42,"session_id":3,"tags":["checkout"]}'
+```
+
+### `GET /api/request-library/{id}` (default `allow`) / `PUT` / `DELETE` (both default `approval`)
+
+`GET` returns one entry or `404 not_found`. `PUT` applies a partial update
+`{name?, tags?, origin?, har?}` — absent fields stay unchanged, `id`/`source`/`createdAt` are never
+editable and `updatedAt` is refreshed. Replacing the snapshot with one that embeds an inline request
+body drops a stale `bodyRef` blob; otherwise the blob reference survives snapshot round-trips.
+`DELETE` removes the entry together with its blob; missing ids return `404 not_found`.
+
+```text
+curl -X PUT http://127.0.0.1:18089/api/request-library/req-1 -H 'Content-Type: application/json' -d '{"name":"checkout-v2","tags":["checkout","debug"]}'
+```
+
+### `GET /api/request-library/{id}/body?max_size=` (default `allow`)
+
+Streams the raw stored request body (blob bytes, or the inline text with `encoding: "base64"`
+decoded) with the HAR `mimeType` as `Content-Type`, negotiating `Accept-Encoding` exactly like the
+log body endpoint. `max_size` defaults to 16 MiB and is checked before reading; entries without a
+stored body return `404 body_not_found`.
+
+```text
+curl 'http://127.0.0.1:18089/api/request-library/req-1/body?max_size=1048576' -o body.bin
+```
+
+## Environment variable sets and global variables
+
+The whole env family persists in one versioned envelope at `<workspace>/flow/env-sets.json`: named
+sets (each with a normal `values` table and a `secretValues` table), the activation preference
+`activeSetId`, and the global variables table. Reads apply the registered envelope migrations; a
+corrupt or newer envelope degrades reads to empty with a warning and refuses writes, so environment
+data never blocks other features. Secret values are masked end to end: reads return every secret
+value as `******` (normal values stay readable), while `PUT` writes restore the stored plaintext for
+values the caller left as `******`, so a masked read/modify/write round trip never corrupts secrets
+and an explicit new value overrides them. Successful writes emit the `env_sets` change resource.
+Reads default to `allow`; writes default to `approval` (desktop approval required).
+
+### `GET /api/env-sets` (default `allow`)
+
+Returns
+`{"sets":[{id,name,values,secretValues,createdAt,updatedAt}],"activeSetId":…,"globals":{values,secretValues}}`
+with every secret value masked as `******`.
+
+```text
+curl 'http://127.0.0.1:18089/api/env-sets'
+```
+
+### `POST /api/env-sets` (default `approval`)
+
+Creates or duplicates one set: `{"name":"…","copyFrom":null,"values":{},"secretValues":{}}`. A
+`copyFrom` set id duplicates that set (including secrets) under a generated `env-…` id; the response
+echoes the stored set masked.
+
+```text
+curl -X POST http://127.0.0.1:18089/api/env-sets -H 'Content-Type: application/json' -d '{"name":"dev"}'
+```
+
+### `PUT /api/env-sets/{id}` / `DELETE /api/env-sets/{id}` (both default `approval`)
+
+`PUT` takes `{"name":"…","values":{},"secretValues":{}}` (masked `******` round trip applies);
+`createdAt` is bound to the stored document. `DELETE` succeeds silently for missing ids; deleting
+the active set automatically clears the activation preference in the same write.
+
+```text
+curl -X PUT http://127.0.0.1:18089/api/env-sets/env-1 -H 'Content-Type: application/json' -d '{"values":{"baseUrl":"https://dev.example.com"}}'
+```
+
+### `PUT /api/env-sets/active` (default `approval`)
+
+Switches the activated set; `{"setId":null}` clears it. The activation preference holds at most one
+set.
+
+```text
+curl -X PUT http://127.0.0.1:18089/api/env-sets/active -H 'Content-Type: application/json' -d '{"setId":"env-1"}'
+```
+
+### `PUT /api/env-globals` (default `approval`)
+
+Replaces the global variables table: `{"values":{},"secretValues":{}}`.
+
+```text
+curl -X PUT http://127.0.0.1:18089/api/env-globals -H 'Content-Type: application/json' -d '{"values":{"region":"cn-north"}}'
+```
+
+### `POST /api/env-write-back` (default `approval`)
+
+Script env write-back entry: `{"setId":"env-…","writes":{}}` commits one batch. It is queued
+process-wide and persisted serially in submission order (last write wins per key, different keys
+merge). Keys already present in the target's secret table keep their secret marking; dynamic new
+keys land in the normal table. Values are stringified like the engine contract (strings as-is,
+numbers/booleans via `String`, `null` as `"null"`, objects/arrays as JSON text). The write target is
+the set id captured at dispatch time, so switching the active set mid-run never redirects
+write-backs. A committed batch is never rolled back: script failure, node failure, run cancellation,
+and hard timeouts do not withdraw submitted batches (a batch that never reaches submission was never
+committed). A batch whose target set was deleted before persistence is dropped with a warning
+instead of resurrecting the set. The response reports `{"applied":n,"dropped":m}`; dropped batches
+never fail the request.
+
+```text
+curl -X POST http://127.0.0.1:18089/api/env-write-back -H 'Content-Type: application/json' -d '{"setId":"env-1","writes":{"token":"t-1"}}'
+```
+
 ## Workflow projects and definitions
 
 Workflow definitions group into projects. Wire shapes are camelCase and identical to the stored
@@ -1450,8 +1601,10 @@ outcome:
 
 Trigger and inspect workflow runs (plan Task 19). Runs replay the workflow's requests through the
 target Session's pipeline; records persist in the workspace `flow/runs.db` and are read through
-these endpoints. Wire shapes are camelCase. Run `status`: `running | success | failed | cancelled |
-interrupted`; node checkpoint `status` follows the engine's `NodeRun` states.
+these endpoints. Reads default to `allow`; trigger and cancel are execution-class writes that
+default to `approval` — the desktop approval window holds the call, and CLI targets treat a
+persisted approval as deny. Wire shapes are camelCase. Run `status`: `running | success | failed |
+cancelled | interrupted`; node checkpoint `status` follows the engine's `NodeRun` states.
 
 ### `POST /api/flow/runs`
 
@@ -1723,11 +1876,13 @@ Use `scripts/bundle-import.mjs --file bundle.zip --accepted-intent-ids '["sessio
 
 ## MCP endpoint
 
-`POST /mcp` speaks JSON-RPC 2.0 (stateless, one request/response per call, no MCP SDK envelope). Authentication matches the `/api` routes: trusted local callers may omit `Authorization`; otherwise send exactly one `Authorization: Bearer <key>`. The endpoint itself is the permission action `POST /mcp` (default `allow`); per-tool authorization is a later slice. Bodies are capped at 1 MiB.
+`POST /mcp` speaks JSON-RPC 2.0 (stateless, one request/response per call, no MCP SDK envelope). Authentication matches the `/api` routes: trusted local callers may omit `Authorization`; otherwise send exactly one `Authorization: Bearer <key>`. The endpoint itself is the permission action `POST /mcp` (default `allow`); every curated tool additionally re-checks the management route it mirrors. Bodies are capped at 1 MiB.
 
 MCP envelopes are raw JSON-RPC — `{jsonrpc:"2.0", id, result}` or `{jsonrpc:"2.0", id, error:{code,message}}` — never wrapped in the management `{ok,data}`/`{ok,error}` contract. Error codes follow JSON-RPC/MCP convention: `-32700` unparsable JSON (id is `null`), `-32600` invalid envelope, `-32601` unknown method, `-32602` invalid params, `-32603` internal. Messages without an `id` are notifications and get `202 Accepted` with no body.
 
-Methods: `initialize` (required first call) negotiates the protocol version — supported client versions `2024-11-05`, `2025-03-26`, `2025-06-18` are echoed verbatim; `latest`, missing, or unsupported versions fall back to `2025-06-18`. The result declares `capabilities.tools` and `serverInfo:{name:"proxy-crab",version}`. `tools/list` currently returns an empty `tools` array (curated surface pending). `tools/call` with `params.name` returns, for every tool name in this slice, the MCP tool-level failure shape — HTTP 200 with `result:{content:[{type:"text",text:...}],isError:true}` — instead of a protocol error; omitting an empty `name` is `-32602`.
+Methods: `initialize` (required first call) negotiates the protocol version — supported client versions `2024-11-05`, `2025-03-26`, `2025-06-18` are echoed verbatim; `latest`, missing, or unsupported versions fall back to `2025-06-18`. The result declares `capabilities.tools` and `serverInfo:{name:"proxy-crab",version}`. `tools/list` returns the curated registry — each entry carries `name`, `description`, and an `inputSchema` derived from the tool's declared parameter contract. The curated surface starts with the run-class tool `workflow_runs_list` (mirrors `GET /api/flow/runs`: `workflowId`/`status`/`limit`/`offset` arguments, returning the same `{runs,total}` page shape as one text `content` entry) and grows from there; script libraries, permissions, shares, CA, and system-log surfaces stay off the list.
+
+`tools/call` runs per-tool authorization: each curated tool declares the management route it mirrors, and the call re-checks that route's catalog action for the same caller identity on top of the endpoint-level check — the stricter tier wins. Tool visibility and availability are governed by the settings-window tier switches, and when the mapped route resolves to `approval`, the same desktop approval chain as the HTTP route applies: denial or approval timeout surfaces as the MCP tool-level error shape — HTTP 200 with `result:{content:[{type:"text",text:...}],isError:true}` and a readable reason — never a silent downgrade or hang. Omitting an empty `name` is `-32602`; unknown tool names and invalid arguments are tool-level errors. A single execution is capped at 30 seconds, at most 4 tool calls are in flight process-wide, and a client disconnect cancels the in-flight execution. Error text is centrally mapped and never contains file paths or credentials.
 
 ### `POST /mcp` example
 
@@ -1737,4 +1892,10 @@ Methods: `initialize` (required first call) negotiates the protocol version — 
 
 ```json
 {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"proxy-crab","version":"1.1.0"}}}
+```
+
+Run-class tool example (`tools/call`, arguments mirror the HTTP query parameters):
+
+```json
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"workflow_runs_list","arguments":{"status":"failed","limit":5}}}
 ```
