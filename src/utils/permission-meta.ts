@@ -145,6 +145,7 @@ export const ACTION_META: Readonly<Record<string, PermissionActionMeta>> = {
   "GET /api/flow/runs/{id}": { label: "读取工作流运行详情", impact: "read" },
   "POST /api/flow/runs/{id}/cancel": { label: "取消工作流运行", impact: "write" },
   "POST /api/flow/script/dry-run": { label: "试跑流程脚本", impact: "write" },
+  "POST /mcp": { label: "MCP 工具端点（JSON-RPC）", impact: "read" },
 };
 
 /** 「功能」维度分组定义（顺序即展示顺序；prefixes 按 route_template 前缀匹配）。 */
@@ -199,6 +200,7 @@ export const FUNCTION_GROUPS: FunctionGroupDef[] = [
     prefixes: ["/api/flow-projects", "/api/workflows", "/api/flow/script", "/api/flow/runs"],
   },
   { key: "system_logs", label: "系统日志", prefixes: ["/api/system-logs"] },
+  { key: "mcp", label: "MCP 端点", prefixes: ["/mcp"] },
 ];
 
 export const OTHER_GROUP = { key: "other", label: "其他" } as const;

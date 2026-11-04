@@ -20,7 +20,7 @@ fn permission_catalog_contains_every_unique_route_action() {
         .map(|action| action.id)
         .collect::<BTreeSet<_>>();
 
-    assert_eq!(actions.len(), 114);
+    assert_eq!(actions.len(), 115);
     assert_eq!(ids.len(), actions.len());
     assert!(
         actions
@@ -91,6 +91,8 @@ fn permission_catalog_has_the_confirmed_default_matrix() {
         "POST /api/logs/views",
         "POST /api/replay",
         "POST /api/workflows/{id}/validate",
+        // MCP endpoint (plan Task 24): transport-level endpoint, read-class.
+        "POST /mcp",
     ]);
     let approval = BTreeSet::from([
         "PUT /api/redaction-scripts/{name}",
@@ -266,6 +268,19 @@ fn permission_lookup_uses_both_method_and_route_template() {
             .default_mode,
         PermissionMode::Approval
     );
+    // MCP endpoint (plan Task 24): read-class transport action, reachable by
+    // method+template lookup and path lookup like the /api actions.
+    assert_eq!(
+        find_api_action("POST", "/mcp").unwrap().default_mode,
+        PermissionMode::Allow
+    );
+    assert_eq!(
+        api_actions_for_path("/mcp")
+            .map(|action| action.id)
+            .collect::<Vec<_>>(),
+        vec!["POST /mcp"]
+    );
+    assert!(find_api_action("GET", "/mcp").is_none());
     assert!(find_api_action("PATCH", "/api/workflows/{id}").is_none());
     assert!(find_api_action("DELETE", "/api/ca").is_none());
     assert!(find_api_action("GET", "/api/logs/123").is_none());
