@@ -11,6 +11,11 @@ import type {
   WorkflowValidationIssue,
 } from "../api/types";
 import Canvas from "../components/flow/Canvas.vue";
+import type { SuggestNodeOption } from "../components/expression-input/expression-suggest";
+import type {
+  NodeSampleEntry,
+  TemplateSampleContext,
+} from "../components/expression-input/use-expression-preview";
 import {
   commitGraph,
   createGraphHistory,
@@ -28,9 +33,12 @@ import { notifyEditLocked } from "../components/flow/canvas-edit-lock";
 import { getWorkflowNodeMeta, nodeSummary } from "../components/flow/node-meta";
 import { takenRefKeys } from "../components/flow/config/node-config";
 import ReplayNodeConfig from "../components/flow/config/ReplayNodeConfig.vue";
+import NodeIoDrawer from "../components/flow/NodeIoDrawer.vue";
+import { collectJsonPaths } from "../components/expression-input/input-paths";
 import { appStore, reportError } from "../stores/app";
 import { confirmDialog } from "../stores/dialog";
 import { flowRunStore } from "../stores/flow-run";
+import { flowTrialStore } from "../stores/flow-trial";
 import { windowsStore } from "../stores/windows";
 import "../styles/flow.css";
 
@@ -132,6 +140,135 @@ function nodeLabel(node: WorkflowNode): string {
   return custom ? custom : getWorkflowNodeMeta(node.type).label;
 }
 
+/** 沿连线反向收集节点的上游闭包（含间接上游；不含自身，按发现顺序）。 */
+function upstreamClosure(nodeId: string): string[] {
+  const incoming = new Map<string, string[]>();
+  for (const edge of edges.value) {
+    const list = incoming.get(edge.target);
+    if (list) list.push(edge.source);
+    else incoming.set(edge.target, [edge.source]);
+  }
+  const seen = new Set<string>([nodeId]);
+  const queue = [nodeId];
+  const order: string[] = [];
+  while (queue.length > 0) {
+    const current = queue.shift() as string;
+    for (const source of incoming.get(current) ?? []) {
+      if (seen.has(source)) continue;
+      seen.add(source);
+      order.push(source);
+      queue.push(source);
+    }
+  }
+  return order;
+}
+
+/** 选中节点的上游闭包集合（候选清单与样本上下文共用）。 */
+const selectedUpstreamIds = computed<ReadonlySet<string>>(() => {
+  const node = selectedNode.value;
+  return node ? new Set(upstreamClosure(node.id)) : new Set<string>();
+});
+
+/** 上游可引用节点候选（表达式提示第二级；id 为模板引用键 refId ?? id）。 */
+const selectedAvailableNodes = computed<SuggestNodeOption[]>(() => {
+  const node = selectedNode.value;
+  if (!node) return [];
+  return [...selectedUpstreamIds.value]
+    .map((id) => nodes.value.find((item) => item.id === id))
+    .filter((item): item is WorkflowNode => item !== undefined)
+    .map((item) => ({ id: item.refId ?? item.id, label: nodeLabel(item) }));
+});
+
+/** 可引用变量名（流程级普通变量；secret 变量不入候选防明文回显）。 */
+const selectedVariableNames = computed<readonly string[]>(() =>
+  Object.keys(workflow.value?.variables ?? {}),
+);
+
+// ---------- 试跑样本会话态 → 表达式样本上下文（Task 15 薄片 C Step 4） ----------
+
+/**
+ * 激活环境集合 + 全局变量的普通键值表（env.<key> 求值样本；secret 值不入表
+ * 防明文回显）。服务端运行时的合并序以宿主供给为准，此处按「激活集合覆盖
+ * 全局」近似；能力位缺失或加载失败置 null（env 引用按无激活环境告警）。
+ */
+const activeEnvTable = ref<Record<string, string> | null>(null);
+
+async function loadActiveEnv(): Promise<void> {
+  const envSets = backend.envSets;
+  if (!envSets) {
+    activeEnvTable.value = null;
+    return;
+  }
+  try {
+    const payload = await envSets.get();
+    const active = payload.sets.find((set) => set.id === payload.activeSetId);
+    activeEnvTable.value = { ...payload.globals.values, ...(active ? active.values : {}) };
+  } catch {
+    activeEnvTable.value = null;
+  }
+}
+
+/** env. 键名候选（激活集合 + 全局；表未加载时不出现 env. 根）。 */
+const selectedEnvKeys = computed<readonly string[] | undefined>(() =>
+  activeEnvTable.value ? Object.keys(activeEnvTable.value) : undefined,
+);
+
+/** 入参字段路径候选（试跑样本派生；无样本为空清单）。 */
+const selectedInputPaths = computed<readonly string[]>(() =>
+  collectJsonPaths(selectedTrial.value?.input ?? null),
+);
+
+/**
+ * 选中节点的表达式样本上下文（配置面表达式输入的深路径候选 + 求值预览）。
+ * 样本当前仅来自编辑器内脚本试跑（节点级试跑 API 缺口见 stores/flow-trial.ts）：
+ * 入参 = pre 试跑样例 input；上游 / 全图节点输出 = 各节点 post 试跑返回值
+ * （键为模板引用键 refId ?? id，与执行器运行时上下文同口径；upstreamSamples
+ * 只含上游闭包，对齐运行时「渲染该节点时上下文里只有已完成节点」）。
+ */
+const selectedSample = computed<TemplateSampleContext | null>(() => {
+  const wf = workflow.value;
+  const node = selectedNode.value;
+  if (!wf || !node) return null;
+  const upstreamSamples: Record<string, NodeSampleEntry> = {};
+  const nodeSamples: Record<string, NodeSampleEntry> = {};
+  for (const item of nodes.value) {
+    const trial = flowTrialStore.get(wf.id, item.id);
+    if (trial?.output === undefined) continue;
+    const entry: NodeSampleEntry = { sample: trial.output, source: "run" };
+    nodeSamples[item.refId ?? item.id] = entry;
+    if (selectedUpstreamIds.value.has(item.id)) upstreamSamples[item.refId ?? item.id] = entry;
+  }
+  const trial = flowTrialStore.get(wf.id, node.id);
+  return {
+    input: trial?.input ?? null,
+    inputSource: trial?.input !== undefined ? "run" : "none",
+    upstreamSamples,
+    nodeSamples,
+    variables: { ...wf.variables },
+    ...(activeEnvTable.value !== null ? { env: activeEnvTable.value } : {}),
+  };
+});
+
+// ---------- IO 抽屉（Task 15 薄片 C Step 3/4） ----------
+
+/** 节点数据抽屉（入参 / 出参）开关：随选中节点挂载，选中切换保持开启。 */
+const ioDrawerOpen = ref(false);
+
+/** 选中节点的试跑样本（编辑器内脚本试跑产出；会话态见 stores/flow-trial.ts） */
+const selectedTrial = computed(() =>
+  workflow.value && selectedNode.value
+    ? flowTrialStore.get(workflow.value.id, selectedNode.value.id)
+    : null,
+);
+
+/** 试跑徽标路径集：试跑样本经 collectJsonPaths 派生（入参 / 出参合并——同
+ * path 在两组命中都标注，语义为「该字段来自试跑结果」）。 */
+const selectedTrialPaths = computed<readonly string[]>(() => {
+  const trial = selectedTrial.value;
+  if (!trial) return [];
+  return [...collectJsonPaths(trial.input ?? null), ...collectJsonPaths(trial.output ?? null)];
+});
+
 /** 列表行时间展示（Unix 毫秒 → 月-日 时:分）。 */
 function fmtTime(ts: number): string {
   const date = new Date(ts);
@@ -190,18 +327,21 @@ async function selectWorkflow(target: Workflow): Promise<void> {
     serverIssues.value = [];
     history.value = createGraphHistory(nodes.value, edges.value);
     canvasKey.value += 1;
+    void loadActiveEnv();
   } catch (error) {
     reportError(error, "加载流程失败");
   }
 }
 
-/** 关闭当前流程时清空画布编辑态（含历史与校验）。 */
+/** 关闭当前流程时清空画布编辑态（含历史与校验）与试跑样本会话态。 */
 function closeWorkflowEditor(): void {
+  if (workflow.value) flowTrialStore.clearWorkflow(workflow.value.id);
   workflow.value = null;
   nodes.value = [];
   edges.value = [];
   selectedNodeId.value = null;
   serverIssues.value = [];
+  ioDrawerOpen.value = false;
   history.value = createGraphHistory([], []);
 }
 
@@ -389,6 +529,7 @@ onMounted(() => {
   windowsStore.registerCloseGuard(WINDOW_ID, confirmDiscard);
   window.addEventListener("keydown", onKeydown);
   void refresh();
+  void loadActiveEnv();
 });
 
 onBeforeUnmount(() => {
@@ -548,6 +689,14 @@ onBeforeUnmount(() => {
         <span class="wf-drawer-title" :title="nodeLabel(selectedNode)">{{
           nodeLabel(selectedNode)
         }}</span>
+        <button
+          class="btn compact"
+          :aria-pressed="ioDrawerOpen"
+          title="打开节点入参 / 出参字段面板（点击复制或拖入表达式输入框生成模板引用）"
+          @click="ioDrawerOpen = !ioDrawerOpen"
+        >
+          入参/出参
+        </button>
         <button class="btn icon" title="关闭" @click="selectedNodeId = null">
           <Io5Close :size="14" />
         </button>
@@ -570,6 +719,12 @@ onBeforeUnmount(() => {
           :key="selectedNode.id"
           :node="selectedNode"
           :taken-keys="selectedTakenKeys"
+          :workflow-id="workflow?.id"
+          :available-node-ids="selectedAvailableNodes"
+          :variable-names="selectedVariableNames"
+          :env-keys="selectedEnvKeys"
+          :input-paths="selectedInputPaths"
+          :sample="selectedSample"
           @update:config="updateSelectedConfig"
           @update:ref-id="updateSelectedRefId"
         />
@@ -586,6 +741,19 @@ onBeforeUnmount(() => {
         </template>
       </div>
     </aside>
+
+    <!-- 节点数据抽屉（入参 / 出参；样本来自编辑器内试跑会话态，无样本时
+         组件内空态明示）。定位层借 transform 把组件的 fixed 收敛到本窗口。 -->
+    <div v-if="selectedNode && ioDrawerOpen" class="wf-io-layer">
+      <NodeIoDrawer
+        :node-ref-id="selectedNode.refId ?? selectedNode.id"
+        :node-label="nodeLabel(selectedNode)"
+        :input-sample="selectedTrial?.input ?? null"
+        :output-sample="selectedTrial?.output ?? null"
+        :trial-paths="selectedTrialPaths"
+        @close="ioDrawerOpen = false"
+      />
+    </div>
   </div>
 </template>
 
@@ -844,5 +1012,20 @@ onBeforeUnmount(() => {
 .wf-drawer-hint {
   margin-top: var(--space-2);
   font-size: 12px;
+}
+
+/* ---------- 节点数据抽屉定位层 ---------- */
+
+/* NodeIoDrawer 用 fixed 定位（组件只读复用）；借 transform 建立包含块把
+ * fixed 收敛到本窗口（左缘贴窗口、高度同窗口），不外溢到应用其他窗面。 */
+.wf-io-layer {
+  position: absolute;
+  inset: 0;
+  transform: translateX(0);
+  pointer-events: none;
+}
+
+.wf-io-layer :deep(aside) {
+  pointer-events: auto;
 }
 </style>

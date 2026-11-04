@@ -1,19 +1,28 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import { Io5EllipsisHorizontal, Io5ReorderTwo, Io5Trash } from "vue-icons-plus/io5";
 import { useBackend } from "../../../api";
 import type { EnvSetsPayload } from "../../../api/types";
 import { reportError } from "../../../stores/app";
 import { openDropdownMenu, type MenuItem } from "../../../stores/dialog";
+import ExpressionInput from "../../expression-input/ExpressionInput.vue";
+import type { SuggestNodeOption } from "../../expression-input/expression-suggest";
+import type { TemplateSampleContext } from "../../expression-input/use-expression-preview";
+import { hasIoPathPayload, readIoPathPayload } from "../template-dnd";
 import type { HeaderRowDraft } from "./node-config";
 
+/** 表达式输入组件实例（defineExpose 的插入出口） */
+type ExpressionInputInstance = InstanceType<typeof ExpressionInput>;
+
 /**
- * 请求头编辑行（计划 Task 14 Step 2）：复用 `EditableKvTable.vue` 的表格形态
- * （拖拽排序 + 名/值行内编辑 + 末尾空行），并为每行提供「…」行内菜单——
- * 删除 / 插入模板引用（光标处插入 `{{ }}` 骨架，建议补全属 Task 15 表达式
- * 输入） / 插入环境变量（Backend.envSets 能力位存在时展示，列激活集合与
- * 全局变量名，插入 `{{ env.<名> }}`）。行数据 { name, value, original? } 见
- * node-config.ts（original = 捕获行基线，供覆盖项计算）。
+ * 请求头编辑行（计划 Task 14 Step 2，值列升级为表达式输入：Task 15 薄片 C
+ * Step 2）：复用行表格形态（拖拽排序 + 名/值行内编辑 + 末尾空行），值列为
+ * `ExpressionInput`（`{{` 建议 + 求值预览 + 缺失引用告警，样式经 :deep 融入
+ * 行编辑密度），「…」行内菜单——删除 / 插入模板引用（经组件 ref 调
+ * insertTemplate，与建议浮层同一插入出口）/ 插入环境变量（Backend.envSets
+ * 能力位存在时展示，列激活集合与全局变量名，经 insertSnippet 插入
+ * `{{ env.<名> }}`）。行数据 { name, value, original? } 见 node-config.ts
+ * （original = 捕获行基线，供覆盖项计算）。
  */
 const rows = defineModel<HeaderRowDraft[]>({ required: true });
 
@@ -22,6 +31,16 @@ const props = defineProps<{
   disabled?: boolean;
   /** 值列输入占位（默认 value）。 */
   placeholder?: string;
+  /** 上游可引用节点清单（`node.` 第二级候选；透传表达式输入）。 */
+  availableNodeIds?: ReadonlyArray<SuggestNodeOption>;
+  /** 可引用变量名清单（提供时出现 var. 根候选）。 */
+  variableNames?: ReadonlyArray<string>;
+  /** 入参字段路径清单（提供时出现裸路径简写候选）。 */
+  inputPaths?: ReadonlyArray<string>;
+  /** 激活环境集合 + 全局的键名清单（提供时出现 env. 根候选）。 */
+  envKeys?: ReadonlyArray<string>;
+  /** 模板样本上下文（深路径候选 + 求值预览；缺省不渲染预览行）。 */
+  sample?: TemplateSampleContext | null;
 }>();
 
 const backend = useBackend();
@@ -60,25 +79,54 @@ function removeRow(index: number): void {
   commit();
 }
 
-/** 在指定行的值输入框光标处插入文本（未聚焦时插到文末并回焦）。 */
-function insertIntoValue(index: number, snippet: string): void {
-  const input = valueInputs.value.get(index);
-  const row = display.value[index];
-  if (!row) return;
-  if (input && document.activeElement === input) {
-    const start = input.selectionStart ?? row.value.length;
-    const end = input.selectionEnd ?? row.value.length;
-    row.value = row.value.slice(0, start) + snippet + row.value.slice(end);
-    void nextTick(() => {
-      input.focus();
-      const caret = start + snippet.length;
-      input.setSelectionRange(caret, caret);
-    });
+// ---------- 值列表达式输入实例与插入出口 ----------
+/** 值列表达式输入实例（模板 ref 回调收集；菜单插入 / 拖放插入的统一出口）。 */
+const valueInputs = ref(new Map<number, ExpressionInputInstance>());
+
+/** 收集值列表达式输入实例（模板 ref 回调；卸载传 null 时移除）。 */
+function setValueRef(index: number, el: unknown): void {
+  const instance = el as ExpressionInputInstance | null;
+  if (instance && typeof instance.insertSnippet === "function") {
+    valueInputs.value.set(index, instance);
   } else {
-    row.value += snippet;
-    void nextTick(() => valueInputs.value.get(index)?.focus());
+    valueInputs.value.delete(index);
   }
+}
+
+/** 在指定行的值输入框插入 `{{ }}` 骨架（「插入模板引用」菜单项；经组件 ref
+ * 走单一插入出口，建议浮层随插入立即可见）。 */
+async function insertTemplateAt(index: number): Promise<void> {
+  const input = valueInputs.value.get(index);
+  if (!input) return;
+  await input.insertTemplate();
   commit();
+}
+
+/** 在指定行的值输入框插入完整模板片段（环境变量菜单 / 拖放共用出口）。 */
+async function insertSnippetAt(index: number, snippet: string): Promise<void> {
+  const input = valueInputs.value.get(index);
+  if (!input) return;
+  await input.insertSnippet(snippet);
+  commit();
+}
+
+// ---------- IO 字段 chip 拖放承接（协议见 template-dnd.ts） ----------
+
+/** 值列 dragover：仅接管携带 IO 字段载荷的拖拽（其余保持浏览器默认）。 */
+function onValueDragOver(event: DragEvent): void {
+  if (props.disabled || !event.dataTransfer) return;
+  if (!hasIoPathPayload(event.dataTransfer.types)) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = "copy";
+}
+
+/** 值列 drop：读 IO 字段载荷，经组件 ref 插入完整模板引用。 */
+function onValueDrop(index: number, event: DragEvent): void {
+  if (props.disabled || !event.dataTransfer) return;
+  const snippet = readIoPathPayload(event.dataTransfer);
+  if (snippet === null) return;
+  event.preventDefault();
+  void insertSnippetAt(index, snippet);
 }
 
 // ---------- 行内菜单 ----------
@@ -88,8 +136,8 @@ function openRowMenu(index: number, event: MouseEvent): void {
   const items: MenuItem[] = [
     {
       label: "插入模板引用",
-      title: "在光标处插入 {{ }} 模板骨架",
-      action: () => insertIntoValue(index, "{{ }}"),
+      title: "在光标处插入 {{ }} 骨架（输入 {{ 弹出引用建议）",
+      action: () => void insertTemplateAt(index),
     },
   ];
   if (canInsertEnv.value) {
@@ -131,7 +179,7 @@ async function openEnvPicker(index: number, anchor: HTMLElement): Promise<void> 
   for (const name of Object.keys(payload.globals.secretValues)) names.add(name);
   const sorted = [...names].sort((a, b) => (a < b ? -1 : 1));
   if (sorted.length === 0) {
-    insertIntoValue(index, "{{ env. }}");
+    void insertSnippetAt(index, "{{ env. }}");
     return;
   }
   openDropdownMenu(
@@ -139,41 +187,13 @@ async function openEnvPicker(index: number, anchor: HTMLElement): Promise<void> 
     sorted.map((name) => ({
       label: name,
       title: `插入 {{ env.${name} }}`,
-      action: () => insertIntoValue(index, `{{ env.${name} }}`),
+      action: () => void insertSnippetAt(index, `{{ env.${name} }}`),
     })),
   );
 }
 
-// ---------- 值列换行 textarea 自动增高 ----------
+// ---------- 值列提交 ----------
 const tableRef = ref<HTMLElement | null>(null);
-const valueInputs = ref(new Map<number, HTMLTextAreaElement>());
-
-function autosize(el: HTMLTextAreaElement): void {
-  el.style.height = "0";
-  el.style.height = `${el.scrollHeight}px`;
-}
-
-/** 收集值列 textarea 实例（模板 ref 回调；卸载传 null 时移除）。 */
-function setValueRef(index: number, el: unknown): void {
-  if (el instanceof HTMLTextAreaElement) valueInputs.value.set(index, el);
-  else valueInputs.value.delete(index);
-}
-
-function autosizeAll(): void {
-  void nextTick(() => {
-    valueInputs.value.forEach((el) => autosize(el));
-  });
-}
-
-onMounted(autosizeAll);
-watch(display, autosizeAll, { deep: true });
-
-function onValueInput(row: HeaderRowDraft, event: Event): void {
-  // header value 不允许换行；粘贴带入的换行直接去除
-  if (row.value.includes("\n")) row.value = row.value.replace(/\r?\n/g, "");
-  autosize(event.target as HTMLTextAreaElement);
-  commit();
-}
 
 // ---------- 拖拽排序（pointer 事件实现，不依赖浏览器 DnD） ----------
 const dragIndex = ref<number | null>(null);
@@ -251,17 +271,27 @@ function onHandlePointerDown(index: number, event: PointerEvent): void {
             />
           </td>
           <td class="mono kv-value">
-            <textarea
-              :ref="(el) => setValueRef(index, el)"
-              v-model="row.value"
-              class="kv-edit kv-value-input"
-              :placeholder="placeholder ?? 'value'"
-              rows="1"
-              :disabled="disabled"
-              spellcheck="false"
-              @input="onValueInput(row, $event)"
-              @keydown.enter.prevent
-            />
+            <!-- inert 包裹层：置灰时阻断整子树交互（组件无 disabled prop，不改其源）；
+                 拖放承接 IO 字段 chip（dragover 按 MIME 标记接管，drop 插入引用） -->
+            <div
+              class="kv-value-host"
+              :inert="disabled || undefined"
+              @dragover="onValueDragOver"
+              @drop="onValueDrop(index, $event)"
+            >
+              <ExpressionInput
+                :ref="(el) => setValueRef(index, el)"
+                v-model="row.value"
+                :placeholder="placeholder ?? 'value'"
+                :available-node-ids="availableNodeIds"
+                :variable-names="variableNames"
+                :input-paths="inputPaths"
+                :env-keys="envKeys"
+                :sample="sample"
+                hide-insert-button
+                @update:model-value="commit"
+              />
+            </div>
           </td>
           <td class="kv-menu-col">
             <button
@@ -337,6 +367,31 @@ function onHandlePointerDown(index: number, event: PointerEvent): void {
   padding-right: 0;
 }
 
+/* 值列表达式输入：融进行内表格——去边框与内边距、继承表格字号，保持行编辑
+ * 密度；聚焦底色与名/值单元格的既有 .kv-edit 口径一致。 */
+.kv-value-host {
+  min-width: 0;
+}
+
+.kv-value-host :deep(.expression-control) {
+  height: auto;
+  padding: 1px 3px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--success);
+  font-size: 11px;
+  line-height: 18px;
+}
+
+.kv-value-host :deep(.expression-control:focus) {
+  background: var(--bg-active);
+}
+
+.kv-value-host:inert {
+  opacity: 0.5;
+}
+
 .kv-edit {
   display: block;
   border: none;
@@ -360,14 +415,6 @@ function onHandlePointerDown(index: number, event: PointerEvent): void {
 .kv-name-input {
   width: auto;
   max-width: 130px;
-}
-
-.kv-value-input {
-  width: 100%;
-  color: var(--success);
-  overflow: hidden;
-  white-space: pre-wrap;
-  word-break: break-all;
 }
 
 .kv-menu-col {

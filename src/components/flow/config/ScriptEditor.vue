@@ -6,18 +6,21 @@
  * post：response → 返回出参；另有 env 形参说明）、骨架插入与样例试跑。
  * 试跑走 Backend 能力位 `flowScriptDryRun`（服务端一次性 flow VM + 引擎载荷，
  * 错误分类 syntax|blocked|runtime|timeout|invalid-return 完整透出为中文文案）；
- * 能力位未实现时试跑区域整体不展示（能力位显隐约定）。
+ * 能力位未实现时试跑区域整体不展示（能力位显隐约定）。试跑成功且声明
+ * trialKey 时并入节点试跑会话态（stores/flow-trial.ts，Task 15 薄片 C）。
  */
 import { computed, ref, watch } from "vue";
 import type { FlowScriptDryRunResult, FlowScriptSide } from "../../../api/types";
 import { useBackend } from "../../../api";
 import MonacoEditor from "../../MonacoEditor.vue";
+import { flowTrialStore, type FlowTrialTarget } from "../../../stores/flow-trial";
 import {
   DEFAULT_SAMPLE_JSON,
   ENV_PARAM_HINT,
   SCRIPT_DOC,
   SCRIPT_SKELETON,
   errorKindLabel,
+  parseSampleJson,
   runScriptDryRun,
   stringifyDryRunValue,
   toErrorMessage,
@@ -33,8 +36,12 @@ const props = withDefaults(
     disabled?: boolean;
     /** Monaco 编辑区高度（含骨架行内的弹性布局），默认 14em */
     editorHeight?: string;
+    /** 试跑样本归属（流程 + 节点）；提供时试跑成功即并入会话态
+     * （stores/flow-trial.ts：pre 样例 input = 节点入参样本，post 返回值 =
+     * 节点 output），供 IO 抽屉与表达式输入样本。缺省不并入。 */
+    trialKey?: FlowTrialTarget | null;
   }>(),
-  { disabled: false, editorHeight: "14em" },
+  { disabled: false, editorHeight: "14em", trialKey: null },
 );
 
 const emit = defineEmits<{ "update:modelValue": [value: string] }>();
@@ -73,6 +80,19 @@ function insertSkeleton(): void {
   emit("update:modelValue", SCRIPT_SKELETON[props.side]);
 }
 
+/** 试跑成功且声明了归属时并入会话态：pre 的样例 input 即节点入参样本，
+ * post 的返回值即节点 output（引擎契约，见 stores/flow-trial.ts 模块头）。 */
+function recordTrial(side: FlowScriptSide, result: FlowScriptDryRunResult): void {
+  const key = props.trialKey;
+  if (!key || !result.ok) return;
+  if (side === "pre") {
+    const sample = parseSampleJson(sampleText.value);
+    if (sample.ok) flowTrialStore.record(key.workflowId, key.nodeId, { input: sample.value });
+    return;
+  }
+  flowTrialStore.record(key.workflowId, key.nodeId, { output: result.value });
+}
+
 async function runDryRun(): Promise<void> {
   if (props.disabled || running.value || !canDryRun.value) return;
   running.value = true;
@@ -84,6 +104,7 @@ async function runDryRun(): Promise<void> {
       script: props.modelValue,
       sampleJson: sampleText.value,
     });
+    recordTrial(props.side, result.value);
   } catch (error) {
     runError.value = toErrorMessage(error);
   } finally {
