@@ -125,7 +125,10 @@ fn handle_request(request: RpcRequest) -> Value {
 /// 指定 `latest`、缺失或不受支持的版本均回落到本实现最新版本，由客户端
 /// 决定是否继续会话。
 fn initialize(request: &RpcRequest) -> Value {
-    let requested = request.params.get("protocolVersion").and_then(Value::as_str);
+    let requested = request
+        .params
+        .get("protocolVersion")
+        .and_then(Value::as_str);
     let negotiated = match requested {
         Some(version) if SUPPORTED_PROTOCOL_VERSIONS.contains(&version) => version,
         _ => LATEST_PROTOCOL_VERSION,
@@ -144,10 +147,18 @@ fn initialize(request: &RpcRequest) -> Value {
 /// （工具级失败），而非协议错误；带 `arguments` 的真实工具执行是后续薄片。
 fn tools_call(request: &RpcRequest) -> Value {
     let Some(name) = request.params.get("name").and_then(Value::as_str) else {
-        return error(&request.id, INVALID_PARAMS, "tools/call requires a tool name");
+        return error(
+            &request.id,
+            INVALID_PARAMS,
+            "tools/call requires a tool name",
+        );
     };
     if name.is_empty() {
-        return error(&request.id, INVALID_PARAMS, "tools/call requires a non-empty tool name");
+        return error(
+            &request.id,
+            INVALID_PARAMS,
+            "tools/call requires a non-empty tool name",
+        );
     }
     success(
         &request.id,
@@ -222,7 +233,10 @@ mod tests {
                 json!({ "protocolVersion": requested }),
             )))
             .unwrap();
-            assert_eq!(response["result"]["protocolVersion"], expected, "{requested}");
+            assert_eq!(
+                response["result"]["protocolVersion"], expected,
+                "{requested}"
+            );
             assert_eq!(response["result"]["capabilities"]["tools"], json!({}));
             assert_eq!(response["result"]["serverInfo"]["name"], "proxy-crab");
             assert!(response["result"]["serverInfo"]["version"].is_string());
@@ -246,10 +260,12 @@ mod tests {
         assert!(response.get("error").is_none());
         assert_eq!(response["result"]["isError"], true);
         assert_eq!(response["result"]["content"][0]["type"], "text");
-        assert!(response["result"]["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .contains("get_proxy_status"));
+        assert!(
+            response["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("get_proxy_status")
+        );
     }
 
     #[test]

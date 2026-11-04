@@ -57,6 +57,7 @@ use crate::{
         default_body_max_size,
     },
     manager::ProxyCrabManager,
+    mcp,
     permission::{
         ManagementCredential, PermissionAction, PermissionDenied, PermissionDeniedStatus,
         PermissionManager, api_actions, find_api_action,
@@ -545,6 +546,11 @@ fn router_with_changes_and_extra(
             "/api/bypass/{id}",
             axum::routing::delete(delete_bypass_entry),
         )
+        /* MCP endpoint (plan Task 24): stateless JSON-RPC 2.0 over POST /mcp.
+        Registered before the authorize_request layer so every request is
+        independently authenticated through the "POST /mcp" catalog action,
+        with the same identity semantics as the /api routes. */
+        .route("/mcp", post(mcp_endpoint))
         .route_layer(middleware::from_fn_with_state(
             permissions.clone(),
             authorize_request,
@@ -2234,6 +2240,33 @@ pub(crate) async fn body_response(
             .expect("u64 is always a valid header value"),
     );
     Ok(response)
+}
+
+/* ---- MCP endpoint (plan Task 24 Step 1/2): JSON-RPC 2.0 over POST /mcp ---- */
+
+/// 无状态 JSON-RPC 2.0 端点。鉴权已在 `authorize_request` 中间件完成
+/// （"POST /mcp" 目录 action，既有 LocalLoopback/Bearer 身份），信封处理
+/// 不触碰 manager 状态。畸形信封以 HTTP 200 携带 JSON-RPC 协议错误应答；
+/// 纯通知请求回 202 无正文；读体失败（含超限）按解析错误 -32700 应答。
+async fn mcp_endpoint(request: Request) -> Response {
+    let body = match axum::body::to_bytes(request.into_body(), mcp::MAX_MESSAGE_BYTES).await {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return (
+                StatusCode::OK,
+                Json(mcp::protocol::error(
+                    &Value::Null,
+                    mcp::protocol::PARSE_ERROR,
+                    "failed to read request body",
+                )),
+            )
+                .into_response();
+        }
+    };
+    match mcp::respond(&body) {
+        Some(envelope) => (StatusCode::OK, Json(envelope)).into_response(),
+        None => StatusCode::ACCEPTED.into_response(),
+    }
 }
 
 fn success(value: impl serde::Serialize) -> ApiResult {
@@ -5695,6 +5728,107 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+    }
+
+    /* ---- MCP endpoint (plan Task 24 Step 1/2) ---- */
+
+    #[tokio::test]
+    async fn mcp_endpoint_requires_authorization_for_remote_callers() {
+        let app_data = tempdir().unwrap();
+        let runtime = ProxyCrab::open(app_data.path(), Arc::new(LogBuffer::default())).unwrap();
+        let manager = MitmManager::new(runtime);
+        let app = secured_router(manager, allow_all());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/mcp")
+                    .header("host", "proxy.example:18089")
+                    .header("origin", "https://proxy.example")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#.to_vec(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let payload: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(payload["error"]["code"], "remote_auth_required");
+    }
+
+    #[tokio::test]
+    async fn mcp_initialize_handshake_succeeds_for_local_identity() {
+        let app_data = tempdir().unwrap();
+        let runtime = ProxyCrab::open(app_data.path(), Arc::new(LogBuffer::default())).unwrap();
+        let manager = MitmManager::new(runtime);
+        let app = secured_router(manager, allow_all());
+
+        let mut request = Request::builder()
+            .method(Method::POST)
+            .uri("/mcp")
+            .header("host", "127.0.0.1:18089")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                br#"{"jsonrpc":"2.0","id":7,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}"#
+                    .to_vec(),
+            ))
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(SocketAddr::from((
+                std::net::Ipv4Addr::LOCALHOST,
+                40000,
+            ))));
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(payload["jsonrpc"], "2.0");
+        assert_eq!(payload["id"], 7);
+        assert_eq!(payload["result"]["protocolVersion"], "2025-06-18");
+        assert_eq!(payload["result"]["capabilities"]["tools"], json!({}));
+        assert_eq!(payload["result"]["serverInfo"]["name"], "proxy-crab");
+    }
+
+    #[tokio::test]
+    async fn mcp_tools_call_over_http_reports_tool_level_is_error() {
+        let app_data = tempdir().unwrap();
+        let runtime = ProxyCrab::open(app_data.path(), Arc::new(LogBuffer::default())).unwrap();
+        let manager = MitmManager::new(runtime);
+        let app = secured_router(manager, allow_all());
+
+        let mut request = Request::builder()
+            .method(Method::POST)
+            .uri("/mcp")
+            .header("host", "127.0.0.1:18089")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                br#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"nope","arguments":{}}}"#
+                    .to_vec(),
+            ))
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(SocketAddr::from((
+                std::net::Ipv4Addr::LOCALHOST,
+                40000,
+            ))));
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(payload["result"]["isError"], true);
+        assert!(payload.get("error").is_none());
     }
 
     #[tokio::test]
