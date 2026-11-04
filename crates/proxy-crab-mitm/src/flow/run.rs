@@ -218,11 +218,9 @@ impl FlowRunManager {
         // 图定义与运行输入读取走阻塞线程（小 JSON 文件）。
         let root = self.workspace_root.clone();
         let workflow_id = workflow_id.to_owned();
-        let (workflow, inputs) = tokio::task::spawn_blocking(move || {
-            load_run_inputs(&root, &workflow_id).map_err(RunTriggerError::Storage)
-        })
-        .await
-        .map_err(|error| RunTriggerError::Storage(anyhow!("运行输入任务失败: {error}")))??;
+        let (workflow, inputs) = tokio::task::spawn_blocking(move || load_run_inputs(&root, &workflow_id))
+            .await
+            .map_err(|error| RunTriggerError::Storage(anyhow!("运行输入任务失败: {error}")))??;
 
         // 前提校验（Step 3）：代理运行中、目标 Session 存在、图合法。
         if !matches!(self.runtime.proxy_status(), ProxyStatus::Running { .. }) {
@@ -603,7 +601,9 @@ const RUN_DRIVER_JS: &str = r"(async () => {
       onNodeFinish: (node, nodeRun) => emit({ type: 'node-finish', nodeId: node.id, nodeRun }),
       onEnvWrite: (writes) => emit({ type: 'env-write', writes }),
     });
-    emit({ type: 'run-finish', summary });
+    // 终态事件必须等待交付完成：IIFE 返回即触发 VM 整体丢弃，fire-and-forget
+    // 的 emit future 会在首 poll 前随 VM 死亡，终态丢失（写队列只见到通道关闭）。
+    await host.emit({ type: 'run-finish', summary });
   } finally {
     abort();
   }
@@ -859,13 +859,23 @@ fn env_write_table(writes: &JsonValue) -> Option<BTreeMap<String, JsonValue>> {
 }
 
 /// 阻塞加载工作流定义与运行输入（变量三层合并、环境快照、HAR 基线、
-/// 脱敏清单）。
-fn load_run_inputs(root: &std::path::Path, workflow_id: &str) -> Result<(Workflow, RunInputs)> {
-    let store = FlowStore::open(root)?;
+/// 脱敏清单）。工作流不存在是明确的触发前提失败（[`RunTriggerError::
+/// WorkflowNotFound`]），与存储故障分开归类。
+fn load_run_inputs(
+    root: &std::path::Path,
+    workflow_id: &str,
+) -> std::result::Result<(Workflow, RunInputs), RunTriggerError> {
+    let store = FlowStore::open(root).map_err(RunTriggerError::Storage)?;
     let workflow = store
-        .get_workflow(workflow_id)?
-        .ok_or_else(|| anyhow!("工作流不存在：{workflow_id}"))?;
+        .get_workflow(workflow_id)
+        .map_err(RunTriggerError::Storage)?
+        .ok_or_else(|| RunTriggerError::WorkflowNotFound(workflow_id.to_owned()))?;
+    let inputs = build_run_inputs(&store, &workflow).map_err(RunTriggerError::Storage)?;
+    Ok((workflow, inputs))
+}
 
+/// 装配一次运行的引擎输入快照（变量三层合并、环境快照、HAR 基线、脱敏清单）。
+fn build_run_inputs(store: &FlowStore, workflow: &Workflow) -> Result<RunInputs> {
     let globals = store.env_globals().unwrap_or_default();
     let mut variables = globals.values.clone();
     // 同层 secret 覆盖同名普通值（对齐环境集合的合并口径）。
@@ -939,14 +949,13 @@ fn load_run_inputs(root: &std::path::Path, workflow_id: &str) -> Result<(Workflo
 
     secrets.sort();
     secrets.dedup();
-    let inputs = RunInputs {
+    Ok(RunInputs {
         variables: json!(variables),
         env: json!(env),
         har_entries: JsonValue::Object(har_entries),
         active_set_id,
         secrets: Arc::new(Mutex::new(secrets)),
-    };
-    Ok((workflow, inputs))
+    })
 }
 
 #[cfg(test)]
