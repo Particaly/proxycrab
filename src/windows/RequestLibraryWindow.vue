@@ -7,11 +7,22 @@ import { confirmDialog } from "../stores/dialog";
 import { HTTP_API_CHANGE_EVENT } from "../stores/http-api-sync";
 import RequestLibraryList from "../components/request-library/RequestLibraryList.vue";
 import RequestLibraryDetail from "../components/request-library/RequestLibraryDetail.vue";
+import RequestLibraryImportDialog from "../components/request-library/RequestLibraryImportDialog.vue";
 import {
   buildRequestGroups,
+  requestMethod,
+  requestUrl,
   type RequestGroupKey,
   type RequestSortKey,
 } from "../components/request-library/request-library-view";
+// 导入（Task 8）：解析与去重均为纯函数；落库复用既有 POST /api/request-library。
+import {
+  buildImportRequest,
+  filterDuplicateItems,
+  importDedupKey,
+  type ImportSubmitOutcome,
+  type ImportSubmitPayload,
+} from "../utils/request-library-import";
 
 /**
  * 请求库窗口：工作区级可重放请求集合（ReqFlow「请求中心」形态）。
@@ -226,6 +237,61 @@ function toggleTag(tag: string): void {
     : [...activeTags.value, tag];
 }
 
+// ---- 导入入口（Task 8；独立区块，与列表/详情逻辑无耦合） ----
+
+const importOpen = ref(false);
+
+/**
+ * 导入对话框回调：skipDuplicates 时全量拉取库内既有条目构建 `METHOD URL` 键集
+ * 去重，随后逐条走既有 POST /api/request-library 入库（服务端做默认命名与重名
+ * 后缀），最后刷新列表并汇总提示。
+ */
+async function importRequests(payload: ImportSubmitPayload): Promise<ImportSubmitOutcome> {
+  const requestLibrary = backend.requestLibrary;
+  if (!requestLibrary) return { imported: 0, failed: payload.items.length, skipped: 0 };
+  let existingKeys: Set<string> | null = null;
+  if (payload.skipDuplicates) {
+    existingKeys = new Set();
+    let offset = 0;
+    for (;;) {
+      const page = await requestLibrary.page({
+        query: null,
+        tags: null,
+        source: null,
+        limit: PAGE_SIZE,
+        offset,
+      });
+      for (const entry of page.entries) {
+        existingKeys.add(importDedupKey(requestMethod(entry), requestUrl(entry)));
+      }
+      offset += page.entries.length;
+      if (page.entries.length === 0 || offset >= page.total) break;
+    }
+  }
+  const { kept, duplicates } = existingKeys
+    ? filterDuplicateItems(payload.items, existingKeys)
+    : { kept: payload.items, duplicates: [] };
+  let imported = 0;
+  let failed = 0;
+  for (const item of kept) {
+    try {
+      await requestLibrary.create(buildImportRequest(item, payload.tags));
+      imported += 1;
+    } catch (error) {
+      failed += 1;
+      reportError(error, "导入请求库条目失败");
+    }
+  }
+  if (imported > 0 || duplicates.length > 0) {
+    const parts = [`导入 ${imported} 条`];
+    if (duplicates.length > 0) parts.push(`跳过重复 ${duplicates.length} 条`);
+    if (failed > 0) parts.push(`失败 ${failed} 条`);
+    appStore.toast(parts.join("，"), failed > 0 && imported === 0 ? "error" : "success");
+  }
+  await refresh();
+  return { imported, failed, skipped: duplicates.length };
+}
+
 function onHttpApiChange(event: Event): void {
   const { resources } = (event as CustomEvent<HttpApiChange>).detail;
   if (!resources.includes("all") && !resources.includes("request_library")) return;
@@ -292,6 +358,12 @@ onBeforeUnmount(() => {
         }}
       </p>
     </div>
+    <!-- 导入对话框（Task 8；Teleport 到 body，独立于列表/详情布局） -->
+    <RequestLibraryImportDialog
+      v-if="importOpen"
+      :import-requests="importRequests"
+      @close="importOpen = false"
+    />
   </div>
 </template>
 
