@@ -24,6 +24,7 @@ import {
   openRequestLibrary,
   openTextDiff,
   openWorkflowEditor,
+  openWorkflowTransfer,
   openRequestInterceptorManager,
   openResponseInterceptorManager,
   openRoutingManager,
@@ -54,6 +55,7 @@ import {
   Io5ShieldCheckmark,
   Io5Stop,
   Io5Sunny,
+  Io5SwapHorizontal,
   Io5Warning,
   Io5GitCompare,
   Io5QrCode,
@@ -300,6 +302,14 @@ onBeforeUnmount(() => {
           >
             <Io5GitNetwork :size="14" />
             <span>工作流</span>
+          </button>
+          <button
+            v-if="backend.workflows"
+            class="tb-menu-item"
+            @click="runMenuAction(openWorkflowTransfer)"
+          >
+            <Io5SwapHorizontal :size="14" />
+            <span>工作流导入导出</span>
           </button>
           <div class="tb-menu-divider" />
           <button class="tb-menu-item" @click="runMenuAction(openAssetManager)">
