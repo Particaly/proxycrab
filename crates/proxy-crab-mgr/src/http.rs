@@ -46,7 +46,8 @@ use crate::{
         ExecuteTemporaryScriptRequest, ExtendBreakpointRequest, FlowListQuery,
         FlowProjectCreateRequest, FlowProjectUpdateRequest, HttpApiChange, HttpApiResource,
         IngestCaptureRequest, InterceptorCreateRequest, InterceptorUpdateRequest,
-        FlowScriptDryRunRequest, LogIdsRequest, LogViewsRequest, ManagerError, ManagerResult,
+        FlowRunListQuery, FlowRunTriggerRequest, FlowScriptDryRunRequest, LogIdsRequest,
+        LogViewsRequest, ManagerError, ManagerResult,
         ReplaceActiveEnvSetRequest, ReplaceEnvGlobalsRequest,
         ReplaceSessionInterceptorsRequest, ReplaceSessionViewRequest, ReplayRequestPayload,
         RequestLibraryBodyQuery, RequestLibraryQuery, RoutingSelection, SaveEnvSetRequest,
@@ -477,6 +478,16 @@ fn router_with_changes_and_extra(
         )
         .route("/api/workflows/{id}/validate", post(validate_workflow))
         .route("/api/flow/script/dry-run", post(flow_script_dry_run))
+        /* ---- Workflow run domain (plan Task 19): standalone section ---- */
+        .route(
+            "/api/flow/runs",
+            get(workflow_runs).post(trigger_workflow_run),
+        )
+        .route("/api/flow/runs/{id}", get(workflow_run_detail))
+        .route(
+            "/api/flow/runs/{id}/cancel",
+            post(cancel_workflow_run),
+        )
         .route(
             "/api/request-library",
             get(request_library_list).post(request_library_create),
@@ -842,6 +853,15 @@ fn change_for_request(method: &Method, path: &str, query: Option<&str>) -> Optio
         }
         (&Method::DELETE, value) if value.starts_with("/api/bypass/") => {
             vec![HttpApiResource::Bypass]
+        }
+        // Workflow runs (plan Task 19): triggering creates a run row and
+        // cancelling requests a terminal transition; the progress event bridge
+        // additionally broadcasts on every FlowRunEvent.
+        (&Method::POST, "/api/flow/runs") => vec![HttpApiResource::FlowRuns],
+        (&Method::POST, value)
+            if value.starts_with("/api/flow/runs/") && value.ends_with("/cancel") =>
+        {
+            vec![HttpApiResource::FlowRuns]
         }
         _ => return None,
     };
@@ -1724,6 +1744,37 @@ async fn flow_script_dry_run(
     ApiJson(request): ApiJson<FlowScriptDryRunRequest>,
 ) -> ApiResult {
     success(manager.flow_script_dry_run(request).await?)
+}
+
+/* ---- Workflow run domain (plan Task 19) ---- */
+
+async fn trigger_workflow_run(
+    State(manager): State<ManagerState>,
+    ApiJson(request): ApiJson<FlowRunTriggerRequest>,
+) -> ApiResult {
+    success(manager.trigger_workflow_run(request).await?)
+}
+
+async fn workflow_runs(
+    State(manager): State<ManagerState>,
+    ApiQuery(query): ApiQuery<FlowRunListQuery>,
+) -> ApiResult {
+    success(manager.workflow_runs(query).await?)
+}
+
+async fn workflow_run_detail(
+    State(manager): State<ManagerState>,
+    ApiPath(id): ApiPath<String>,
+) -> ApiResult {
+    success(manager.workflow_run_detail(id).await?)
+}
+
+async fn cancel_workflow_run(
+    State(manager): State<ManagerState>,
+    ApiPath(id): ApiPath<String>,
+) -> ApiResult {
+    manager.cancel_workflow_run(id).await?;
+    success(json!({}))
 }
 
 // Environment variable sets and global variables; reads return masked secret
