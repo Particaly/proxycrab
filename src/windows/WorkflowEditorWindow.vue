@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch, type WatchStopHandle } from "vue";
 import { Io5Add, Io5Close, Io5Refresh, Io5Save, Io5Trash } from "vue-icons-plus/io5";
 import { useBackend } from "../api";
 import type {
@@ -61,6 +61,10 @@ import {
   latestRunningRunId,
   refreshFlowRuns,
 } from "../stores/flow-run";
+import {
+  consumeEditorFocus,
+  editorFocusStore,
+} from "../stores/editor-focus";
 import { flowTrialStore } from "../stores/flow-trial";
 import { windowsStore } from "../stores/windows";
 import "../styles/flow.css";
@@ -100,6 +104,8 @@ const validating = ref(false);
 /** 运行触发 / 取消的在途标记（按钮防抖）。 */
 const triggering = ref(false);
 const cancelling = ref(false);
+/** 「在编辑器打开」聚焦请求的 watch 句柄（卸载时停止）。 */
+let stopEditorFocusWatcher: WatchStopHandle | undefined;
 const newProjectName = ref("");
 const newWorkflowName = ref("");
 /** 画布重挂载计数：切换流程后重新 fit-view。 */
@@ -622,6 +628,10 @@ onMounted(() => {
   windowsStore.registerCloseGuard(WINDOW_ID, confirmDiscard);
   window.addEventListener("keydown", onKeydown);
   ensureFlowRunListening();
+  stopEditorFocusWatcher = watch(
+    () => editorFocusStore.version,
+    () => void consumeEditorFocusRequest(),
+  );
   void refresh();
   void loadActiveEnv();
 });
@@ -629,7 +639,29 @@ onMounted(() => {
 onBeforeUnmount(() => {
   windowsStore.unregisterCloseGuard(WINDOW_ID);
   window.removeEventListener("keydown", onKeydown);
+  stopEditorFocusWatcher?.();
 });
+
+/** 消费「在编辑器打开」聚焦请求：切流程（如需）并选中节点（尽力而为）。 */
+async function consumeEditorFocusRequest(): Promise<void> {
+  const request = consumeEditorFocus();
+  if (!request) return;
+  try {
+    if (workflow.value?.id !== request.workflowId) {
+      const target =
+        workflows.value.find((item) => item.id === request.workflowId) ??
+        (await api.getWorkflow(request.workflowId));
+      if (workflow.value?.id !== target.id) await selectWorkflow(target);
+    }
+    if (nodes.value.some((node) => node.id === request.nodeId)) {
+      selectedNodeId.value = request.nodeId;
+    } else {
+      appStore.toast("该节点已不在当前流程中", "error");
+    }
+  } catch (error) {
+    reportError(error, "在编辑器打开失败");
+  }
+}
 </script>
 
 <template>

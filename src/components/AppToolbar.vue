@@ -22,6 +22,7 @@ import {
   openQrCode,
   openReplay,
   openRequestLibrary,
+  openRunHistory,
   openTextDiff,
   openWorkflowEditor,
   openWorkflowTransfer,
@@ -310,6 +311,14 @@ onBeforeUnmount(() => {
           >
             <Io5SwapHorizontal :size="14" />
             <span>工作流导入导出</span>
+          </button>
+          <button
+            v-if="backend.flowRuns"
+            class="tb-menu-item"
+            @click="runMenuAction(openRunHistory)"
+          >
+            <Io5List :size="14" />
+            <span>运行记录</span>
           </button>
           <div class="tb-menu-divider" />
           <button class="tb-menu-item" @click="runMenuAction(openAssetManager)">
