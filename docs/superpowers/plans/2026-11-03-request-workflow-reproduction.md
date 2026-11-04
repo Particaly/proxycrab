@@ -305,11 +305,11 @@
 - Create: `crates/proxy-crab-mitm/src/flow/run.rs`、`crates/proxy-crab-mitm/src/flow/run_store.rs`
 - Modify: `crates/proxy-crab-mgr/src/{http.rs,permission.rs,manager.rs}`
 
-- [ ] **Step 1: 运行生命周期**：建单（`running` + 图快照）→ 逐节点 checkpoint → 定稿；运行注册表与取消（AbortController 等价物，取消优先于失败）。
+- [x] **Step 1: 运行生命周期**：建单（`running` + 图快照）→ 逐节点 checkpoint → 定稿；运行注册表与取消（AbortController 等价物，取消优先于失败）。
 - [ ] **Step 2: 进度事件**：节点级与运行级事件经既有变更广播机制推送到前端（复用 `proxycrab://http-api-change` / `/ui-api/changes` 形态）。
-- [ ] **Step 3: 前提校验**：代理运行中、目标 Session 存在、工作流图合法；不满足时明确报错不建单（或在建单后立即失败并给出原因）。
-- [ ] **Step 4: 写队列**：逐 run 串行化写回，防 checkpoint 交叠丢失；定稿排在挂起写之后。
-- [ ] **Step 5: 测试**：取消、并行度、写队列交错、进程重启后孤儿 `running` → `interrupted`（常驻进程下对应「重启扫描收敛」）。
+- [x] **Step 3: 前提校验**：代理运行中、目标 Session 存在、工作流图合法；不满足时明确报错不建单（或在建单后立即失败并给出原因）。
+- [x] **Step 4: 写队列**：逐 run 串行化写回，防 checkpoint 交叠丢失；定稿排在挂起写之后。
+- [x] **Step 5: 测试**：取消、并行度、写队列交错、进程重启后孤儿 `running` → `interrupted`（常驻进程下对应「重启扫描收敛」）。
 
 ### Task 20: 图执行语义落地（载荷侧收口）
 
@@ -351,8 +351,8 @@
 - Create: `crates/proxy-crab-mitm/src/flow/transfer.rs`、`src/windows/WorkflowTransferWindow.vue`（或并入画布窗口）
 - Modify: `crates/proxy-crab-mgr/src/{http.rs,permission.rs}`
 
-- [ ] **Step 1: 导出**：流程 + 引用到的请求库条目 + 环境变量集（secret 剔除）；格式带版本号。
-- [ ] **Step 2: 导入**：形状校验、refId 读时迁移、脚本逐条确认（缺省置空脚本）、冲突裁决（重名/refId 冲突）。
+- [x] **Step 1: 导出**：流程 + 引用到的请求库条目 + 环境变量集（secret 剔除）；格式带版本号。
+- [x] **Step 2: 导入**：形状校验、refId 读时迁移、脚本逐条确认（缺省置空脚本）、冲突裁决（重名/refId 冲突）。
 - [ ] **Step 3: 与 Agent 面一致**：导入需显式 `confirmScripts` 语义（对齐 ReqFlow M19 的安全口径）。
 - [ ] **Step 4: 测试**：往返一致、拒绝畸形输入、secret 不泄漏。
 
