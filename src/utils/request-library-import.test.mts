@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { buildDefaultRequestName, parseCurlCommand, parseUrlOrigin } from "./request-library-import.ts";
+import {
+  IMPORT_BODY_MAX_BYTES,
+  buildDefaultRequestName,
+  filterDuplicateItems,
+  importDedupKey,
+  parseCurlCommand,
+  parseHarImport,
+  parsePostmanImport,
+  parseUrlOrigin,
+} from "./request-library-import.ts";
 
 /** 断言解析失败并返回错误信息（类型收窄辅助）。 */
 function expectError(command: string): string {
@@ -252,3 +261,269 @@ describe("默认命名与 origin", () => {
     expect(parseUrlOrigin("file:///tmp/a")).toBe("");
   });
 });
+
+describe("parseHarImport", () => {
+  /** 组装单条目 HAR 文本（最小合法形状）。 */
+  const harText = (entries: unknown[]): string =>
+    JSON.stringify({
+      log: { version: "1.2", creator: { name: "Test" }, entries },
+    });
+
+  it("基础条目：请求侧字段与响应摘要归一，响应体文本不落库", () => {
+    const result = parseHarImport(
+      harText([
+        {
+          startedDateTime: "2026-11-01T00:00:00Z",
+          time: 120,
+          request: {
+            method: "POST",
+            url: "https://api.example.com/v1/orders?dry=1",
+            httpVersion: "HTTP/1.1",
+            headers: [{ name: "Content-Type", value: "application/json" }],
+            queryString: [{ name: "dry", value: "1" }],
+            cookies: [{ name: "sid", value: "abc", path: "/", secure: true }],
+            postData: { mimeType: "application/json", text: '{"sku":"A-1"}' },
+          },
+          response: {
+            status: 200,
+            statusText: "OK",
+            headers: [{ name: "X-Any", value: "1" }],
+            content: { size: 42, mimeType: "application/json", text: "should be dropped" },
+          },
+        },
+      ]),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.skipped).toEqual([]);
+    const item = result.items[0];
+    expect(item.method).toBe("POST");
+    expect(item.status).toBe(200);
+    expect(item.entry.startedDateTime).toBe("2026-11-01T00:00:00Z");
+    expect(item.entry.time).toBe(120);
+    expect(item.entry.request.headers).toEqual([{ name: "Content-Type", value: "application/json" }]);
+    expect(item.entry.request.queryString).toEqual([{ name: "dry", value: "1" }]);
+    expect(item.entry.request.cookies).toEqual([{ name: "sid", value: "abc" }]);
+    expect(item.entry.request.postData).toEqual({ mimeType: "application/json", text: '{"sku":"A-1"}' });
+    expect(item.entry.response).toMatchObject({
+      status: 200,
+      statusText: "OK",
+      content: { size: 42, mimeType: "application/json" },
+    });
+    expect(item.entry.response?.headers).toEqual([]);
+    expect(JSON.stringify(item.entry)).not.toContain("should be dropped");
+  });
+
+  it("缺响应条目不携带 response；状态未知条目 status=-1", () => {
+    const result = parseHarImport(harText([{ request: { method: "GET", url: "https://a.dev" } }]));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items[0].status).toBe(-1);
+    expect(result.items[0].entry.response).toBeUndefined();
+  });
+
+  it("超 64KiB 请求体按 UTF-8 边界截断", () => {
+    const big = "你".repeat(40_000); // 120KB UTF-8
+    const result = parseHarImport(
+      harText([
+        {
+          request: {
+            method: "POST",
+            url: "https://a.dev",
+            postData: { mimeType: "text/plain", text: big },
+          },
+        },
+      ]),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const text = result.items[0].entry.request.postData?.text ?? "";
+    expect(new TextEncoder().encode(text).length).toBeLessThanOrEqual(IMPORT_BODY_MAX_BYTES);
+    expect(text.endsWith("你")).toBe(true); // 不含半字符
+  });
+
+  it("条目级失败跳过并记录原因，不中断其余条目", () => {
+    const result = parseHarImport(
+      harText(["nope", { request: { url: "https://a.dev" } }, { request: { method: "GET", url: "https://b.dev" } }]),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items.map((item) => item.url)).toEqual(["https://b.dev"]);
+    expect(result.skipped).toEqual([
+      { index: 0, reason: "条目不是对象" },
+      { index: 1, reason: "缺少 request.method 或 request.url" },
+    ]);
+  });
+
+  it("文件级失败：空 / 非 JSON / 缺 log / 缺 entries", () => {
+    expect(parseHarImport("")).toMatchObject({ ok: false, error: "HAR 文件内容为空" });
+    expect(parseHarImport("not json")).toMatchObject({ ok: false, error: "文件内容不是有效的 JSON" });
+    expect(parseHarImport("{}")).toMatchObject({ ok: false });
+    expect(parseHarImport('{"log":{}}')).toMatchObject({ ok: false });
+  });
+});
+
+describe("parsePostmanImport", () => {
+  it("v2.1 请求：URL 对象 / header / cookie / raw JSON body", () => {
+    const result = parsePostmanImport(
+      JSON.stringify({
+        info: { name: "Demo" },
+        item: [
+          {
+            name: "Create order",
+            request: {
+              method: "POST",
+              url: { raw: "https://api.example.com/v1/orders?dry=1", host: ["api", "example", "com"], path: ["v1", "orders"], query: [{ key: "dry", value: "1" }] },
+              header: [
+                { key: "Content-Type", value: "application/json" },
+                { key: "X-Drop", value: "skip", disabled: true },
+              ],
+              cookie: [{ key: "sid", value: "abc" }],
+              body: { mode: "raw", raw: '{"sku":"A-1"}', options: { raw: { language: "json" } } },
+            },
+          },
+        ],
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const item = result.items[0];
+    expect(item.method).toBe("POST");
+    expect(item.entry.request.url).toBe("https://api.example.com/v1/orders?dry=1");
+    expect(item.entry.request.queryString).toEqual([{ name: "dry", value: "1" }]);
+    expect(item.entry.request.headers).toEqual([{ name: "Content-Type", value: "application/json" }]);
+    expect(item.entry.request.cookies).toEqual([{ name: "sid", value: "abc" }]);
+    expect(item.entry.request.postData).toEqual({ mimeType: "application/json", text: '{"sku":"A-1"}' });
+  });
+
+  it("urlencoded 补 params 与编码正文；raw 无 language 时回退 Content-Type 头", () => {
+    const result = parsePostmanImport(
+      JSON.stringify({
+        item: [
+          {
+            request: {
+              method: "POST",
+              url: "https://a.dev/submit",
+              body: { mode: "urlencoded", urlencoded: [{ key: "msg", value: "你好 世界" }] },
+            },
+          },
+          {
+            request: {
+              method: "POST",
+              url: "https://a.dev/raw",
+              header: [{ key: "Content-Type", value: "text/csv" }],
+              body: { mode: "raw", raw: "plain" },
+            },
+          },
+        ],
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items[0].entry.request.postData).toEqual({
+      mimeType: "application/x-www-form-urlencoded",
+      params: [{ name: "msg", value: "你好 世界" }],
+      text: `msg=${encodeURIComponent("你好 世界")}`,
+    });
+    expect(result.items[1].entry.request.postData).toEqual({ mimeType: "text/csv", text: "plain" });
+  });
+
+  it("formdata 文本字段组装 multipart 体；文件字段跳过", () => {
+    const result = parsePostmanImport(
+      JSON.stringify({
+        item: [
+          {
+            request: {
+              method: "POST",
+              url: "https://a.dev/upload",
+              body: {
+                mode: "formdata",
+                formdata: [
+                  { key: "name", value: "A-1", type: "text" },
+                  { key: "avatar", type: "file", src: "/tmp/a.png" },
+                  { key: "skip", value: "x", disabled: true },
+                ],
+              },
+            },
+          },
+        ],
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const postData = result.items[0].entry.request.postData;
+    expect(postData?.mimeType).toContain("multipart/form-data; boundary=");
+    expect(postData?.params).toEqual([{ name: "name", value: "A-1" }]);
+    expect(postData?.text).toContain('form-data; name="name"');
+    expect(postData?.text).not.toContain("avatar");
+  });
+
+  it("目录递归展开；无 request 的条目跳过；method 缺省为 GET", () => {
+    const result = parsePostmanImport(
+      JSON.stringify({
+        item: [
+          {
+            name: "folder",
+            item: [{ request: { url: "https://a.dev/nested" } }],
+          },
+          { name: "no-request" },
+        ],
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0].method).toBe("GET");
+    expect(result.items[0].url).toBe("https://a.dev/nested");
+    expect(result.skipped).toEqual([{ index: 1, reason: "条目没有 request 描述" }]);
+  });
+
+  it("graphql body 转 JSON 正文；URL 对象缺 raw 时按 protocol/host/path 拼接", () => {
+    const result = parsePostmanImport(
+      JSON.stringify({
+        item: [
+          {
+            request: {
+              method: "POST",
+              url: { protocol: "https", host: ["a", "dev"], path: ["gql"] },
+              body: { mode: "graphql", graphql: { query: "{ ping }", variables: { x: 1 } } },
+            },
+          },
+        ],
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items[0].url).toBe("https://a.dev/gql");
+    expect(result.items[0].entry.request.postData?.mimeType).toBe("application/json");
+    expect(JSON.parse(result.items[0].entry.request.postData?.text ?? "{}")).toEqual({
+      query: "{ ping }",
+      variables: { x: 1 },
+    });
+  });
+
+  it("文件级失败：空 / 非 JSON / 缺 item 数组", () => {
+    expect(parsePostmanImport("")).toMatchObject({ ok: false });
+    expect(parsePostmanImport("[[[")).toMatchObject({ ok: false, error: "文件内容不是有效的 JSON" });
+    expect(parsePostmanImport('{"info":{}}')).toMatchObject({ ok: false, error: "Postman Collection 格式不正确：缺少 item 数组" });
+  });
+});
+
+describe("去重策略", () => {
+  /** 组装单条测试条目（借 HAR 路径构建最小合法形状）。 */
+  function item(method: string, url: string) {
+    const result = parseHarImport(JSON.stringify({ log: { entries: [{ request: { method, url } }] } }));
+    if (!result.ok) throw new Error("构建测试条目失败");
+    return result.items[0];
+  }
+
+  it("importDedupKey 方法大小写归一；filterDuplicateItems 按键分流", () => {
+    expect(importDedupKey(" get ", "https://a.dev/x")).toBe("GET https://a.dev/x");
+    const items = [item("GET", "https://a.dev/same"), item("POST", "https://a.dev/new")];
+    const { kept, duplicates } = filterDuplicateItems(items, new Set(["GET https://a.dev/same"]));
+    expect(kept.map((entry) => entry.url)).toEqual(["https://a.dev/new"]);
+    expect(duplicates.map((entry) => entry.url)).toEqual(["https://a.dev/same"]);
+  });
+});
+
+

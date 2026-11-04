@@ -1,6 +1,8 @@
 import type {
+  CreateRequestLibraryRequest,
   RequestLibraryHarEntry,
   RequestLibraryHarPair,
+  RequestLibraryHarPostData,
   RequestLibraryHarSnapshot,
 } from "../api/types";
 
@@ -12,14 +14,18 @@ import type {
  * Postman Collection v2.1 文本解析为可入库的请求条目列表。返回值均为纯数据，
  * 解析失败以 { ok:false, error } 表达，绝不向上抛未捕获异常。
  *
- * 体积策略：请求体 / 响应体超过 IMPORT_BODY_MAX_BYTES（64 KiB，对齐
- * request_library.rs 的 REQUEST_BODY_INLINE_LIMIT）时按 UTF-8 字符边界截断，
- * 保留原文大小字段不丢元信息。
+ * 容错分层：文件级失败（非 JSON / 缺 log.entries / 缺 item 数组）整体报错；
+ * 条目级失败（缺 method / url 等）跳过并记入 skipped，不中断其余条目。
+ *
+ * 体积策略：请求体超过 IMPORT_BODY_MAX_BYTES（64 KiB，对齐 request_library.rs
+ * 的 REQUEST_BODY_INLINE_LIMIT）时按 UTF-8 字符边界截断。最小快照的响应侧只留
+ * 摘要（status / content.size / mimeType，不含响应体文本，重放只消费请求侧）。
  *
  * 落库组装：buildImportSnapshot 把单条 entry 包成 {log:{version,creator,entries}}
- * 快照（creator 与后端 HAR_CREATOR 一致）；name 省略时由后端按
- * `METHOD host+path` 默认命名并做数字后缀去重，前端仅在预览时用
- * buildDefaultRequestName 生成同名规则文案。
+ * 快照；name 省略时由后端按 `METHOD host+path` 默认命名并做数字后缀去重，
+ * 前端仅在预览时用 buildDefaultRequestName 生成同名规则文案。
+ * 去重策略（importDedupKey / filterDuplicateItems）：以 `METHOD URL` 为身份键，
+ * 由调用方对库内既有条目键集合做跳过或全量导入。
  */
 
 /* ------------------------------------------------------------------ *
@@ -645,4 +651,454 @@ export function parseCurlCommand(input: string): CurlImportResult {
       ...(body !== undefined ? { body, mimeType } : {}),
     },
   };
+}
+
+/* ------------------------------------------------------------------ *
+ * 条目组装（HAR / Postman 两条路径共用）
+ * ------------------------------------------------------------------ */
+
+/** 条目组装输入：请求侧字段 + 可选响应摘要与时间信息。 */
+interface EntryInput {
+  method: string;
+  url: string;
+  headers: RequestLibraryHarPair[];
+  queryString: RequestLibraryHarPair[];
+  cookies?: RequestLibraryHarPair[];
+  postData?: RequestLibraryHarPostData;
+  startedDateTime?: string;
+  time?: number;
+  /** 响应状态（无响应 / 未知为 -1，此时不携带 response）。 */
+  status?: number;
+  statusText?: string;
+  /** 响应体字节摘要（content.size，未知 -1）。 */
+  responseSize?: number;
+  responseMimeType?: string;
+}
+
+/** 组装最小 HAR 条目（本仓库请求库的落库形状；请求体已在上层截断）。 */
+function buildEntry(input: EntryInput): RequestLibraryHarEntry {
+  const entry: RequestLibraryHarEntry = {
+    request: {
+      method: input.method,
+      url: input.url,
+      httpVersion: "HTTP/1.1",
+      headers: input.headers,
+      queryString: input.queryString,
+      ...(input.cookies !== undefined && input.cookies.length > 0 ? { cookies: input.cookies } : {}),
+      ...(input.postData !== undefined ? { postData: input.postData } : {}),
+    },
+  };
+  if (input.startedDateTime !== undefined) entry.startedDateTime = input.startedDateTime;
+  if (input.time !== undefined) entry.time = input.time;
+  if (input.status !== undefined && input.status >= 0) {
+    entry.response = {
+      status: input.status,
+      statusText: input.statusText ?? "",
+      httpVersion: "unknown",
+      headers: [],
+      content: { size: input.responseSize ?? -1, mimeType: input.responseMimeType ?? "" },
+      redirectURL: "",
+    };
+  }
+  return entry;
+}
+
+/** 组装可入库请求条目（method / url 平铺供预览与去重使用）。 */
+function buildItem(input: EntryInput): ImportRequestItem {
+  const entry = buildEntry(input);
+  return {
+    method: entry.request.method,
+    url: entry.request.url,
+    status: entry.response?.status ?? -1,
+    entry,
+  };
+}
+
+/** 单条目 → CreateRequestLibraryRequest（origin 取 URL；name 省略走后端默认命名）。 */
+export function buildImportRequest(
+  item: ImportRequestItem,
+  tags: string[] = [],
+): CreateRequestLibraryRequest {
+  return {
+    har: buildImportSnapshot([item.entry]),
+    tags: [...tags],
+    origin: parseUrlOrigin(item.url),
+  };
+}
+
+/* ------------------------------------------------------------------ *
+ * 去重策略
+ * ------------------------------------------------------------------ */
+
+/** 条目身份键：`METHOD URL`（方法大小写归一；URL 原样），用于跳过库内已有条目。 */
+export function importDedupKey(method: string, url: string): string {
+  return `${method.trim().toUpperCase()} ${url}`;
+}
+
+/** 按既有键集合分流：kept 为待导入，duplicates 为与库内重复的条目（纯函数）。 */
+export function filterDuplicateItems(
+  items: readonly ImportRequestItem[],
+  existingKeys: ReadonlySet<string>,
+): { kept: ImportRequestItem[]; duplicates: ImportRequestItem[] } {
+  const kept: ImportRequestItem[] = [];
+  const duplicates: ImportRequestItem[] = [];
+  for (const item of items) {
+    (existingKeys.has(importDedupKey(item.method, item.url)) ? duplicates : kept).push(item);
+  }
+  return { kept, duplicates };
+}
+
+/* ------------------------------------------------------------------ *
+ * HAR 1.2 解析
+ * ------------------------------------------------------------------ */
+
+/** 被跳过的损坏条目（含在 entries 中的下标与原因）。 */
+export interface ImportSkipped {
+  /** 原始 entries 数组中的下标（从 0 计）。 */
+  index: number;
+  /** 可展示的中文原因。 */
+  reason: string;
+}
+
+export type HarImportResult =
+  | { ok: true; items: ImportRequestItem[]; skipped: ImportSkipped[] }
+  | { ok: false; error: string };
+
+/** 归一化 HAR 头 / 查询串 / params 数组：仅保留 name / value 均为字符串的项。 */
+function normalizePairs(value: unknown): RequestLibraryHarPair[] {
+  if (!Array.isArray(value)) return [];
+  const pairs: RequestLibraryHarPair[] = [];
+  for (const item of value) {
+    if (!isPlainObject(item)) continue;
+    const name = readString(item["name"]);
+    const itemValue = readString(item["value"]);
+    if (name === undefined || itemValue === undefined) continue;
+    pairs.push({ name, value: itemValue });
+  }
+  return pairs;
+}
+
+/** 归一化 cookies：合法项取 name / value（path / domain 等属性最小快照不承载）。 */
+function normalizeCookiePairs(value: unknown): RequestLibraryHarPair[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const cookies: RequestLibraryHarPair[] = [];
+  for (const item of value) {
+    if (!isPlainObject(item)) continue;
+    const name = readString(item["name"]);
+    const itemValue = readString(item["value"]);
+    if (name === undefined || itemValue === undefined) continue;
+    cookies.push({ name, value: itemValue });
+  }
+  return cookies;
+}
+
+/** 归一化请求体：text 截断到 64 KiB；params 仅保留字符串键值项。 */
+function normalizePostData(value: unknown): RequestLibraryHarPostData | undefined {
+  if (!isPlainObject(value)) return undefined;
+  const postData: RequestLibraryHarPostData = { mimeType: readString(value["mimeType"]) ?? "" };
+  const params = normalizePairs(value["params"]);
+  if (params.length > 0) postData.params = params;
+  const text = readString(value["text"]);
+  if (text !== undefined) {
+    postData.text = truncateUtf8Safe(text, IMPORT_BODY_MAX_BYTES).text;
+  }
+  const encoding = readString(value["encoding"]) ?? readString(value["_encoding"]);
+  if (encoding !== undefined) postData.encoding = encoding;
+  return postData;
+}
+
+/**
+ * 解析 HAR 1.2 JSON 文本（纯函数，永不抛出）。
+ *
+ * 文件级失败（非 JSON / 缺 log / 缺 log.entries 数组）返回 ok:false；条目级失败
+ * （非对象 / 缺 request.method 或 request.url）跳过并记入 skipped，不中断其余。
+ * 响应侧只保留摘要（status / content.size / mimeType），响应体文本不落库
+ * （最小快照不含响应体，重放只消费请求侧）。
+ *
+ * @param text HAR 文件文本（通常来自 File.text()）
+ */
+export function parseHarImport(text: string): HarImportResult {
+  if (typeof text !== "string" || text.trim() === "") {
+    return { ok: false, error: "HAR 文件内容为空" };
+  }
+
+  let root: unknown;
+  try {
+    root = JSON.parse(text);
+  } catch {
+    return { ok: false, error: "文件内容不是有效的 JSON" };
+  }
+  if (!isPlainObject(root) || !isPlainObject(root["log"])) {
+    return { ok: false, error: "HAR 格式不正确：缺少 log 对象" };
+  }
+  const rawEntries = (root["log"] as Record<string, unknown>)["entries"];
+  if (!Array.isArray(rawEntries)) {
+    return { ok: false, error: "HAR 格式不正确：缺少 log.entries 数组" };
+  }
+
+  const items: ImportRequestItem[] = [];
+  const skipped: ImportSkipped[] = [];
+  for (let index = 0; index < rawEntries.length; index++) {
+    const raw = rawEntries[index];
+    if (!isPlainObject(raw)) {
+      skipped.push({ index, reason: "条目不是对象" });
+      continue;
+    }
+    const request = raw["request"];
+    if (!isPlainObject(request)) {
+      skipped.push({ index, reason: "缺少 request 对象" });
+      continue;
+    }
+    const method = readString(request["method"]);
+    const url = readString(request["url"]);
+    if (method === undefined || method === "" || url === undefined || url === "") {
+      skipped.push({ index, reason: "缺少 request.method 或 request.url" });
+      continue;
+    }
+    const response = isPlainObject(raw["response"]) ? raw["response"] : {};
+    const content = isPlainObject(response["content"]) ? response["content"] : {};
+    items.push(
+      buildItem({
+        method,
+        url,
+        headers: normalizePairs(request["headers"]),
+        queryString: normalizePairs(request["queryString"]),
+        cookies: normalizeCookiePairs(request["cookies"]),
+        postData: normalizePostData(request["postData"]),
+        startedDateTime: readString(raw["startedDateTime"]),
+        time: readFiniteNumber(raw["time"]),
+        status: readFiniteNumber(response["status"]),
+        statusText: readString(response["statusText"]),
+        responseSize: readFiniteNumber(content["size"]),
+        responseMimeType: readString(content["mimeType"]),
+      }),
+    );
+  }
+
+  return { ok: true, items, skipped };
+}
+
+/* ------------------------------------------------------------------ *
+ * Postman Collection v2.1 解析
+ * ------------------------------------------------------------------ */
+
+export type PostmanImportResult =
+  | { ok: true; items: ImportRequestItem[]; skipped: ImportSkipped[] }
+  | { ok: false; error: string };
+
+/** Postman 表单字段（urlencoded / formdata / cookie / query 共用的读取形状）。 */
+interface PostmanFormEntry {
+  name: string;
+  value: string;
+}
+
+/** 读取 Postman 键值项数组（key/value；跳过 disabled 与非法项）。 */
+function readPostmanPairs(value: unknown): PostmanFormEntry[] {
+  if (!Array.isArray(value)) return [];
+  const pairs: PostmanFormEntry[] = [];
+  for (const item of value) {
+    if (!isPlainObject(item)) continue;
+    if (item["disabled"] === true) continue;
+    const key = readString(item["key"]);
+    if (key === undefined || key === "") continue;
+    pairs.push({ name: key, value: readString(item["value"]) ?? "" });
+  }
+  return pairs;
+}
+
+/** Postman raw body 的 language 选项 → MIME（未知回退调用方提供的兜底）。 */
+const RAW_LANGUAGE_MIME: Record<string, string> = {
+  json: "application/json",
+  javascript: "application/javascript",
+  html: "text/html",
+  xml: "application/xml",
+};
+
+/** multipart 分隔边界（导入产物固定同一边界，重放组装语义一致即可）。 */
+const MULTIPART_BOUNDARY = "----ProxyCrabImportBoundary";
+
+/** 把表单字段组装为 multipart/form-data 文本体（文件字段由上层跳过）。 */
+function buildMultipartBody(fields: readonly PostmanFormEntry[]): string {
+  const parts = fields.map(
+    (field) =>
+      `--${MULTIPART_BOUNDARY}\r\nContent-Disposition: form-data; name="${field.name}"\r\n\r\n${field.value}\r\n`,
+  );
+  return `${parts.join("")}--${MULTIPART_BOUNDARY}--\r\n`;
+}
+
+/** urlencoded 字段 → 请求体原文（name 不编码，值 encodeURIComponent，& 拼接）。 */
+function buildUrlencodedBody(fields: readonly PostmanFormEntry[]): string {
+  return fields.map((field) => `${field.name}=${encodeURIComponent(field.value)}`).join("&");
+}
+
+/** 归一化 Postman body → 最小 postData（不支持的形态返回 undefined）。 */
+function readPostmanBody(
+  body: Record<string, unknown>,
+  contentType: string | undefined,
+): RequestLibraryHarPostData | undefined {
+  const mode = readString(body["mode"]);
+  if (mode === "raw" && typeof body["raw"] === "string") {
+    const options = isPlainObject(body["options"]) ? (body["options"] as Record<string, unknown>) : {};
+    const rawOptions = isPlainObject(options["raw"]) ? (options["raw"] as Record<string, unknown>) : {};
+    const language = readString(rawOptions["language"]);
+    return {
+      mimeType: RAW_LANGUAGE_MIME[language ?? ""] ?? contentType ?? "text/plain",
+      text: truncateUtf8Safe(body["raw"], IMPORT_BODY_MAX_BYTES).text,
+    };
+  }
+  if (mode === "urlencoded") {
+    const fields = readPostmanPairs(body["urlencoded"]);
+    if (fields.length === 0) return undefined;
+    return {
+      mimeType: "application/x-www-form-urlencoded",
+      params: fields.map((field) => ({ name: field.name, value: field.value })),
+      text: buildUrlencodedBody(fields),
+    };
+  }
+  if (mode === "formdata") {
+    // 文件字段（src 指向客户端本地文件）无法读取，跳过；文本字段组装为 multipart 体。
+    const all = Array.isArray(body["formdata"]) ? body["formdata"] : [];
+    const fields: PostmanFormEntry[] = [];
+    for (const item of all) {
+      if (!isPlainObject(item) || item["disabled"] === true) continue;
+      const key = readString(item["key"]);
+      if (key === undefined || key === "") continue;
+      if (item["type"] === "file" || item["src"] !== undefined) continue;
+      fields.push({ name: key, value: readString(item["value"]) ?? "" });
+    }
+    if (fields.length === 0) return undefined;
+    return {
+      mimeType: `multipart/form-data; boundary=${MULTIPART_BOUNDARY}`,
+      params: fields.map((field) => ({ name: field.name, value: field.value })),
+      text: truncateUtf8Safe(buildMultipartBody(fields), IMPORT_BODY_MAX_BYTES).text,
+    };
+  }
+  if (mode === "graphql" && isPlainObject(body["graphql"])) {
+    const graphql = body["graphql"] as Record<string, unknown>;
+    const payload = JSON.stringify({
+      query: readString(graphql["query"]) ?? "",
+      variables: graphql["variables"] ?? {},
+    });
+    return { mimeType: "application/json", text: truncateUtf8Safe(payload, IMPORT_BODY_MAX_BYTES).text };
+  }
+  return undefined;
+}
+
+/** 归一化 Postman URL（string 或 UrlObject）→ 原文 URL + queryString。 */
+function readPostmanUrl(value: unknown): { url: string; queryString: RequestLibraryHarPair[] } | null {
+  if (typeof value === "string") {
+    const queryIndex = value.indexOf("?");
+    const query: RequestLibraryHarPair[] =
+      queryIndex === -1
+        ? []
+        : value
+            .slice(queryIndex + 1)
+            .split("&")
+            .filter((pair) => pair !== "")
+            .map((pair) => {
+              const eq = pair.indexOf("=");
+              return {
+                name: eq === -1 ? pair : pair.slice(0, eq),
+                value: eq === -1 ? "" : pair.slice(eq + 1),
+              };
+            });
+    return { url: value, queryString: query };
+  }
+  if (!isPlainObject(value)) return null;
+  const raw = readString(value["raw"]);
+  if (raw !== undefined && raw !== "") return readPostmanUrl(raw);
+  // 无 raw 时按 protocol + host + path 拼接（host / path 为分段数组）。
+  const segments = (part: unknown): string[] =>
+    Array.isArray(part) ? part.filter((item): item is string => typeof item === "string") : [];
+  const protocol = readString(value["protocol"]) ?? "https";
+  const host = segments(value["host"]).join(".");
+  const path = segments(value["path"]).join("/");
+  if (host === "") return null;
+  const suffix = path === "" ? "" : `/${path}`;
+  return {
+    url: `${protocol}://${host}${suffix}`,
+    queryString: readPostmanPairs(value["query"]).map((pair) => ({
+      name: pair.name,
+      value: pair.value,
+    })),
+  };
+}
+
+/**
+ * 解析 Postman Collection v2.1 JSON 文本（纯函数，永不抛出）。
+ *
+ * 只导入请求（item.request），目录（folder）递归展开；示例响应不导入（最小快照
+ * 响应侧仅摘要）。请求体支持 raw / urlencoded / formdata（文件字段跳过，文本字段
+ * 组装 multipart 体）/ graphql；mode=file 无请求体。`{{variable}}` 模板占位保持
+ * 原样（重放时可经环境变量替换）。
+ *
+ * @param text Collection 文件文本（通常来自 File.text()）
+ */
+export function parsePostmanImport(text: string): PostmanImportResult {
+  if (typeof text !== "string" || text.trim() === "") {
+    return { ok: false, error: "Postman Collection 内容为空" };
+  }
+
+  let root: unknown;
+  try {
+    root = JSON.parse(text);
+  } catch {
+    return { ok: false, error: "文件内容不是有效的 JSON" };
+  }
+  if (!isPlainObject(root) || !Array.isArray(root["item"])) {
+    return { ok: false, error: "Postman Collection 格式不正确：缺少 item 数组" };
+  }
+
+  const items: ImportRequestItem[] = [];
+  const skipped: ImportSkipped[] = [];
+  let order = 0;
+
+  const walk = (nodes: unknown[], depth: number): void => {
+    if (depth > 16) return; // 防御异常嵌套
+    for (const node of nodes) {
+      if (!isPlainObject(node)) continue;
+      if (Array.isArray(node["item"])) {
+        walk(node["item"], depth + 1);
+        continue;
+      }
+      const index = order++;
+      const request = node["request"];
+      if (!isPlainObject(request)) {
+        skipped.push({ index, reason: "条目没有 request 描述" });
+        continue;
+      }
+      const parsedUrl = readPostmanUrl(request["url"]);
+      if (parsedUrl === null || parsedUrl.url === "") {
+        skipped.push({ index, reason: "缺少可解析的 request.url" });
+        continue;
+      }
+      const headers = readPostmanPairs(request["header"]).map((pair) => ({
+        name: pair.name,
+        value: pair.value,
+      }));
+      const contentType = headers.find(
+        (header) => header.name.toLowerCase() === "content-type",
+      )?.value;
+      const cookies = readPostmanPairs(request["cookie"]).map((pair) => ({
+        name: pair.name,
+        value: pair.value,
+      }));
+      const body = isPlainObject(request["body"])
+        ? (request["body"] as Record<string, unknown>)
+        : undefined;
+      items.push(
+        buildItem({
+          method: readString(request["method"]) ?? "GET",
+          url: parsedUrl.url,
+          headers,
+          queryString: parsedUrl.queryString,
+          cookies: cookies.length > 0 ? cookies : undefined,
+          postData: body === undefined ? undefined : readPostmanBody(body, contentType),
+        }),
+      );
+    }
+  };
+
+  walk(root["item"], 0);
+  return { ok: true, items, skipped };
 }
