@@ -5,6 +5,7 @@
 //! `POST /mcp` 权限目录 action 完成，语义与 `/api/*` 一致）。
 
 pub mod protocol;
+pub mod tools;
 
 /// 单条 MCP 消息的请求体上限（MCP 消息均为小型 JSON 信封）。
 pub const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
