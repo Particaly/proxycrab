@@ -45,6 +45,20 @@ export function buildNodeFieldSnippet(refId: string, path: string): string {
 }
 
 /**
+ * 格式化入参字段的裸路径简写片段（入参分组 chip 复制 / 拖拽载荷）。
+ *
+ * 与 flow-engine 模板「裸路径 = input.<path> 简写」语义对齐（15A 提示浮层
+ * 的入参简写同款）：当前节点配置内的引用取当前节点入参，裸形态更短。出参
+ * 引用（给下游节点用）走 buildNodeFieldSnippet 的带前缀形态——多上游聚合
+ * 时入参是 `{ 引用键: 输出 }` 对象，裸路径会有歧义。
+ *
+ * @param path 字段点分路径（collectJsonPaths 产出口径）
+ */
+export function buildInputFieldSnippet(path: string): string {
+  return `{{ ${path.replace(/^\.+/, "")} }}`;
+}
+
+/**
  * 判断拖拽是否携带 IO 字段载荷（dragover 阶段按 types 判定，详见模块头）。
  *
  * @param types dataTransfer.types（只读字符串列表；测试传普通数组同形）
