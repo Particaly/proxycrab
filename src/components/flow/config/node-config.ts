@@ -150,9 +150,7 @@ export function readReplayConfig(config: WorkflowNodeConfig): ReplayConfigDraft 
       url: asString(override["url"]),
       headers: asStringRecord(override["headers"]),
       removedHeaders: Array.isArray(override["removedHeaders"])
-        ? override["removedHeaders"].filter(
-            (name): name is string => typeof name === "string",
-          )
+        ? override["removedHeaders"].filter((name): name is string => typeof name === "string")
         : undefined,
       body: asString(override["body"]),
     };
@@ -185,7 +183,11 @@ export function readReplayConfig(config: WorkflowNodeConfig): ReplayConfigDraft 
       };
     }
   }
-  if (pinned && typeof pinned["pinnedAt"] === "number" && typeof pinned["sourceRunId"] === "string") {
+  if (
+    pinned &&
+    typeof pinned["pinnedAt"] === "number" &&
+    typeof pinned["sourceRunId"] === "string"
+  ) {
     draft.pinnedOutput = {
       value: pinned["value"],
       pinnedAt: pinned["pinnedAt"],
@@ -329,6 +331,50 @@ export interface HeaderRowDraft {
   name: string;
   value: string;
   original?: { name: string; value: string };
+}
+
+/**
+ * 打开抽屉时的行回填：基线捕获头 + 既有 override 合并成编辑行——
+ *   - 被删除的捕获头（removedHeaders 命中）不生成行；
+ *   - 捕获头被 override 覆盖（大小写不敏感）→ 行值取覆盖值、保留基线 original；
+ *   - override 中不属于捕获头的新键 → 追加为新增行。
+ * 顺序 = 捕获头原顺序 + 新增行顺序。
+ */
+export function headerRowsFromBaseline(
+  baseline: CapturedBaseline,
+  override: ReplayOverride | undefined,
+): HeaderRowDraft[] {
+  const overrideHeaders = override?.headers ?? {};
+  const removed = new Set(
+    (override?.removedHeaders ?? []).map((name) => name.trim().toLowerCase()),
+  );
+  const overriddenKeys = new Set<string>();
+  const rows: HeaderRowDraft[] = [];
+  for (const header of baseline.headers) {
+    const lower = header.name.trim().toLowerCase();
+    if (removed.has(lower)) continue;
+    const found = Object.entries(overrideHeaders).find(
+      ([name]) => name.trim().toLowerCase() === lower,
+    );
+    if (found) overriddenKeys.add(found[0].trim().toLowerCase());
+    rows.push({
+      name: found ? found[0] : header.name,
+      value: found ? found[1] : header.value,
+      original: { name: header.name, value: header.value },
+    });
+  }
+  for (const [name, value] of Object.entries(overrideHeaders)) {
+    if (overriddenKeys.has(name.trim().toLowerCase())) continue;
+    rows.push({ name, value });
+  }
+  return rows;
+}
+
+/** 读取引用快照中某个请求头的捕获值（大小写不敏感；未捕获返回 null）。 */
+export function capturedSpecialHeader(entry: RequestLibraryEntry, name: string): string | null {
+  const headers = entry.har?.log?.entries?.[0]?.request?.headers ?? [];
+  const found = headers.find((header) => header.name.trim().toLowerCase() === name.toLowerCase());
+  return found ? found.value : null;
 }
 
 function sameName(a: string, b: string): boolean {
@@ -508,9 +554,7 @@ export function generateRefId(exclude: ReadonlySet<string>): string {
   do {
     if (typeof globalThis.crypto?.getRandomValues === "function") {
       globalThis.crypto.getRandomValues(bytes);
-      candidate = [...bytes]
-        .map((byte) => REF_ID_ALPHABET[byte % REF_ID_ALPHABET.length])
-        .join("");
+      candidate = [...bytes].map((byte) => REF_ID_ALPHABET[byte % REF_ID_ALPHABET.length]).join("");
     } else {
       candidate = [...REF_ID_ALPHABET]
         .map(() => REF_ID_ALPHABET[Math.floor(Math.random() * REF_ID_ALPHABET.length)])

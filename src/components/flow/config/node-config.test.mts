@@ -3,7 +3,9 @@ import type { RequestLibraryEntry, WorkflowNode } from "../../../api/types";
 import {
   baselineFromEntry,
   buildReplayNodeConfig,
+  capturedSpecialHeader,
   generateRefId,
+  headerRowsFromBaseline,
   isSpecialHeader,
   manualHeadersFromRows,
   overrideFromHeaderRows,
@@ -291,6 +293,65 @@ describe("manualHeadersFromRows / validateHeaderRows", () => {
         { name: "A", value: "1" },
       ]),
     ).toBeNull();
+  });
+});
+
+describe("headerRowsFromBaseline / capturedSpecialHeader", () => {
+  const baseline = {
+    method: "GET",
+    url: "https://a.example.com/",
+    headers: [
+      { name: "accept", value: "*/*" },
+      { name: "authorization", value: "old" },
+    ],
+    bodyText: null,
+    bodyBinaryBytes: null,
+  };
+
+  it("无 override 时按基线回填", () => {
+    expect(headerRowsFromBaseline(baseline, undefined)).toEqual([
+      { name: "accept", value: "*/*", original: { name: "accept", value: "*/*" } },
+      {
+        name: "authorization",
+        value: "old",
+        original: { name: "authorization", value: "old" },
+      },
+    ]);
+  });
+
+  it("删除 / 覆盖 / 新增合并回填", () => {
+    const rows = headerRowsFromBaseline(baseline, {
+      headers: { Accept: "application/json", "x-new": "1" },
+      removedHeaders: ["AUTHORIZATION"],
+    });
+    expect(rows).toEqual([
+      {
+        name: "Accept",
+        value: "application/json",
+        original: { name: "accept", value: "*/*" },
+      },
+      { name: "x-new", value: "1" },
+    ]);
+  });
+
+  it("快照特殊头捕获值大小写不敏感", () => {
+    const entry = makeEntry({
+      log: {
+        version: "1.2",
+        entries: [
+          {
+            request: {
+              method: "GET",
+              url: "https://a.example.com/",
+              headers: [{ name: "User-Agent", value: "UA/1" }],
+              queryString: [],
+            },
+          },
+        ],
+      },
+    });
+    expect(capturedSpecialHeader(entry, "user-agent")).toBe("UA/1");
+    expect(capturedSpecialHeader(entry, "origin")).toBeNull();
   });
 });
 
