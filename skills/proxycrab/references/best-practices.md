@@ -32,6 +32,39 @@ Inspect at least one unmodified capture before adding an interceptor. When testi
 A successful save only proves syntax validation passed. The capture history is the evidence that the
 script executed and shows exactly which modifications were recorded.
 
+## Agent-driven request workflows
+
+Request workflows ([definitions](http-api.md#workflow-projects-and-definitions),
+[runs](http-api.md#workflow-runs)) replay request-library entries through a target Session's
+pipeline. Keep the loop explicit and observable:
+
+1. build the request library first: ingest a completed capture with `request-library-ingest.mjs`
+   and confirm the stored entry with `request-library-query.mjs`;
+2. save the graph with `workflow-save.mjs`, then call `workflow-validate.mjs` and resolve every
+   reported issue before triggering — the validator does not gate saves, and an unvalidated graph
+   only fails later at trigger time (`422 workflow_graph_invalid`);
+3. start the run with `run-trigger.mjs`, watch it to a terminal state with `run-wait.mjs`
+   (`success`/`failed`/`cancelled`/`interrupted`), and summarize per-node outcomes from the
+   terminal node digest or `run-query.mjs`; report the digest as observed instead of inventing
+   node input/output.
+
+A run requires the proxy to be running and an existing target Session (explicit `--session-id` or
+the active Session); a stopped proxy fails with `409 proxy_not_running` before any run row is
+written.
+
+Know the risks before triggering:
+
+- saves and run trigger/cancel are write/execution calls that default to `approval` and need
+  desktop approval. A denial or approval timeout surfaces as `403 permission_denied` /
+  `403 approval_timeout` (CLI targets treat a persisted approval as deny); report it as an approval
+  problem, never as node output or a workflow defect.
+- every run replays real requests and creates new captures (source `ProxyCrabRequest`) in the
+  target Session; loops and high concurrency can generate large amounts of capture records, so
+  scope loops deliberately and confirm volume with the user before high-volume runs.
+- run input/output snapshots and error text are secret-masked server-side; do not expect raw secret
+  values in run records, and read env effects through the
+  [env-set endpoints](http-api.md#environment-variable-sets-and-global-variables).
+
 ## Diagnose by lifecycle
 
 - `in_progress`: persisted unfinished state; confirm current activity through

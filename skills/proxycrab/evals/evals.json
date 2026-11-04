@@ -397,7 +397,33 @@
       "id": 67,
       "prompt": "Create ProxyCrab request and response interceptors that replace x-proxycrab-skill-eval with two values, first and second, and delete x-proxycrab-skill-eval-remove using headers:set. Preserve the existing chains and verify both on a new capture. Explain what happens if an array element is a number or an invalid header string.",
       "expected_output": "Uses headers:set(name, {\"first\", \"second\"}) on req.headers and resp.headers, and headers:set(name, {}) to delete the header. Preserves both existing interceptor chains when attaching. Explains dense string arrays, case-insensitive replacement, ordered values, and validation of every element before any mutation; numbers and invalid header values raise an error without partial changes. Verifies historical source and final headers plus header_set followed by header_append for two values and header_remove for the empty array on a new capture.",
-      "files": ["fixtures/test-header-arrays.lua"]
+      "files": [
+        "fixtures/test-header-arrays.lua"
+      ]
+    },
+    {
+      "id": 68,
+      "prompt": "Use ProxyCrab to create a request-library entry from capture log 42 in Session 3 named agent-eval-entry, then list the request library and report the new entry id with its method and URI. Do not resend the request.",
+      "expected_output": "The agent uses the request-library ingest script with session 3 and log 42, then the request-library query script to list entries, and reports the new entry id, method and URI matching the capture. Write calls go through the default approval flow; an approval timeout is reported as such and not retried in a loop.",
+      "files": []
+    },
+    {
+      "id": 69,
+      "prompt": "Create a ProxyCrab request workflow named agent-eval-flow with a start node, one httpReplay node and an end node wired start to httpReplay to end, then validate it and confirm the issues list is empty.",
+      "expected_output": "The agent uses workflow-save.mjs with a graph containing the three nodes and two edges, then workflow-validate.mjs and reports an empty issues array. If validation reports issues the agent fixes the graph and re-validates instead of saving an invalid graph or claiming success without the validator result.",
+      "files": []
+    },
+    {
+      "id": 70,
+      "prompt": "Trigger a run of the ProxyCrab request workflow agent-eval-flow, wait for it to reach a terminal state, and summarize the final status together with what each node did. Do not invent node output.",
+      "expected_output": "The agent uses run-trigger.mjs to start the run and run-wait.mjs to poll until a terminal state, then reports the final status (success or failed are both terminal) and a per-nodeId summary from the run output or run-query. An approval timeout or 403 during an execution call is reported as an approval problem rather than fabricated node evidence.",
+      "files": []
+    },
+    {
+      "id": 71,
+      "prompt": "List recent ProxyCrab workflow runs with run-query filtered by status, and confirm whether the run triggered in the previous step appears in the filtered list; report its run id and final status.",
+      "expected_output": "The agent uses run-query.mjs with a status filter matching the previous run's terminal state, consumes the returned run list, and reports whether the earlier run id is present with its final status. An empty list is reported as empty; run ids are not invented.",
+      "files": []
     }
   ]
 }
