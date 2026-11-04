@@ -131,7 +131,11 @@ const REGISTRY: &[ToolDescriptor] = &[
                 "integer",
                 "Optional inclusive upper bound of the log id range.",
             ),
-            ("limit", "integer", "Max ids to return."),
+            (
+                "limit",
+                "integer",
+                "Max ids to return; the manager caps it at 10000.",
+            ),
         ],
     },
     ToolDescriptor {
@@ -181,7 +185,11 @@ const REGISTRY: &[ToolDescriptor] = &[
                 "Comma-separated tag list; entries must carry every requested tag.",
             ),
             ("source", "string", "Filter by entry source."),
-            ("limit", "integer", "Max entries to return."),
+            (
+                "limit",
+                "integer",
+                "Max entries to return, between 1 and 1000; defaults to 200.",
+            ),
             ("offset", "integer", "Entries to skip."),
         ],
     },
@@ -223,9 +231,9 @@ const REGISTRY: &[ToolDescriptor] = &[
             (
                 "limit",
                 "integer",
-                "Max entries to return; omitted returns every workflow.",
+                "Max entries to return, between 1 and 200; omitted defaults to 50.",
             ),
-            ("offset", "integer", "Entries to skip."),
+            ("offset", "integer", "Entries to skip; must be non-negative."),
         ],
     },
     ToolDescriptor {
@@ -275,7 +283,11 @@ const REGISTRY: &[ToolDescriptor] = &[
         params: &[
             ("workflowId", "string", "Filter by workflow id."),
             ("status", "string", "Filter by run status."),
-            ("limit", "integer", "Max entries to return."),
+            (
+                "limit",
+                "integer",
+                "Max entries to return, between 1 and 1000; defaults to 200.",
+            ),
             ("offset", "integer", "Entries to skip."),
         ],
     },
@@ -515,19 +527,19 @@ fn enforce_page_bounds(name: &str, arguments: &Value) -> Result<Value, ManagerEr
     let has_limit = matches!(bounded.get("limit"), Some(value) if !value.is_null());
     if !has_limit {
         bounded["limit"] = json!(default_limit);
-    } else if let Some(limit) = bounded.get("limit").and_then(Value::as_i64) {
-        if !(1..=(max_limit as i64)).contains(&limit) {
-            return Err(ManagerError::bad_request(format!(
-                "limit must be between 1 and {max_limit}"
-            )));
-        }
+    } else if let Some(limit) = bounded.get("limit").and_then(Value::as_i64)
+        && !(1..=(max_limit as i64)).contains(&limit)
+    {
+        return Err(ManagerError::bad_request(format!(
+            "limit must be between 1 and {max_limit}"
+        )));
     }
-    if let Some(offset) = bounded.get("offset").and_then(Value::as_i64) {
-        if offset < 0 {
-            return Err(ManagerError::bad_request(
-                "offset must be a non-negative integer",
-            ));
-        }
+    if let Some(offset) = bounded.get("offset").and_then(Value::as_i64)
+        && offset < 0
+    {
+        return Err(ManagerError::bad_request(
+            "offset must be a non-negative integer",
+        ));
     }
     Ok(bounded)
 }
@@ -543,12 +555,16 @@ async fn execute(
     let arguments = &enforce_page_bounds(name, arguments)?;
     match name {
         "workflow_runs_list" => {
+            // manager 侧已校验 limit（1..=1000，缺省 200），工具层依赖既有校验。
             let query: FlowRunListQuery = parse_arguments(arguments)?;
             serialize_result(manager.workflow_runs(query).await?)
         }
         /* ---- 抓包读取 ---- */
+        // 会话数量天然少：无分页入参，全量返回可接受。
         "sessions_list" => serialize_result(manager.sessions().await?),
         "log_ids" => {
+            // manager 侧已限界：缺省 10000 且收敛到 ≤10000，limit=0 亦合法
+            // （仅校验过滤条件不扫描），工具层无需重复检查。
             let request: LogIdsRequest = parse_arguments(arguments)?;
             serialize_result(manager.log_ids(request).await?)
         }
@@ -570,6 +586,7 @@ async fn execute(
         }
         /* ---- 请求库 ---- */
         "request_library_list" => {
+            // manager 侧已校验 limit（1..=1000，缺省 200），工具层依赖既有校验。
             let query: RequestLibraryQuery = parse_arguments(arguments)?;
             serialize_result(manager.request_library_page(query).await?)
         }
