@@ -5970,7 +5970,7 @@ mod tests {
         // 新工作区缺省档：读开 / 写关 / 执行关，读类工具在 tools/list。
         let payload = mcp_tools_list(app.clone(), 1).await;
         let tools = payload["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 7);
+        assert_eq!(tools.len(), 10);
         assert!(
             tools
                 .iter()

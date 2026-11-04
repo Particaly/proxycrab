@@ -31,7 +31,7 @@ use proxy_crab_mitm::{
 use crate::{
     dto::{
         ErrorCode, FlowRunListQuery, IngestCaptureRequest, LogIdsRequest, ManagerError,
-        RequestLibraryQuery, SessionQuery,
+        RequestLibraryQuery, SessionQuery, WorkflowListQuery, WorkflowUpdateRequest,
     },
     manager::ProxyCrabManager,
     permission::{
@@ -211,6 +211,60 @@ const REGISTRY: &[ToolDescriptor] = &[
             ),
             ("tags", "array", "Optional tags assigned to the new entry."),
         ],
+    },
+    /* ---- 工作流 ---- */
+    ToolDescriptor {
+        name: "workflows_list",
+        description: "List workflow definitions, mirroring GET /api/workflows.",
+        route: ("GET", "/api/workflows"),
+        tier: ToolTier::Read,
+        params: &[
+            ("projectId", "string", "Filter by owning flow project id."),
+            (
+                "limit",
+                "integer",
+                "Max entries to return; omitted returns every workflow.",
+            ),
+            ("offset", "integer", "Entries to skip."),
+        ],
+    },
+    ToolDescriptor {
+        name: "workflow_detail",
+        description: "Fetch one workflow definition, mirroring GET /api/workflows/{id}.",
+        route: ("GET", "/api/workflows/{id}"),
+        tier: ToolTier::Read,
+        params: &[("id", "string", "Workflow id.")],
+    },
+    ToolDescriptor {
+        name: "workflow_save",
+        description: "Update one workflow definition, mirroring PUT /api/workflows/{id}.",
+        route: ("PUT", "/api/workflows/{id}"),
+        tier: ToolTier::Write,
+        params: &[
+            ("id", "string", "Workflow id to update."),
+            ("projectId", "string", "Optional new owning flow project id."),
+            ("name", "string", "Optional new workflow name."),
+            ("description", "string", "Optional new description."),
+            (
+                "nodes",
+                "array",
+                "Replacement node list; send together with edges as one graph unit.",
+            ),
+            (
+                "edges",
+                "array",
+                "Replacement edge list; send together with nodes as one graph unit.",
+            ),
+            ("variables", "object", "Replacement workflow variables map."),
+            ("secretVariables", "object", "Replacement secret variables map."),
+        ],
+    },
+    ToolDescriptor {
+        name: "workflow_validate",
+        description: "Validate one workflow graph, mirroring POST /api/workflows/{id}/validate.",
+        route: ("POST", "/api/workflows/{id}/validate"),
+        tier: ToolTier::Read,
+        params: &[("id", "string", "Workflow id to validate.")],
     },
     /* ---- 运行 ---- */
     ToolDescriptor {
@@ -457,6 +511,26 @@ async fn execute(
             let request: IngestCaptureRequest = parse_arguments(arguments)?;
             serialize_result(manager.ingest_request_from_capture(request).await?)
         }
+        /* ---- 工作流 ---- */
+        "workflows_list" => {
+            let query: WorkflowListQuery = parse_arguments(arguments)?;
+            serialize_result(manager.workflows(query).await?)
+        }
+        "workflow_detail" => {
+            let id = path_argument(arguments, "id")?;
+            serialize_result(manager.workflow(id).await?)
+        }
+        "workflow_save" => {
+            // WorkflowUpdateRequest 不含 id：路径 id 从入参取出，其余整体
+            // 反序列化（多出的 id 字段被 serde 忽略）。
+            let id = path_argument(arguments, "id")?;
+            let request: WorkflowUpdateRequest = parse_arguments(arguments)?;
+            serialize_result(manager.update_workflow(id, request).await?)
+        }
+        "workflow_validate" => {
+            let id = path_argument(arguments, "id")?;
+            serialize_result(manager.validate_workflow(id).await?)
+        }
         #[cfg(test)]
         "test_slow_tool" => Ok(slow_tool_stub::run().await),
         // lookup 已把执行器与注册表对齐；此分支不可达。
@@ -599,7 +673,7 @@ mod tests {
     fn tools_list_envelope_declares_the_curated_surface() {
         let envelope = list_envelope(&McpTiers::default());
         let tools = envelope["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 7);
+        assert_eq!(tools.len(), 10);
         let runs_list = tools
             .iter()
             .find(|tool| tool["name"] == "workflow_runs_list")
@@ -647,7 +721,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            7
+            10
         );
         // 读档关闭：tools/list 不再出现该类别工具。
         let read_off = McpTiers {
