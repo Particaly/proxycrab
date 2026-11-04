@@ -149,7 +149,8 @@ binding that fails to resolve fails closed. The `local` identity is not redacted
 
 ## Audit
 
-Every `tools/call` — denied and executed alike — appends one entry to
+Every `tools/call` that passes name validation and tier gating — denied by permission or executed
+alike — appends one entry to
 `<workspace>/flow/mcp-audit.json` (most recent 500 entries; best-effort and never blocks the
 call). Entries are camelCase: `seq`, `timestampMs`, `tool`, `identity` (`local`, `unresolved`, or
 the caller's share identity id), `argumentsSummary` (the raw arguments JSON truncated to 500
