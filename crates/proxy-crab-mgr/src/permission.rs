@@ -285,6 +285,9 @@ pub static API_ACTIONS: &[ApiAction] = &[
     // mapped-route checks — the stricter of the three always wins.
     action!("GET", "/api/mcp-tiers", Allow),
     action!("PUT", "/api/mcp-tiers", Approval),
+    // MCP tool call audit (plan Task 25 Step 4): 审计读是 read 类（`allow`）；
+    // 审计条目由 `tools/call` 链路内部落盘，不提供独立写端点。
+    action!("GET", "/api/mcp-audit", Allow),
 ];
 
 pub const OBSOLETE_API_ACTION_IDS: &[&str] = &[

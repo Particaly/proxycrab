@@ -28,6 +28,7 @@ use futures::{StreamExt, stream};
 use proxy_crab_mitm::model::{InterceptorKind, InterceptorScriptContent, SessionFilter};
 use proxy_crab_mitm::storage::{BodySide, BodySource, BodySourceData};
 use proxy_crab_mitm::flow::run::FlowRunEvent;
+use proxy_crab_mitm::flow::mcp_audit::MCP_AUDIT_MAX_ENTRIES;
 use proxy_crab_mitm::flow::mcp_tiers::McpTiers;
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -493,6 +494,9 @@ fn router_with_changes_and_extra(
         /* MCP exposure tiers (plan Task 25 Step 2): read (allow) and write
         (approval, like other posture-changing settings). */
         .route("/api/mcp-tiers", get(get_mcp_tiers).put(replace_mcp_tiers))
+        /* MCP tool call audit (plan Task 25 Step 4): read-only query of the
+        workspace audit log, entries newest (highest seq) first. */
+        .route("/api/mcp-audit", get(mcp_audit))
         .route(
             "/api/system-logs",
             get(system_logs).delete(clear_system_logs),
@@ -1841,6 +1845,22 @@ async fn replace_mcp_tiers(
     ApiJson(tiers): ApiJson<McpTiers>,
 ) -> ApiResult {
     success(manager.replace_mcp_tiers(tiers).await?)
+}
+
+/* ---- MCP tool call audit (plan Task 25 Step 4) ---- */
+
+/// `GET /api/mcp-audit` 查询参数：`limit` 缺省 100，超出上限收敛到 500。
+#[derive(Deserialize)]
+struct McpAuditQuery {
+    limit: Option<usize>,
+}
+
+async fn mcp_audit(
+    State(manager): State<ManagerState>,
+    ApiQuery(query): ApiQuery<McpAuditQuery>,
+) -> ApiResult {
+    let limit = query.limit.unwrap_or(100).min(MCP_AUDIT_MAX_ENTRIES);
+    success(json!({ "entries": manager.mcp_audit(limit).await? }))
 }
 
 async fn create_env_set(
@@ -7238,6 +7258,78 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn mcp_audit_route_returns_entries_newest_first() {
+        use proxy_crab_mitm::flow::mcp_audit::McpAuditEntry;
+
+        let directory = tempdir().unwrap();
+        let runtime = ProxyCrab::open(directory.path(), Arc::new(LogBuffer::default())).unwrap();
+        let manager = MitmManager::new(runtime);
+        // 存储与工具链的落盘行为在 flow::mcp_audit / mcp::tools 覆盖；这里
+        // 直接经 manager 追加两条，验证查询端点的信封与排序。
+        manager
+            .append_mcp_audit(McpAuditEntry::new(
+                "workflow_detail",
+                "local",
+                "{}",
+                "ok",
+                "allowed",
+                None,
+            ))
+            .await
+            .unwrap();
+        manager
+            .append_mcp_audit(McpAuditEntry::new(
+                "sessions_list",
+                "local",
+                "{}",
+                "denied",
+                "denied",
+                Some("permission denied: denied by test".into()),
+            ))
+            .await
+            .unwrap();
+        let app = router(manager, allow_all());
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/mcp-audit")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        let entries = payload["data"]["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+        // seq 倒序：最新在前；字段为 camelCase。
+        assert_eq!(entries[0]["tool"], "sessions_list");
+        assert_eq!(entries[0]["outcome"], "denied");
+        assert_eq!(entries[0]["argumentsSummary"], "{}");
+        assert_eq!(entries[1]["tool"], "workflow_detail");
+        // limit 收敛：只返回最新一条。
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/mcp-audit?limit=1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        let entries = payload["data"]["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["tool"], "sessions_list");
     }
 
 }

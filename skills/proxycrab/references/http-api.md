@@ -1891,6 +1891,12 @@ The curated tool surface is gated by three workspace switches persisted at `<wor
 - `GET /api/mcp-tiers` (default `allow`) → `{ok,data:{read,write,execute}}` booleans.
 - `PUT /api/mcp-tiers` (default `approval`) with body `{read,write,execute}` replaces all three switches and returns the stored value.
 
+## MCP tool call audit
+
+Every `tools/call` — denied or executed — appends one audit entry to `<workspace>/flow/mcp-audit.json` (max 500 entries, oldest dropped; a corrupted envelope degrades to empty, writes never block the tool call). Each entry: `seq` (workspace-wide monotonic), `timestampMs`, `tool`, `identity` (`local`/`unresolved`/share identity id), `argumentsSummary` (arguments JSON truncated to 500 chars with a `…` marker; result bodies are never stored), `outcome` (`ok`/`denied`/`error`), `decision` (`allowed`/`denied`), optional `reason` (denial text or stable manager error code). The caller's redaction binding applies to tool execution the same way as `/api/*` reads, so bound callers get redacted tool results.
+
+- `GET /api/mcp-audit?limit=` (default `allow`, read-class) → `{ok,data:{entries:[...]}}` newest first (`limit` defaults to 100, capped at 500).
+
 ### `POST /mcp` example
 
 ```json
