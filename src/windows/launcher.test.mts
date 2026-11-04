@@ -5,6 +5,7 @@ import {
   openRequestLibrary,
   openRunDetail,
   openRunHistory,
+  openWorkflowEditor,
   openWorkflowTransfer,
 } from "./launcher";
 
@@ -33,6 +34,18 @@ test("workflow transfer window opens once and requires the workflows capability"
   windowsStore.windows = [];
   (backend as Record<string, unknown>).workflows = undefined;
   openWorkflowTransfer();
+  expect(windowsStore.windows).toHaveLength(0);
+});
+
+test("workflow editor window opens once and requires the workflows capability", () => {
+  (backend as Record<string, unknown>).workflows = { listProjects: vi.fn() };
+  openWorkflowEditor();
+  openWorkflowEditor();
+  expect(windowsStore.windows).toHaveLength(1);
+  expect(windowsStore.windows[0]!.title).toBe("工作流编辑器");
+  windowsStore.windows = [];
+  (backend as Record<string, unknown>).workflows = undefined;
+  openWorkflowEditor();
   expect(windowsStore.windows).toHaveLength(0);
 });
 
