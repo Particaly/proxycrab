@@ -329,10 +329,10 @@
 - Create: `crates/proxy-crab-mitm/src/flow/run_record.rs`
 - Modify: `crates/proxy-crab-mitm/src/flow/run_store.rs`
 
-- [ ] **Step 1: runs.db schema**：运行主表 + 节点运行表（含 loop 迭代明细），索引按 `workflowId` / `startedAt`。
-- [ ] **Step 2: 快照三档**：单快照 256KB、整条记录 2MB、图快照 256KB；超限逐级收紧并**自说明截断**（`TruncatedSnapshot` 形态 + 尾部标记），读侧可识别。
-- [ ] **Step 3: 图快照契约**：深拷贝零共享引用、恒剥离 `pinnedOutput`、超限降级为骨架并标记。
-- [ ] **Step 4: 测试**：截断幂等、字节口径（UTF-8 边界）、降级披露字段。
+- [x] **Step 1: runs.db schema**：运行主表 + 节点运行表（含 loop 迭代明细），索引按 `workflowId` / `startedAt`。
+- [x] **Step 2: 快照三档**：单快照 256KB、整条记录 2MB、图快照 256KB；超限逐级收紧并**自说明截断**（`TruncatedSnapshot` 形态 + 尾部标记），读侧可识别。
+- [x] **Step 3: 图快照契约**：深拷贝零共享引用、恒剥离 `pinnedOutput`、超限降级为骨架并标记。
+- [x] **Step 4: 测试**：截断幂等、字节口径（UTF-8 边界）、降级披露字段。
 
 ### Task 22: 运行记录窗口与运行详情（运行画布）
 
