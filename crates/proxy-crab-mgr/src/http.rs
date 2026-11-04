@@ -25,6 +25,7 @@ use axum::{
 };
 use bytes::Bytes;
 use futures::{StreamExt, stream};
+use proxy_crab_mitm::flow::run::FlowRunEvent;
 use proxy_crab_mitm::model::{InterceptorKind, InterceptorScriptContent, SessionFilter};
 use proxy_crab_mitm::storage::{BodySide, BodySource, BodySourceData};
 use serde::{Deserialize, de::DeserializeOwned};
@@ -194,6 +195,11 @@ where
         changes.clone(),
         cancellation.clone(),
     );
+    let run_change_task = spawn_flow_run_change_bridge(
+        manager.subscribe_flow_run_events(),
+        changes.clone(),
+        cancellation.clone(),
+    );
     let extra = extra_routes(changes.clone());
     let app =
         secured_router_with_changes_and_extra(manager, permissions, shares, changes.clone(), extra);
@@ -209,6 +215,7 @@ where
         }
         task_shutdown.cancel();
         let _ = change_task.await;
+        let _ = run_change_task.await;
     });
     Ok(HttpServerHandle {
         host: std::net::Ipv4Addr::UNSPECIFIED.to_string(),
@@ -235,6 +242,34 @@ fn spawn_proxy_status_change_bridge(
                         resources: vec![HttpApiResource::Proxy],
                         session_id: None,
                     });
+                }
+                _ = cancellation.cancelled() => break,
+            }
+        }
+    })
+}
+
+fn spawn_flow_run_change_bridge(
+    mut run_events: broadcast::Receiver<FlowRunEvent>,
+    changes: ChangeSender,
+    cancellation: CancellationToken,
+) -> JoinHandle<()> {
+    // Step 2 进度事件桥：把运行编排的节点级 / 运行级事件折算成 `FlowRuns`
+    // 资源变更广播（前端收到后拉取运行列表 / 详情刷新，运行级与节点级
+    // 统一收敛为一个资源域，避免高频节点事件逐条建模）。
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                result = run_events.recv() => {
+                    match result {
+                        Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {
+                            let _ = changes.send(HttpApiChange {
+                                resources: vec![HttpApiResource::FlowRuns],
+                                session_id: None,
+                            });
+                        }
+                        Err(broadcast::error::RecvError::Closed) => break,
+                    }
                 }
                 _ = cancellation.cancelled() => break,
             }
@@ -2125,7 +2160,9 @@ impl ErrorCode {
             Self::RedactionManagementDisabled
             | Self::MessageContentHidden
             | Self::ShareRedactionForbidden => StatusCode::FORBIDDEN,
-            Self::MessageContentUnavailable => StatusCode::UNPROCESSABLE_ENTITY,
+            Self::MessageContentUnavailable | Self::WorkflowGraphInvalid => {
+                StatusCode::UNPROCESSABLE_ENTITY
+            }
             Self::BadRequest | Self::InvalidAssetId | Self::InvalidAssetFormat => {
                 StatusCode::BAD_REQUEST
             }
