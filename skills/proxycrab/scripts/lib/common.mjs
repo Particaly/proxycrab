@@ -25,7 +25,7 @@ export function parseArgs(argv = process.argv.slice(2)) {
     }
     const key = token.slice(2);
     if (!key) throw new UsageError("empty option name");
-    if (key === "help" || key === "regex" || key === "include-in-progress") {
+    if (key === "help" || key === "regex" || key === "include-in-progress" || key === "json") {
       args[key] = true;
       continue;
     }
