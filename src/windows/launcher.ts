@@ -37,6 +37,8 @@ import BrowserWindow from "./BrowserWindow.vue";
 import SessionExportShareWindow from "./SessionExportShareWindow.vue";
 import InterceptorSnapshotWindow from "./InterceptorSnapshotWindow.vue";
 import ReplayWindow from "./ReplayWindow.vue";
+import RunHistoryWindow from "./RunHistoryWindow.vue";
+import RunDetailWindow from "./RunDetailWindow.vue";
 import type { ReplayDraft } from "../utils/replay";
 import { getBackend } from "../api/runtime-backend";
 
@@ -380,6 +382,29 @@ export function openWorkflowTransfer(): void {
     component: WorkflowTransferWindow,
     width: 820,
     height: 600,
+  });
+}
+
+/** 运行记录列表；后端未提供 flowRuns 能力时不打开入口。 */
+export function openRunHistory(): void {
+  if (!getBackend().flowRuns) return;
+  windowsStore.open("run-history", {
+    title: "运行记录",
+    component: RunHistoryWindow,
+    width: 960,
+    height: 600,
+  });
+}
+
+/** 运行详情（只读运行画布 + 节点快照面板）；同受 flowRuns 能力位把关。 */
+export function openRunDetail(runId: string): void {
+  if (!getBackend().flowRuns) return;
+  windowsStore.open(`run-detail-${runId}`, {
+    title: `运行详情 ${runId.length <= 8 ? runId : `${runId.slice(0, 8)}…`}`,
+    component: RunDetailWindow,
+    props: { runId },
+    width: 1080,
+    height: 680,
   });
 }
 /** 请求库；后端未提供 requestLibrary 能力时不打开入口。 */
