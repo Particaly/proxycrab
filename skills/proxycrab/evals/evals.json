@@ -403,7 +403,7 @@
     },
     {
       "id": 68,
-      "prompt": "Use ProxyCrab to create a request-library entry from capture log 42 in Session 3 with note agent-eval-entry, then list the request library and report the new entry id with its method and URI. Do not resend the request.",
+      "prompt": "Use ProxyCrab to create a request-library entry from capture log 42 in Session 3 named agent-eval-entry, then list the request library and report the new entry id with its method and URI. Do not resend the request.",
       "expected_output": "The agent uses the request-library ingest script with session 3 and log 42, then the request-library query script to list entries, and reports the new entry id, method and URI matching the capture. Write calls go through the default approval flow; an approval timeout is reported as such and not retried in a loop.",
       "files": []
     },
