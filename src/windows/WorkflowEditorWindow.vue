@@ -10,18 +10,33 @@ import type {
   WorkflowValidationIssue,
 } from "../api/types";
 import Canvas from "../components/flow/Canvas.vue";
+import {
+  commitGraph,
+  createGraphHistory,
+  redoGraph,
+  undoGraph,
+  type GraphHistoryState,
+} from "../components/flow/graph-history";
 import { graphSignature, starterGraph } from "../components/flow/graph-model";
+import {
+  collectLocalIssues,
+  mergeIssues,
+  type NodeIssue,
+} from "../components/flow/node-issue-badge";
+import { notifyEditLocked } from "../components/flow/canvas-edit-lock";
 import { getWorkflowNodeMeta, nodeSummary } from "../components/flow/node-meta";
 import { appStore, reportError } from "../stores/app";
 import { confirmDialog } from "../stores/dialog";
+import { flowRunStore } from "../stores/flow-run";
 import { windowsStore } from "../stores/windows";
 import "../styles/flow.css";
 
 /**
- * 工作流编辑器窗口（Task 12 骨架）：左侧项目 / 流程两级列表、中间
- * Vue Flow 画布、右侧节点配置抽屉（占位，Task 14–16 填充表单）。
- * 显式保存（图整体替换）+ 离开守卫，对齐仓库「无自动保存」惯例；
- * 入口依赖 Backend.workflows 能力位（launcher 把关）。
+ * 工作流编辑器窗口（Task 12 骨架 + Task 13 交互接线）：左侧项目 / 流程两级
+ * 列表、中间 Vue Flow 画布（结构编辑 / 撤销重做 / 校验徽标）、右侧节点配置
+ * 抽屉（占位，Task 14–16 填充表单）。显式保存（图整体替换）+ 离开守卫，
+ * 对齐仓库「无自动保存」惯例；入口依赖 Backend.workflows 能力位（launcher
+ * 把关）。
  */
 const WINDOW_ID = "workflow-editor";
 
@@ -37,7 +52,10 @@ const workflow = ref<Workflow | null>(null);
 const nodes = ref<WorkflowNode[]>([]);
 const edges = ref<WorkflowEdge[]>([]);
 const selectedNodeId = ref<string | null>(null);
-const issues = ref<WorkflowValidationIssue[]>([]);
+/** 服务端校验结果（「校验」动作拉取；本地即时校验见 localIssues）。 */
+const serverIssues = ref<WorkflowValidationIssue[]>([]);
+/** 图快照历史（Task 13 Step 3）：结构化编辑提交帧，撤销 / 重做在帧间交换。 */
+const history = ref<GraphHistoryState>(createGraphHistory([], []));
 
 const loading = ref(false);
 const loadingWorkflows = ref(false);
@@ -56,6 +74,22 @@ const dirty = computed(() => {
     graphSignature(workflow.value.nodes, workflow.value.edges)
   );
 });
+
+/** 本地即时校验（对齐后端 error 口径 + 前端 warning / info），图一变即重算。 */
+const localIssues = computed<NodeIssue[]>(() => collectLocalIssues(nodes.value, edges.value));
+
+/** 合并后的问题清单（服务端权威在前）：画布徽标与校验面板共用。 */
+const mergedIssues = computed<NodeIssue[]>(() =>
+  mergeIssues(localIssues.value, serverIssues.value),
+);
+
+const canUndo = computed(() => history.value.past.length > 0);
+const canRedo = computed(() => history.value.future.length > 0);
+
+/** 运行期画布编辑锁定（运行态来源见 stores/flow-run.ts 接缝；Task 19 接真实 API）。 */
+const runLocked = computed(
+  () => workflow.value !== null && flowRunStore.runningWorkflowId === workflow.value.id,
+);
 
 const selectedNode = computed<WorkflowNode | null>(() => {
   if (selectedNodeId.value === null) return null;
@@ -126,11 +160,22 @@ async function selectWorkflow(target: Workflow): Promise<void> {
     nodes.value = loaded.nodes.map((node) => ({ ...node, position: { ...node.position } }));
     edges.value = loaded.edges.map((edge) => ({ ...edge }));
     selectedNodeId.value = null;
-    issues.value = [];
+    serverIssues.value = [];
+    history.value = createGraphHistory(nodes.value, edges.value);
     canvasKey.value += 1;
   } catch (error) {
     reportError(error, "加载流程失败");
   }
+}
+
+/** 关闭当前流程时清空画布编辑态（含历史与校验）。 */
+function closeWorkflowEditor(): void {
+  workflow.value = null;
+  nodes.value = [];
+  edges.value = [];
+  selectedNodeId.value = null;
+  serverIssues.value = [];
+  history.value = createGraphHistory([], []);
 }
 
 async function createProject(): Promise<void> {
@@ -174,10 +219,7 @@ async function removeProject(project: FlowProject): Promise<void> {
   try {
     await api.deleteProject(project.id);
     if (workflow.value && workflow.value.projectId === project.id) {
-      workflow.value = null;
-      nodes.value = [];
-      edges.value = [];
-      selectedNodeId.value = null;
+      closeWorkflowEditor();
     }
     await refresh();
   } catch (error) {
@@ -196,10 +238,7 @@ async function removeWorkflow(target: Workflow): Promise<void> {
   try {
     await api.deleteWorkflow(target.id);
     if (workflow.value?.id === target.id) {
-      workflow.value = null;
-      nodes.value = [];
-      edges.value = [];
-      selectedNodeId.value = null;
+      closeWorkflowEditor();
     }
     if (projectId.value) await selectProject(projectId.value);
   } catch (error) {
@@ -209,6 +248,59 @@ async function removeWorkflow(target: Workflow): Promise<void> {
 
 function onPositionChange(next: WorkflowNode[]): void {
   nodes.value = next;
+}
+
+/**
+ * 结构化编辑（画布增删节点 / 连线、重命名、粘贴）：整体替换画布图并提交
+ * 一帧历史（commitGraph 按签名去重，内容未变不产生新帧）。
+ */
+function onStructureChange(nextNodes: WorkflowNode[], nextEdges: WorkflowEdge[]): void {
+  nodes.value = nextNodes;
+  edges.value = nextEdges;
+  history.value = commitGraph(history.value, nextNodes, nextEdges);
+}
+
+/** 拖动收尾 / 自动布局后的历史提交请求（仅定位变化；签名去重兜底空帧）。 */
+function onCommitHistory(): void {
+  history.value = commitGraph(history.value, nodes.value, edges.value);
+}
+
+/** 撤销：恢复上一帧；若当前选中节点已不存在则清空选中。 */
+function undoWorkflow(): void {
+  if (runLocked.value) {
+    notifyEditLocked();
+    return;
+  }
+  const result = undoGraph(history.value);
+  if (result === null) return;
+  history.value = result.state;
+  nodes.value = result.snapshot.nodes;
+  edges.value = result.snapshot.edges;
+  if (
+    selectedNodeId.value !== null &&
+    !nodes.value.some((node) => node.id === selectedNodeId.value)
+  ) {
+    selectedNodeId.value = null;
+  }
+}
+
+/** 重做：对称返回下一帧。 */
+function redoWorkflow(): void {
+  if (runLocked.value) {
+    notifyEditLocked();
+    return;
+  }
+  const result = redoGraph(history.value);
+  if (result === null) return;
+  history.value = result.state;
+  nodes.value = result.snapshot.nodes;
+  edges.value = result.snapshot.edges;
+  if (
+    selectedNodeId.value !== null &&
+    !nodes.value.some((node) => node.id === selectedNodeId.value)
+  ) {
+    selectedNodeId.value = null;
+  }
 }
 
 async function save(): Promise<void> {
@@ -243,8 +335,9 @@ async function validate(): Promise<void> {
   if (!workflow.value || validating.value) return;
   validating.value = true;
   try {
-    issues.value = (await api.validateWorkflow(workflow.value.id)).issues;
-    if (issues.value.length === 0) {
+    serverIssues.value = (await api.validateWorkflow(workflow.value.id)).issues;
+    // 服务端无问题且本地规则也无问题时才算通过（本地覆盖结构缺失的即时提示）
+    if (serverIssues.value.length === 0 && localIssues.value.length === 0) {
       appStore.toast("校验通过", "success");
     }
   } catch (error) {
@@ -387,10 +480,16 @@ onBeforeUnmount(() => {
           <span class="wf-spacer" />
         </template>
       </div>
-      <div v-if="issues.length > 0" class="wf-issues">
-        <div v-if="dirty" class="wf-issues-hint">存在未保存修改，校验结果对应最近保存的版本。</div>
-        <div v-for="issue in issues" :key="issue.code + issue.nodeIds.join()" class="wf-issue">
-          <span class="wf-issue-code mono">{{ issue.code }}</span>
+      <div v-if="mergedIssues.length > 0" class="wf-issues">
+        <div v-if="dirty" class="wf-issues-hint">
+          本地提示随画布实时更新；「校验」按钮的服务端结果对应最近保存的版本。
+        </div>
+        <div
+          v-for="issue in mergedIssues"
+          :key="`${issue.level}:${issue.code}:${issue.nodeIds.join()}`"
+          class="wf-issue"
+        >
+          <span class="wf-issue-code mono" :class="`is-${issue.level}`">{{ issue.code }}</span>
           <span :title="issue.nodeIds.join(', ')">{{ issue.message }}</span>
         </div>
       </div>
@@ -400,7 +499,16 @@ onBeforeUnmount(() => {
           :key="canvasKey"
           :nodes="nodes"
           :edges="edges"
+          :workflow-id="workflow.id"
+          :locked="runLocked"
+          :can-undo="canUndo"
+          :can-redo="canRedo"
+          :issues="mergedIssues"
           @position-change="onPositionChange"
+          @structure-change="onStructureChange"
+          @commit-history="onCommitHistory"
+          @undo="undoWorkflow"
+          @redo="redoWorkflow"
           @select="selectedNodeId = $event"
         />
         <div v-else class="empty-hint wf-canvas-empty">从左侧选择或新建流程</div>
@@ -607,6 +715,13 @@ onBeforeUnmount(() => {
   flex: none;
   color: var(--warning);
   font-weight: 600;
+}
+.wf-issue-code.is-error {
+  color: var(--danger);
+}
+.wf-issue-code.is-info {
+  color: var(--text-faint);
+  font-weight: 400;
 }
 
 .wf-canvas-wrap {

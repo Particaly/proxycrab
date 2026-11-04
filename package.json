@@ -17,6 +17,7 @@
     "@tauri-apps/plugin-clipboard-manager": "^2.5.0",
     "@tauri-apps/plugin-opener": "^2.7.2",
     "@vue-flow/core": "^1.48.2",
+    "@vue-flow/minimap": "^1.5.4",
     "fflate": "^0.8.3",
     "monaco-editor": "^0.57.0",
     "qrcode": "^1.5.4",

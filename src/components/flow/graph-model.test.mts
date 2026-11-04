@@ -2,6 +2,8 @@ import { describe, expect, test } from "vitest";
 import type { WorkflowEdge, WorkflowNode } from "../../api/types";
 import {
   applyNodePositions,
+  createWorkflowEdge,
+  createWorkflowNode,
   graphSignature,
   starterGraph,
   toFlowEdges,
@@ -35,15 +37,55 @@ describe("model to Vue Flow projection", () => {
     const model = [node("a", 10, 20, { label: "自定义" })];
     const flowNodes = toFlowNodes(model);
     expect(flowNodes).toEqual([
-      { id: "a", type: "httpReplay", position: { x: 10, y: 20 }, data: { node: model[0] } },
+      {
+        id: "a",
+        type: "httpReplay",
+        position: { x: 10, y: 20 },
+        data: { node: model[0]!, issues: [] },
+      },
     ]);
   });
 
-  test("edges pass the branch handle through and omit undefined handles", () => {
+  test("nodes attach their issues from the node-issue map; sticky notes sink in z-order", () => {
+    const model = [
+      node("a", 0, 0),
+      { id: "note", type: "stickyNote", position: { x: 1, y: 1 }, config: {} },
+    ];
+    const issue = { level: "warning" as const, code: "isolated-node", message: "m", nodeIds: ["a"] };
+    const flowNodes = toFlowNodes(model, new Map([["a", [issue]]]));
+    expect(flowNodes[0]!.data.issues).toEqual([issue]);
+    expect(flowNodes[0]!.zIndex).toBeUndefined();
+    expect(flowNodes[1]!.data.issues).toEqual([]);
+    expect(flowNodes[1]!.zIndex).toBe(-1);
+  });
+
+  test("edges pass the branch handle through with 真/假 labels and omit undefined handles", () => {
     expect(toFlowEdges([edge("e1", "a", "b", "true"), edge("e2", "b", "c")])).toEqual([
-      { id: "e1", source: "a", target: "b", sourceHandle: "true" },
+      { id: "e1", source: "a", target: "b", sourceHandle: "true", label: "真" },
       { id: "e2", source: "b", target: "c" },
     ]);
+    expect(toFlowEdges([edge("e3", "a", "b", "false")])[0]!.label).toBe("假");
+  });
+});
+
+describe("node / edge factories", () => {
+  test("createWorkflowNode generates UUID id, unique refId and default config", () => {
+    const created = createWorkflowNode("httpReplay", { x: 5, y: 6 }, new Set(["start"]));
+    expect(created.id).not.toBe("");
+    expect(created.position).toEqual({ x: 5, y: 6 });
+    expect(created.config).toEqual({ failPolicy: "stop" });
+    expect(created.refId).toMatch(/^[A-Za-z]{5}$/);
+    expect(created.refId).not.toBe("start");
+    // 便签默认带空文本；开始节点为空配置
+    expect(createWorkflowNode("stickyNote", { x: 0, y: 0 }, new Set()).config).toEqual({ text: "" });
+    expect(createWorkflowNode("start", { x: 0, y: 0 }, new Set()).config).toEqual({});
+  });
+
+  test("createWorkflowEdge only keeps handles for condition branches", () => {
+    const plain = createWorkflowEdge("a", "b");
+    expect(plain.source).toBe("a");
+    expect(plain.sourceHandle).toBeUndefined();
+    expect(createWorkflowEdge("a", "b", "false").sourceHandle).toBe("false");
   });
 });
 
