@@ -16,14 +16,14 @@
 use std::{
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
 };
 
 use proxy_crab_mitm::flow::{
     bundle::FLOW_ENGINE_JS,
-    host::{FlowCancel, FlowError, FlowHost},
+    host::{FlowCancel, FlowError, FlowErrorKind, FlowHost},
     runtime::{FlowLimits, FlowRuntime},
 };
 use serde_json::{Value as JsonValue, json};
@@ -44,6 +44,8 @@ enum ReplayBehavior {
     /// 置位引擎级取消（host.cancelled → true），等待 settle_ms 让取消轮询
     /// 在本轮重放期间生效，再执行后续行为
     CancelThen(u64, Box<ReplayBehavior>),
+    /// 前 remaining 次返回宿主错误，其后执行后续行为（重试验证）
+    FailFirst(Arc<AtomicUsize>, Box<ReplayBehavior>),
     /// 返回宿主错误（如重放网络失败——节点 failed 的注入点）
     Fail(FlowError),
     /// 缺省回显：把请求 url / method 回显进响应 json（供下游断言数据流）
@@ -105,6 +107,16 @@ impl SemanticHost {
                 ReplayBehavior::CancelThen(settle_ms, next) => {
                     self.engine_cancelled.store(true, Ordering::SeqCst);
                     tokio::time::sleep(Duration::from_millis(settle_ms)).await;
+                    behavior = *next;
+                }
+                ReplayBehavior::FailFirst(remaining, next) => {
+                    if remaining.load(Ordering::SeqCst) > 0 {
+                        remaining.fetch_sub(1, Ordering::SeqCst);
+                        return Err(FlowError::new(
+                            FlowErrorKind::Network,
+                            "upstream unreachable",
+                        ));
+                    }
                     behavior = *next;
                 }
                 ReplayBehavior::Fail(error) => return Err(error),
@@ -711,4 +723,423 @@ async fn condition_without_routing_config_passes_through_to_all_downstream() {
     assert_eq!(replay_count(&run), 2);
     // 分支形态输出仍在（路由语义与直通正交）。
     assert_eq!(run_of(&run, "c1")["output"]["branch"], json!("true"));
+}
+
+/* ------------------------------------------------------------------ *
+ * 失败策略（M5-T4）：对齐上游 executor-fail-policy.test.ts
+ * ------------------------------------------------------------------ */
+
+/// 上游：线性图 a 失败（缺省 stop）→ 下游 b 不再执行（skipped），run 级错误
+/// 摘要即该失败（「节点 <id> 执行失败：<原因>」）。
+#[tokio::test(flavor = "multi_thread")]
+async fn fail_policy_stop_halts_scheduling_and_marks_downstream_skipped() {
+    let harness = FlowHarness::new(vec![FlowHarness::on(
+        "/n-a",
+        ReplayBehavior::Fail(FlowError::new(FlowErrorKind::Network, "upstream unreachable")),
+    )]);
+    let run = harness
+        .run(
+            workflow(
+                vec![
+                    start_node(),
+                    replay_node("a", "https://t/n-a"),
+                    replay_node("b", "https://t/n-b"),
+                ],
+                vec![edge("s", "a"), edge("a", "b")],
+            ),
+            json!({}),
+        )
+        .await;
+
+    assert_eq!(run_status(&run), "failed");
+    assert_eq!(run.summary["error"], json!("节点 a 执行失败：upstream unreachable"));
+    assert_eq!(status_of(&run, "a"), "failed");
+    assert_eq!(run_of(&run, "a")["error"], json!("upstream unreachable"));
+    assert_eq!(status_of(&run, "b"), "skipped");
+    // stop 后不再有任何新重放（b 未发起）。
+    assert_eq!(replay_count(&run), 1);
+}
+
+/// 上游：a 失败（continue）→ 下游 b 仍执行，b input 为 null（失败上游按缺失聚合）；
+/// run 级状态仍为 failed。
+#[tokio::test(flavor = "multi_thread")]
+async fn fail_policy_continue_runs_downstream_with_missing_upstream_aggregated_as_null() {
+    let harness = FlowHarness::new(vec![FlowHarness::on(
+        "/n-a",
+        ReplayBehavior::Fail(FlowError::new(FlowErrorKind::Network, "upstream unreachable")),
+    )]);
+    let run = harness
+        .run(
+            workflow(
+                vec![
+                    start_node(),
+                    node(
+                        "a",
+                        "httpReplay",
+                        json!({
+                            "manualRequest": { "method": "GET", "url": "https://t/n-a" },
+                            "failPolicy": "continue",
+                        }),
+                    ),
+                    replay_node("b", "https://t/n-b"),
+                ],
+                vec![edge("s", "a"), edge("a", "b")],
+            ),
+            json!({}),
+        )
+        .await;
+
+    assert_eq!(run_status(&run), "failed");
+    assert_eq!(run.summary["error"], json!("节点 a 执行失败：upstream unreachable"));
+    assert_eq!(status_of(&run, "b"), "success");
+    assert_eq!(run_of(&run, "b")["input"], json!(null));
+    assert_eq!(replay_count(&run), 2);
+}
+
+/// 上游：continue + 汇合——失败上游按缺失聚合，仅剩一个成功上游时原样透传。
+#[tokio::test(flavor = "multi_thread")]
+async fn fail_policy_continue_join_aggregates_only_successful_upstream() {
+    let harness = FlowHarness::new(vec![FlowHarness::on(
+        "/n-a",
+        ReplayBehavior::Fail(FlowError::new(FlowErrorKind::Network, "upstream unreachable")),
+    )]);
+    let run = harness
+        .run(
+            workflow(
+                vec![
+                    start_node(),
+                    node(
+                        "a",
+                        "httpReplay",
+                        json!({
+                            "manualRequest": { "method": "GET", "url": "https://t/n-a" },
+                            "failPolicy": "continue",
+                        }),
+                    ),
+                    replay_node("c", "https://t/n-c"),
+                    replay_node("join", "https://t/n-join"),
+                ],
+                vec![
+                    edge("s", "a"),
+                    edge("s", "c"),
+                    edge("a", "join"),
+                    edge("c", "join"),
+                ],
+            ),
+            json!({}),
+        )
+        .await;
+
+    assert_eq!(run_status(&run), "failed");
+    assert_eq!(status_of(&run, "join"), "success");
+    // 聚合只含仍成功的上游（单上游回退原样透传）。
+    assert_eq!(run_of(&run, "join")["input"]["json"]["url"], json!("https://t/n-c"));
+    assert!(run_of(&run, "join")["input"].get("a").is_none());
+}
+
+/// 上游：工作流级 defaultFailPolicy 在节点未显式配置时生效；节点级
+/// config.failPolicy 优先于工作流级默认。两条子场景分两次运行（同一批内
+/// 出现 stop 失败会终止整个调度——continue 下游也会收尾 skipped，见
+/// 执行器「stop 的并发停机窗口」语义）。
+#[tokio::test(flavor = "multi_thread")]
+async fn workflow_default_fail_policy_applies_and_node_level_overrides() {
+    // 子场景 1：节点未显式配置 → 继承工作流级 continue，失败后下游仍执行。
+    let harness = FlowHarness::new(vec![FlowHarness::on(
+        "/n-a",
+        ReplayBehavior::Fail(FlowError::new(FlowErrorKind::Network, "a-down")),
+    )]);
+    let run = harness
+        .run(
+            workflow(
+                vec![
+                    start_node(),
+                    node(
+                        "a",
+                        "httpReplay",
+                        json!({ "manualRequest": { "method": "GET", "url": "https://t/n-a" } }),
+                    ),
+                    replay_node("b", "https://t/n-b"),
+                ],
+                vec![edge("s", "a"), edge("a", "b")],
+            ),
+            json!({ "defaultFailPolicy": "continue" }),
+        )
+        .await;
+    assert_eq!(run_status(&run), "failed");
+    assert_eq!(run.summary["error"], json!("节点 a 执行失败：a-down"));
+    assert_eq!(status_of(&run, "b"), "success");
+
+    // 子场景 2：节点显式 stop 覆盖工作流级 continue → 下游不再执行。
+    let harness = FlowHarness::new(vec![FlowHarness::on(
+        "/n-c",
+        ReplayBehavior::Fail(FlowError::new(FlowErrorKind::Network, "c-down")),
+    )]);
+    let run = harness
+        .run(
+            workflow(
+                vec![
+                    start_node(),
+                    node(
+                        "c",
+                        "httpReplay",
+                        json!({
+                            "manualRequest": { "method": "GET", "url": "https://t/n-c" },
+                            "failPolicy": "stop",
+                        }),
+                    ),
+                    replay_node("d", "https://t/n-d"),
+                ],
+                vec![edge("s", "c"), edge("c", "d")],
+            ),
+            json!({ "defaultFailPolicy": "continue" }),
+        )
+        .await;
+    assert_eq!(run_status(&run), "failed");
+    assert_eq!(run.summary["error"], json!("节点 c 执行失败：c-down"));
+    assert_eq!(status_of(&run, "d"), "skipped");
+}
+
+/* ------------------------------------------------------------------ *
+ * 重试退避（M10-T6）：对齐上游 executor.retry.test.ts
+ * ------------------------------------------------------------------ */
+
+/// 上游：retries a failing runner up to maxAttempts and succeeds——前两次重放
+/// 失败、第三次成功，节点按成功结算且重放计数为 3。
+#[tokio::test(flavor = "multi_thread")]
+async fn retry_replays_until_success_within_max_attempts() {
+    let harness = FlowHarness::new(vec![FlowHarness::on(
+        "/n-a",
+        ReplayBehavior::FailFirst(
+            Arc::new(AtomicUsize::new(2)),
+            Box::new(ReplayBehavior::Echo),
+        ),
+    )]);
+    let run = harness
+        .run(
+            workflow(
+                vec![
+                    start_node(),
+                    node(
+                        "a",
+                        "httpReplay",
+                        json!({
+                            "manualRequest": { "method": "GET", "url": "https://t/n-a" },
+                            "retry": { "maxAttempts": 3, "backoffMs": 0 },
+                        }),
+                    ),
+                ],
+                vec![edge("s", "a")],
+            ),
+            json!({}),
+        )
+        .await;
+
+    assert_eq!(run_status(&run), "success");
+    assert_eq!(status_of(&run, "a"), "success");
+    assert_eq!(run_of(&run, "a")["output"]["json"]["url"], json!("https://t/n-a"));
+    assert_eq!(replay_count(&run), 3);
+}
+
+/// 上游：uses backoff delay and preserves the final error——尝试耗尽后节点
+/// failed，错误为最后一次的失败原因，重放计数恰为 maxAttempts。
+#[tokio::test(flavor = "multi_thread")]
+async fn retry_exhausts_attempts_and_preserves_final_error() {
+    let harness = FlowHarness::new(vec![FlowHarness::on(
+        "/n-a",
+        ReplayBehavior::Fail(FlowError::new(FlowErrorKind::Network, "upstream unreachable")),
+    )]);
+    let run = harness
+        .run(
+            workflow(
+                vec![
+                    start_node(),
+                    node(
+                        "a",
+                        "httpReplay",
+                        json!({
+                            "manualRequest": { "method": "GET", "url": "https://t/n-a" },
+                            "retry": { "maxAttempts": 2, "backoffMs": 5 },
+                        }),
+                    ),
+                ],
+                vec![edge("s", "a")],
+            ),
+            json!({}),
+        )
+        .await;
+
+    assert_eq!(run_status(&run), "failed");
+    assert_eq!(run_of(&run, "a")["error"], json!("upstream unreachable"));
+    assert_eq!(run.summary["error"], json!("节点 a 执行失败：upstream unreachable"));
+    assert_eq!(replay_count(&run), 2);
+}
+
+/// 上游（runWithRetry 结构约定）：loop / delay 自身即长时节点不参与重试——
+/// delay 节点配置 retry 也不重复等待（宿主 sleep 只发生一次 1ms 的延时等待）。
+#[tokio::test(flavor = "multi_thread")]
+async fn retry_does_not_apply_to_delay_nodes() {
+    let harness = FlowHarness::new(vec![]);
+    let run = harness
+        .run(
+            workflow(
+                vec![
+                    start_node(),
+                    node(
+                        "d",
+                        "delay",
+                        json!({ "durationMs": 1, "retry": { "maxAttempts": 3 } }),
+                    ),
+                ],
+                vec![edge("s", "d")],
+            ),
+            json!({}),
+        )
+        .await;
+
+    assert_eq!(run_status(&run), "success");
+    assert_eq!(status_of(&run, "d"), "success");
+    // 恰好一次 1ms 延时等待（取消轮询心跳为 50ms，不在统计内）。
+    let delay_waits = run
+        .host
+        .sleep_durations
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|ms| **ms < 50)
+        .count();
+    assert_eq!(delay_waits, 1);
+}
+
+/* ------------------------------------------------------------------ *
+ * 固定输出（M10-T5 pinned data）：对齐上游 executor.pinned-resume.test.ts
+ * ------------------------------------------------------------------ */
+
+/// 上游：命中固定的节点不执行 runner，output 取固定值，下游照常执行并聚合
+/// 固定值；固定值缺省从 workflow.nodes 的 config.pinnedOutput 投影；事件照发。
+#[tokio::test(flavor = "multi_thread")]
+async fn pinned_output_from_node_config_skips_execution_and_feeds_downstream() {
+    let harness = FlowHarness::new(vec![]);
+    let run = harness
+        .run(
+            workflow(
+                vec![
+                    start_node(),
+                    node(
+                        "a",
+                        "httpReplay",
+                        json!({
+                            "manualRequest": { "method": "GET", "url": "https://t/n-a" },
+                            "pinnedOutput": {
+                                "value": { "token": "pinned" },
+                                "pinnedAt": 1,
+                                "sourceRunId": "run-src",
+                            },
+                        }),
+                    ),
+                    replay_node("b", "https://t/n-b"),
+                ],
+                vec![edge("s", "a"), edge("a", "b")],
+            ),
+            json!({}),
+        )
+        .await;
+
+    assert_eq!(run_status(&run), "success");
+    // a 被固定跳过（不发起重放），b 正常执行。
+    assert_eq!(replay_count(&run), 1);
+    assert_eq!(status_of(&run, "a"), "success");
+    assert_eq!(run_of(&run, "a")["output"], json!({ "token": "pinned" }));
+    assert_eq!(run_of(&run, "a")["durationMs"].as_f64(), Some(0.0));
+    // b 聚合到 a 的固定输出（单上游透传）。
+    assert_eq!(run_of(&run, "b")["input"], json!({ "token": "pinned" }));
+    // 事件照发（画布运行态口径与真实执行一致）。
+    assert!(event_ids(&run, "node-start").contains(&"a".to_string()));
+    assert!(event_ids(&run, "node-finish").contains(&"a".to_string()));
+}
+
+/* ------------------------------------------------------------------ *
+ * 指定节点重跑（M10-T5 resume，载荷透传口径）：对齐上游
+ * executor.pinned-resume.test.ts——上游闭包预置由 Rust 运行编排（Task 19）
+ * 经 computeUpstreamClosure 预检后传入，本文件只测载荷内的执行语义。
+ * ------------------------------------------------------------------ */
+
+/// 上游：从指定节点起跑——上游闭包预置输出与快照（runner 不再调用），
+/// 起点及其下游重新执行，起点 input 为预置输出。
+#[tokio::test(flavor = "multi_thread")]
+async fn resume_presets_upstream_outputs_and_reruns_from_from_node() {
+    let harness = FlowHarness::new(vec![]);
+    let run = harness
+        .run(
+            workflow(
+                vec![
+                    start_node(),
+                    replay_node("a", "https://t/n-a"),
+                    replay_node("b", "https://t/n-b"),
+                    replay_node("c", "https://t/n-c"),
+                ],
+                vec![edge("s", "a"), edge("a", "b"), edge("b", "c")],
+            ),
+            json!({
+                "resume": {
+                    "fromNode": "b",
+                    "outputs": { "s": null, "a": { "token": "from-source-run" } },
+                    "nodeRuns": {
+                        "s": { "status": "success", "input": null, "output": null, "startedAt": 0, "durationMs": 0 },
+                        "a": { "status": "success", "input": null, "output": { "token": "from-source-run" }, "startedAt": 1000, "durationMs": 40 },
+                    },
+                },
+            }),
+        )
+        .await;
+
+    assert_eq!(run_status(&run), "success");
+    // 只有起点及其下游重新执行（a 不再发起重放）。
+    let urls: Vec<String> = begin_entries(&run)
+        .iter()
+        .map(|entry| entry.trim_start_matches("begin:").to_string())
+        .collect();
+    assert_eq!(urls, vec!["https://t/n-b".to_string(), "https://t/n-c".to_string()]);
+    // a 的快照沿用源运行（入参 / 返回值 / 起跑时刻 / 耗时原样保留）。
+    let a_run = run_of(&run, "a");
+    assert_eq!(a_run["status"], json!("success"));
+    assert_eq!(a_run["output"], json!({ "token": "from-source-run" }));
+    assert_eq!(a_run["startedAt"].as_f64(), Some(1000.0));
+    assert_eq!(a_run["durationMs"].as_f64(), Some(40.0));
+    // b 聚合到 a 的预置输出（单上游透传）。
+    assert_eq!(run_of(&run, "b")["input"], json!({ "token": "from-source-run" }));
+    assert_eq!(status_of(&run, "c"), "success");
+}
+
+/// 上游：上游闭包缺输出——载荷内建档前整单判 failed 并逐个列出缺输出的节点，
+/// 不执行任何节点（Rust 编排侧（Task 19）另有同型预检，此处为载荷透传语义）。
+#[tokio::test(flavor = "multi_thread")]
+async fn resume_missing_upstream_output_fails_before_any_node() {
+    let harness = FlowHarness::new(vec![]);
+    let run = harness
+        .run(
+            workflow(
+                vec![
+                    start_node(),
+                    replay_node("a", "https://t/n-a"),
+                    replay_node("b", "https://t/n-b"),
+                ],
+                vec![edge("s", "a"), edge("a", "b")],
+            ),
+            json!({
+                "resume": {
+                    "fromNode": "b",
+                    // 只预置了 s，缺 a（源运行中 a 失败 / 跳过的场景）
+                    "outputs": { "s": null },
+                    "nodeRuns": {},
+                },
+            }),
+        )
+        .await;
+
+    assert_eq!(run_status(&run), "failed");
+    let error = run.summary["error"].as_str().unwrap_or_default();
+    assert!(error.contains("上游节点在源运行中无成功输出"), "error: {error}");
+    assert!(error.contains('a'), "error must name the missing node: {error}");
+    assert_eq!(replay_count(&run), 0);
+    assert_eq!(run.summary["nodeRuns"], json!({}));
 }
