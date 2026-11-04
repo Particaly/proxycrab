@@ -5969,14 +5969,12 @@ mod tests {
 
         // 新工作区缺省档：读开 / 写关 / 执行关，读类工具在 tools/list。
         let payload = mcp_tools_list(app.clone(), 1).await;
-        assert_eq!(
-            payload["result"]["tools"]
-                .as_array()
-                .unwrap()
+        let tools = payload["result"]["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 5);
+        assert!(
+            tools
                 .iter()
-                .map(|tool| tool["name"].clone())
-                .collect::<Vec<_>>(),
-            vec![json!("workflow_runs_list")]
+                .any(|tool| tool["name"] == "workflow_runs_list")
         );
         let (status, payload) = flow_request(app.clone(), Method::GET, "/api/mcp-tiers", None).await;
         assert_eq!(status, StatusCode::OK);

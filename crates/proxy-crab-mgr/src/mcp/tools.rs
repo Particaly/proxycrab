@@ -23,10 +23,13 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use tokio::sync::Semaphore;
 
-use proxy_crab_mitm::flow::mcp_tiers::McpTiers;
+use proxy_crab_mitm::{
+    flow::mcp_tiers::McpTiers,
+    storage::{BodySide, read_body_payload},
+};
 
 use crate::{
-    dto::{ErrorCode, FlowRunListQuery, ManagerError},
+    dto::{ErrorCode, FlowRunListQuery, LogIdsRequest, ManagerError, SessionQuery},
     manager::ProxyCrabManager,
     permission::{
         ManagementCredential, PermissionAction, PermissionDenied, PermissionDeniedStatus,
@@ -87,19 +90,90 @@ impl ToolTier {
     }
 }
 
-/// 工具注册表：仅登记已实现且映射路由已有 action 档位的工具。
-const REGISTRY: &[ToolDescriptor] = &[ToolDescriptor {
-    name: "workflow_runs_list",
-    description: "List workflow runs, mirroring GET /api/flow/runs.",
-    route: ("GET", "/api/flow/runs"),
-    tier: ToolTier::Read,
-    params: &[
-        ("workflowId", "string", "Filter by workflow id."),
-        ("status", "string", "Filter by run status."),
-        ("limit", "integer", "Max entries to return."),
-        ("offset", "integer", "Entries to skip."),
-    ],
-}];
+/// 工具注册表：仅登记已实现且映射路由已有 action 档位的工具；策展子集
+/// 按域分组（Task 25 Step 1）：抓包读取 / 请求库 / 工作流 / 运行。
+const REGISTRY: &[ToolDescriptor] = &[
+    /* ---- 抓包读取：全部 Read 档 ---- */
+    ToolDescriptor {
+        name: "sessions_list",
+        description: "List capture Sessions, mirroring GET /api/sessions.",
+        route: ("GET", "/api/sessions"),
+        tier: ToolTier::Read,
+        params: &[],
+    },
+    ToolDescriptor {
+        name: "log_ids",
+        description: "List capture log ids matching a filter, mirroring POST /api/logs/ids.",
+        route: ("POST", "/api/logs/ids"),
+        tier: ToolTier::Read,
+        params: &[
+            (
+                "session_id",
+                "integer",
+                "Optional Session to read logs from; defaults to the active one.",
+            ),
+            (
+                "filter",
+                "object",
+                "Optional capture filter (same JSON shape as the session filter API).",
+            ),
+            ("ids", "array", "Optional explicit log ids to select."),
+            (
+                "min_id",
+                "integer",
+                "Optional inclusive lower bound of the log id range.",
+            ),
+            (
+                "max_id",
+                "integer",
+                "Optional inclusive upper bound of the log id range.",
+            ),
+            ("limit", "integer", "Max ids to return."),
+        ],
+    },
+    ToolDescriptor {
+        name: "log_detail",
+        description: "Fetch one capture log detail, mirroring GET /api/logs/{id}.",
+        route: ("GET", "/api/logs/{id}"),
+        tier: ToolTier::Read,
+        params: &[
+            ("id", "integer", "Capture log id to fetch."),
+            (
+                "session_id",
+                "integer",
+                "Optional Session owning the log; defaults to the active one.",
+            ),
+        ],
+    },
+    ToolDescriptor {
+        name: "log_body",
+        description: "Read one capture log body as bounded detail, mirroring GET /api/logs/{id}/body.",
+        route: ("GET", "/api/logs/{id}/body"),
+        tier: ToolTier::Read,
+        params: &[
+            ("id", "integer", "Capture log id whose body is read."),
+            ("side", "string", "Which side to read: request or response."),
+            (
+                "session_id",
+                "integer",
+                "Optional Session owning the log; defaults to the active one.",
+            ),
+        ],
+    },
+    /* ---- 运行 ---- */
+    ToolDescriptor {
+        name: "workflow_runs_list",
+        description: "List workflow runs, mirroring GET /api/flow/runs.",
+        route: ("GET", "/api/flow/runs"),
+        tier: ToolTier::Read,
+        params: &[
+            ("workflowId", "string", "Filter by workflow id."),
+            ("status", "string", "Filter by run status."),
+            ("limit", "integer", "Max entries to return."),
+            ("offset", "integer", "Entries to skip."),
+        ],
+    },
+];
 
 /// `tools/list` 展示的策展清单（Task 25 扩充工具面）。
 pub fn list() -> &'static [ToolDescriptor] {
@@ -294,9 +368,29 @@ async fn execute(
     match name {
         "workflow_runs_list" => {
             let query: FlowRunListQuery = parse_arguments(arguments)?;
-            let page = manager.workflow_runs(query).await?;
-            serde_json::to_value(page)
-                .map_err(|_| ManagerError::internal("workflow run page serialization failed"))
+            serialize_result(manager.workflow_runs(query).await?)
+        }
+        /* ---- 抓包读取 ---- */
+        "sessions_list" => serialize_result(manager.sessions().await?),
+        "log_ids" => {
+            let request: LogIdsRequest = parse_arguments(arguments)?;
+            serialize_result(manager.log_ids(request).await?)
+        }
+        "log_detail" => {
+            let id = path_argument(arguments, "id")?;
+            let query: SessionQuery = parse_arguments(arguments)?;
+            serialize_result(manager.log(query.session_id, id).await?)
+        }
+        "log_body" => {
+            let id = path_argument(arguments, "id")?;
+            let side: BodySide = path_argument(arguments, "side")?;
+            let query: SessionQuery = parse_arguments(arguments)?;
+            let source = manager.log_body_source(query.session_id, id, side).await?;
+            // BodySource 不序列化上送：走读时受限渲染（与日志详情的 body
+            // 形态一致，超限降级为 Large 摘要）。
+            let payload = read_body_payload(source)
+                .map_err(|_| ManagerError::new(ErrorCode::BodyReadFailed, "read capture body failed"))?;
+            serialize_result(payload)
         }
         #[cfg(test)]
         "test_slow_tool" => Ok(slow_tool_stub::run().await),
@@ -309,6 +403,22 @@ async fn execute(
 fn parse_arguments<T: DeserializeOwned>(arguments: &Value) -> Result<T, ManagerError> {
     serde_json::from_value(arguments.clone())
         .map_err(|error| ManagerError::bad_request(format!("arguments do not match the tool schema: {error}")))
+}
+
+/// 从工具入参中提取路径参数（id 等，提升为入参的路由段）；缺失或类型
+/// 不符归入 bad_request。
+fn path_argument<T: DeserializeOwned>(arguments: &Value, name: &str) -> Result<T, ManagerError> {
+    let value = arguments
+        .get(name)
+        .ok_or_else(|| ManagerError::bad_request(format!("missing required argument: {name}")))?;
+    serde_json::from_value(value.clone()).map_err(|error| {
+        ManagerError::bad_request(format!("argument '{name}' does not match the tool schema: {error}"))
+    })
+}
+
+/// 执行结果统一序列化；失败归入 internal（不透出内部细节）。
+fn serialize_result<T: serde::Serialize>(value: T) -> Result<Value, ManagerError> {
+    serde_json::to_value(value).map_err(|_| ManagerError::internal("tool result serialization failed"))
 }
 
 /// 测试专用长任务桩：验证超时与断连取消的可观察信号（STARTED 置位后
@@ -424,11 +534,14 @@ mod tests {
     fn tools_list_envelope_declares_the_curated_surface() {
         let envelope = list_envelope(&McpTiers::default());
         let tools = envelope["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0]["name"], "workflow_runs_list");
-        assert_eq!(tools[0]["inputSchema"]["type"], "object");
+        assert_eq!(tools.len(), 5);
+        let runs_list = tools
+            .iter()
+            .find(|tool| tool["name"] == "workflow_runs_list")
+            .unwrap();
+        assert_eq!(runs_list["inputSchema"]["type"], "object");
         assert_eq!(
-            tools[0]["inputSchema"]["properties"]["limit"]["type"],
+            runs_list["inputSchema"]["properties"]["limit"]["type"],
             "integer"
         );
     }
@@ -469,7 +582,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            1
+            5
         );
         // 读档关闭：tools/list 不再出现该类别工具。
         let read_off = McpTiers {
