@@ -116,8 +116,22 @@ export function buildRootOptions(
   const roots: RefSuggestOption[] =
     fieldRoots.length > 0
       ? fieldRoots
-      : [{ insert: "input.", label: "input.", description: "引用聚合入参 input", leaf: true, searchText: "input." }];
-  roots.push({ insert: "node.", label: "node.", description: "引用上游节点输出", leaf: false, searchText: "node." });
+      : [
+          {
+            insert: "input.",
+            label: "input.",
+            description: "引用聚合入参 input",
+            leaf: true,
+            searchText: "input.",
+          },
+        ];
+  roots.push({
+    insert: "node.",
+    label: "node.",
+    description: "引用上游节点输出",
+    leaf: false,
+    searchText: "node.",
+  });
   if (variableNames !== undefined && variableNames.length > 0) {
     roots.push({
       insert: "var.",
@@ -174,7 +188,10 @@ export function buildInputFieldRoots(inputPaths: ReadonlyArray<string>): RefSugg
  * @param inputPaths 入参字段点分路径清单
  * @param typed 用户已输入的裸路径片段（`{{` 之后到光标，已 trim）
  */
-export function buildBareInputPathOptions(inputPaths: ReadonlyArray<string>, typed: string): RefSuggestOption[] {
+export function buildBareInputPathOptions(
+  inputPaths: ReadonlyArray<string>,
+  typed: string,
+): RefSuggestOption[] {
   const keyword = typed.toLowerCase();
   return inputPaths
     .filter((path) => path.toLowerCase().startsWith(keyword))
@@ -198,7 +215,10 @@ export function buildBareInputPathOptions(inputPaths: ReadonlyArray<string>, typ
  * @param inputPaths 入参字段点分路径清单（如 ['body.token', 'user.0.id']）
  * @param prefix 使用的前缀（'input.' 或 '$json.'；与用户当前输入的根一致）
  */
-export function buildInputPathOptions(inputPaths: ReadonlyArray<string>, prefix: "input." | "$json." = "input."): RefSuggestOption[] {
+export function buildInputPathOptions(
+  inputPaths: ReadonlyArray<string>,
+  prefix: "input." | "$json." = "input.",
+): RefSuggestOption[] {
   return inputPaths.map((path) => ({
     insert: `${prefix}${path}`,
     label: path,
@@ -269,8 +289,12 @@ export function buildNodeOptions(nodes: ReadonlyArray<SuggestNodeOption>): RefSu
  * @param sample 节点深路径样本（id + collectJsonPaths 派生的路径清单 + 来源）
  * @param typed 用户已输入的路径片段（`node.<id>.` 之后到光标，已 trim）
  */
-export function buildNodePathOptions(sample: SuggestNodePathSample, typed: string): RefSuggestOption[] {
-  const description = sample.source === "capture" ? "该节点引用快照的响应体字段" : "该节点最近运行的输出字段";
+export function buildNodePathOptions(
+  sample: SuggestNodePathSample,
+  typed: string,
+): RefSuggestOption[] {
+  const description =
+    sample.source === "capture" ? "该节点引用快照的响应体字段" : "该节点最近运行的输出字段";
   const typedSegments = typed === "" ? [] : typed.toLowerCase().split(".");
   return sample.paths
     .filter((path) => matchesPathSegments(path, typedSegments))
@@ -308,7 +332,10 @@ export function matchesPathSegments(path: string, typedSegments: ReadonlyArray<s
  * @param options 待过滤候选
  * @param query 用户已输入的查询（首尾空白忽略；空查询返回全部候选的浅拷贝）
  */
-export function filterRefs(options: ReadonlyArray<RefSuggestOption>, query: string): RefSuggestOption[] {
+export function filterRefs(
+  options: ReadonlyArray<RefSuggestOption>,
+  query: string,
+): RefSuggestOption[] {
   const keyword = query.trim().toLowerCase();
   if (keyword === "") return [...options];
   return options.filter((option) => option.searchText.includes(keyword));
@@ -363,7 +390,9 @@ export function buildSuggestOptions(
       return options.map((option) => {
         const nodeId = option.insert.slice("node.".length, -1);
         const sample = nodePathSamples.find((item) => item.id === nodeId);
-        return sample !== undefined && sample.paths.length > 0 ? { ...option, leaf: false } : option;
+        return sample !== undefined && sample.paths.length > 0
+          ? { ...option, leaf: false }
+          : option;
       });
     }
     // node.<id>. 之后的路径段：该节点有深路径样本时按已输入片段前缀过滤
@@ -426,7 +455,12 @@ export function detectSuggestState(textBeforeCaret: string): SuggestState | null
  * @param replaceStart 替换起点（来自 detectSuggestState）
  * @param insert 候选的补全片段
  */
-export function applySuggestInsert(text: string, caret: number, replaceStart: number, insert: string): InsertPlan {
+export function applySuggestInsert(
+  text: string,
+  caret: number,
+  replaceStart: number,
+  insert: string,
+): InsertPlan {
   return {
     text: text.slice(0, replaceStart) + insert + text.slice(caret),
     caret: replaceStart + insert.length,

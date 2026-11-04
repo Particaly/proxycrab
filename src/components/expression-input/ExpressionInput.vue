@@ -106,7 +106,9 @@ const options = computed<RefSuggestOption[]>(() =>
 );
 /** 候选为空时不弹浮层（query 已进入路径输入阶段等情况） */
 const active = computed(() => suggest.value !== null && options.value.length > 0);
-const safeHighlightIndex = computed(() => (active.value ? Math.min(highlightIndex.value, options.value.length - 1) : 0));
+const safeHighlightIndex = computed(() =>
+  active.value ? Math.min(highlightIndex.value, options.value.length - 1) : 0,
+);
 
 /** 应用写入计划：提交受控文本，等 value 回流后把光标落到计划位置 */
 async function applyPlan(plan: InsertPlan, nextSuggest: SuggestState | null): Promise<void> {
@@ -176,7 +178,9 @@ async function insertOption(option: RefSuggestOption | undefined): Promise<void>
 function caretForInsert(): number {
   const element = controlRef.value;
   const isFocused = element !== null && element.ownerDocument.activeElement === element;
-  return isFocused && element !== null ? (element.selectionStart ?? model.value.length) : model.value.length;
+  return isFocused && element !== null
+    ? (element.selectionStart ?? model.value.length)
+    : model.value.length;
 }
 
 /**
@@ -210,7 +214,9 @@ const activePreview = computed<TemplatePreviewResult | null>(() =>
 const sampleSourceText = computed(() => {
   const sample = props.sample;
   if (sample === undefined || sample === null) return "";
-  return sample.inputSource === "none" ? NONE_SOURCE_HINT : SAMPLE_SOURCE_LABELS[sample.inputSource];
+  return sample.inputSource === "none"
+    ? NONE_SOURCE_HINT
+    : SAMPLE_SOURCE_LABELS[sample.inputSource];
 });
 </script>
 
@@ -264,7 +270,9 @@ const sampleSourceText = computed(() => {
           {{ activePreview.value === "" ? "（空）" : activePreview.value }}
         </span>
       </div>
-      <p v-for="warning in activePreview.warnings" :key="warning" class="preview-warning">{{ warning }}</p>
+      <p v-for="warning in activePreview.warnings" :key="warning" class="preview-warning">
+        {{ warning }}
+      </p>
       <p v-if="sampleSourceText !== ''" class="preview-source">{{ sampleSourceText }}</p>
     </div>
   </div>

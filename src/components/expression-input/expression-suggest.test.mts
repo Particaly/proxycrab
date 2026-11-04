@@ -41,7 +41,8 @@ const VARS = ["Token", "host", "env"];
 const ENV_KEYS = ["BASE_URL", "apiToken"];
 
 /** 取候选的 insert 片段序列，便于断言过滤结果 */
-const insertsOf = (options: ReadonlyArray<RefSuggestOption>) => options.map((option) => option.insert);
+const insertsOf = (options: ReadonlyArray<RefSuggestOption>) =>
+  options.map((option) => option.insert);
 
 describe("buildRootOptions / buildNodeOptions", () => {
   it("根候选：无入参清单时以 input. 入口兜底，node. 可继续下钻", () => {
@@ -59,8 +60,17 @@ describe("buildRootOptions / buildNodeOptions", () => {
 
   it("根候选：提供变量名 / 环境键清单时追加 var. / env. 根（排在 node. 之后）", () => {
     expect(insertsOf(buildRootOptions(VARS))).toEqual(["input.", "node.", "var."]);
-    expect(insertsOf(buildRootOptions(undefined, undefined, ENV_KEYS))).toEqual(["input.", "node.", "env."]);
-    expect(insertsOf(buildRootOptions(VARS, undefined, ENV_KEYS))).toEqual(["input.", "node.", "var.", "env."]);
+    expect(insertsOf(buildRootOptions(undefined, undefined, ENV_KEYS))).toEqual([
+      "input.",
+      "node.",
+      "env.",
+    ]);
+    expect(insertsOf(buildRootOptions(VARS, undefined, ENV_KEYS))).toEqual([
+      "input.",
+      "node.",
+      "var.",
+      "env.",
+    ]);
     // 清单缺省 / 空数组 → 不出现对应根（上下文没有该命名空间不给无处落地的候选）
     expect(insertsOf(buildRootOptions([]))).toEqual(["input.", "node."]);
     expect(insertsOf(buildRootOptions(undefined, undefined, []))).toEqual(["input.", "node."]);
@@ -85,7 +95,13 @@ describe("buildVariableOptions / buildEnvOptions", () => {
 
   it("环境键映射为 env.<key> 叶子候选（与变量候选同形）", () => {
     expect(buildEnvOptions(["BASE_URL"])).toEqual([
-      { insert: "env.BASE_URL", label: "BASE_URL", description: "环境变量", leaf: true, searchText: "base_url" },
+      {
+        insert: "env.BASE_URL",
+        label: "BASE_URL",
+        description: "环境变量",
+        leaf: true,
+        searchText: "base_url",
+      },
     ]);
     expect(buildEnvOptions([])).toEqual([]);
   });
@@ -140,7 +156,9 @@ describe("buildSuggestOptions：深路径分支", () => {
   const NODES_WITH_ORPHAN = [...NODES, { id: "n9", label: "孤立" }];
 
   it("node.<id>. 之后给出该节点的路径候选", () => {
-    expect(insertsOf(buildSuggestOptions("node.n2.", NODES_WITH_ORPHAN, undefined, undefined, SAMPLES))).toEqual([
+    expect(
+      insertsOf(buildSuggestOptions("node.n2.", NODES_WITH_ORPHAN, undefined, undefined, SAMPLES)),
+    ).toEqual([
       "node.n2.status",
       "node.n2.body",
       "node.n2.json.data.token",
@@ -153,23 +171,31 @@ describe("buildSuggestOptions：深路径分支", () => {
       "node.n2.json.data.token",
       "node.n2.json.data.user",
     ]);
-    expect(insertsOf(buildSuggestOptions("node.n2.json.d", NODES_WITH_ORPHAN, undefined, undefined, SAMPLES))).toEqual([
-      "node.n2.json.data.token",
-      "node.n2.json.data.user",
-    ]);
-    expect(insertsOf(buildSuggestOptions("node.n2.JSON.D", NODES_WITH_ORPHAN, undefined, undefined, SAMPLES))).toEqual([
-      "node.n2.json.data.token",
-      "node.n2.json.data.user",
-    ]);
-    expect(insertsOf(buildSuggestOptions("node.n2.stat", NODES_WITH_ORPHAN, undefined, undefined, SAMPLES))).toEqual([
-      "node.n2.status",
-    ]);
+    expect(
+      insertsOf(
+        buildSuggestOptions("node.n2.json.d", NODES_WITH_ORPHAN, undefined, undefined, SAMPLES),
+      ),
+    ).toEqual(["node.n2.json.data.token", "node.n2.json.data.user"]);
+    expect(
+      insertsOf(
+        buildSuggestOptions("node.n2.JSON.D", NODES_WITH_ORPHAN, undefined, undefined, SAMPLES),
+      ),
+    ).toEqual(["node.n2.json.data.token", "node.n2.json.data.user"]);
+    expect(
+      insertsOf(
+        buildSuggestOptions("node.n2.stat", NODES_WITH_ORPHAN, undefined, undefined, SAMPLES),
+      ),
+    ).toEqual(["node.n2.status"]);
   });
 
   it("节点无样本 / 样本为空路径：路径段返回空（与既有行为一致）", () => {
-    expect(buildSuggestOptions("node.n9.", NODES_WITH_ORPHAN, undefined, undefined, SAMPLES)).toEqual([]);
+    expect(
+      buildSuggestOptions("node.n9.", NODES_WITH_ORPHAN, undefined, undefined, SAMPLES),
+    ).toEqual([]);
     const empty: SuggestNodePathSample[] = [{ id: "n2", paths: [], source: "run" }];
-    expect(buildSuggestOptions("node.n2.", NODES_WITH_ORPHAN, undefined, undefined, empty)).toEqual([]);
+    expect(buildSuggestOptions("node.n2.", NODES_WITH_ORPHAN, undefined, undefined, empty)).toEqual(
+      [],
+    );
     // 完全未传样本：既有行为——路径段不给建议
     expect(buildSuggestOptions("node.n2.output", NODES)).toEqual([]);
   });
@@ -182,55 +208,70 @@ describe("buildSuggestOptions：深路径分支", () => {
     expect(buildSuggestOptions("node.", NODES).every((option) => option.leaf)).toBe(true);
     // 样本空路径清单的节点不改为可下钻（推进后无候选会落空）
     const empty: SuggestNodePathSample[] = [{ id: "n2", paths: [], source: "run" }];
-    expect(buildSuggestOptions("node.", NODES_WITH_ORPHAN, undefined, undefined, empty).map((o) => o.leaf)).toEqual([
-      true,
-      true,
-      true,
-    ]);
+    expect(
+      buildSuggestOptions("node.", NODES_WITH_ORPHAN, undefined, undefined, empty).map(
+        (o) => o.leaf,
+      ),
+    ).toEqual([true, true, true]);
   });
 
   it("节点 id 级过滤后仍按 id / label 匹配（样本只影响 leaf，不影响过滤）", () => {
-    const options = buildSuggestOptions("node.下单", NODES_WITH_ORPHAN, undefined, undefined, SAMPLES);
+    const options = buildSuggestOptions(
+      "node.下单",
+      NODES_WITH_ORPHAN,
+      undefined,
+      undefined,
+      SAMPLES,
+    );
     expect(insertsOf(options)).toEqual(["node.n2."]);
     expect(options[0]!.leaf).toBe(false);
   });
 
   it("深路径候选的来源说明区分 run / capture", () => {
     expect(buildNodePathOptions(SAMPLES[0]!, "")[0]!.description).toBe("该节点最近运行的输出字段");
-    expect(buildNodePathOptions(SAMPLES[1]!, "")[0]!.description).toBe("该节点引用快照的响应体字段");
+    expect(buildNodePathOptions(SAMPLES[1]!, "")[0]!.description).toBe(
+      "该节点引用快照的响应体字段",
+    );
   });
 });
 
 describe("buildSuggestOptions：var / env 层级判定", () => {
   it("空查询且提供清单 → 入参入口 + node. + var. / env.", () => {
     expect(insertsOf(buildSuggestOptions("", NODES, VARS))).toEqual(["input.", "node.", "var."]);
-    expect(insertsOf(buildSuggestOptions("", NODES, undefined, undefined, undefined, ENV_KEYS))).toEqual([
-      "input.",
-      "node.",
-      "env.",
-    ]);
+    expect(
+      insertsOf(buildSuggestOptions("", NODES, undefined, undefined, undefined, ENV_KEYS)),
+    ).toEqual(["input.", "node.", "env."]);
   });
 
   it("查询以 var. 开头 → 变量名候选（大小写不敏感过滤）", () => {
-    expect(buildSuggestOptions("var.", NODES, VARS).map((o) => o.insert)).toEqual(["var.Token", "var.host", "var.env"]);
+    expect(buildSuggestOptions("var.", NODES, VARS).map((o) => o.insert)).toEqual([
+      "var.Token",
+      "var.host",
+      "var.env",
+    ]);
     expect(buildSuggestOptions("var.tok", NODES, VARS).map((o) => o.insert)).toEqual(["var.Token"]);
     expect(buildSuggestOptions("var.HOST", NODES, VARS).map((o) => o.insert)).toEqual(["var.host"]);
   });
 
   it("查询以 env. 开头 → 环境键候选（判定与 var 分支同形）", () => {
-    expect(buildSuggestOptions("env.", NODES, undefined, undefined, undefined, ENV_KEYS).map((o) => o.insert)).toEqual([
-      "env.BASE_URL",
-      "env.apiToken",
-    ]);
-    expect(buildSuggestOptions("env.api", NODES, undefined, undefined, undefined, ENV_KEYS).map((o) => o.insert)).toEqual([
-      "env.apiToken",
-    ]);
+    expect(
+      buildSuggestOptions("env.", NODES, undefined, undefined, undefined, ENV_KEYS).map(
+        (o) => o.insert,
+      ),
+    ).toEqual(["env.BASE_URL", "env.apiToken"]);
+    expect(
+      buildSuggestOptions("env.api", NODES, undefined, undefined, undefined, ENV_KEYS).map(
+        (o) => o.insert,
+      ),
+    ).toEqual(["env.apiToken"]);
   });
 
   it("变量名 / 环境键之后出现点号 → 不再给建议（路径手输，渲染层支持下钻）", () => {
     expect(buildSuggestOptions("var.env.", NODES, VARS)).toEqual([]);
     expect(buildSuggestOptions("var.env.region", NODES, VARS)).toEqual([]);
-    expect(buildSuggestOptions("env.BASE_URL.", NODES, undefined, undefined, undefined, ENV_KEYS)).toEqual([]);
+    expect(
+      buildSuggestOptions("env.BASE_URL.", NODES, undefined, undefined, undefined, ENV_KEYS),
+    ).toEqual([]);
   });
 
   it("清单缺省 / 为空：var. / env. 查询返回空候选，其余查询与既有行为一致", () => {
@@ -243,14 +284,20 @@ describe("buildSuggestOptions：var / env 层级判定", () => {
   });
 
   it("node 层级不受 variableNames / envKeys 影响", () => {
-    expect(buildSuggestOptions("node.n2", NODES, VARS, undefined, undefined, ENV_KEYS).map((o) => o.insert)).toEqual([
-      "node.n2.",
-    ]);
+    expect(
+      buildSuggestOptions("node.n2", NODES, VARS, undefined, undefined, ENV_KEYS).map(
+        (o) => o.insert,
+      ),
+    ).toEqual(["node.n2."]);
   });
 
   it("filterRefs 对 var / env 候选照常过滤（共享同一过滤通道）", () => {
-    expect(filterRefs(buildVariableOptions(VARS), "HOST").map((o) => o.insert)).toEqual(["var.host"]);
-    expect(filterRefs(buildEnvOptions(ENV_KEYS), "base").map((o) => o.insert)).toEqual(["env.BASE_URL"]);
+    expect(filterRefs(buildVariableOptions(VARS), "HOST").map((o) => o.insert)).toEqual([
+      "var.host",
+    ]);
+    expect(filterRefs(buildEnvOptions(ENV_KEYS), "base").map((o) => o.insert)).toEqual([
+      "env.BASE_URL",
+    ]);
   });
 });
 
@@ -285,7 +332,11 @@ describe("buildSuggestOptions：入参字段路径候选", () => {
 
   it("按已输入片段过滤（大小写不敏感）", () => {
     expect(withPaths("input.tok").map((o) => o.insert)).toEqual(["input.body.token"]);
-    expect(withPaths("input.BODY").map((o) => o.insert)).toEqual(["input.body", "input.body.token", "input.body.items"]);
+    expect(withPaths("input.BODY").map((o) => o.insert)).toEqual([
+      "input.body",
+      "input.body.token",
+      "input.body.items",
+    ]);
   });
 
   it("清单缺省 / 为空：input. / $json. 查询返回空候选（用户继续手输路径）", () => {
@@ -324,11 +375,17 @@ describe("detectSuggestState", () => {
 describe("applySuggestInsert", () => {
   it("替换 {{ 之后到光标的内容，光标落在片段之后", () => {
     // 场景：url={{in，光标在末尾（replaceStart=6），选中根候选 node.
-    expect(applySuggestInsert("url={{in", 8, 6, "node.")).toEqual({ text: "url={{node.", caret: 11 });
+    expect(applySuggestInsert("url={{in", 8, 6, "node.")).toEqual({
+      text: "url={{node.",
+      caret: 11,
+    });
   });
 
   it("光标前已输入部分查询整体被替换", () => {
-    expect(applySuggestInsert("{{ node.", 8, 3, "node.n2.")).toEqual({ text: "{{ node.n2.", caret: 11 });
+    expect(applySuggestInsert("{{ node.", 8, 3, "node.n2.")).toEqual({
+      text: "{{ node.n2.",
+      caret: 11,
+    });
   });
 
   it("插入后不影响表达式之外的文本（含未闭合兜底字面量前的空格）", () => {
@@ -348,7 +405,10 @@ describe("buildInsertTemplatePlan / buildDropInsertPlan", () => {
 
   it("插入后紧接 detectSuggestState 应命中根候选状态", () => {
     const plan = buildInsertTemplatePlan("", 0);
-    expect(detectSuggestState(plan.text.slice(0, plan.caret))).toEqual({ replaceStart: 2, query: " " });
+    expect(detectSuggestState(plan.text.slice(0, plan.caret))).toEqual({
+      replaceStart: 2,
+      query: " ",
+    });
   });
 
   it("拖放插入：完整片段原样写入，光标落在片段末尾", () => {
