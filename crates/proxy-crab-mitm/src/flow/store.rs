@@ -9,6 +9,8 @@
 //! - `flow/env-sets.json` — versioned envelope of environment variable sets
 //! - `flow/mcp-tools.json` — versioned envelope of the MCP exposure tiers
 //!   (plan Task 25 Step 2; owned by [`crate::flow::mcp_tiers`])
+//! - `flow/mcp-audit.json` — versioned envelope of the MCP tool call audit log
+//!   (plan Task 25 Step 4; owned by [`crate::flow::mcp_audit`])
 //! - `flow/runs.db` — run record database; created by the run record storage on
 //!   first use, never pre-created as an empty file
 //!
