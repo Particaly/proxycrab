@@ -30,8 +30,8 @@ use proxy_crab_mitm::{
 
 use crate::{
     dto::{
-        ErrorCode, FlowRunListQuery, IngestCaptureRequest, LogIdsRequest, ManagerError,
-        RequestLibraryQuery, SessionQuery, WorkflowListQuery, WorkflowUpdateRequest,
+        ErrorCode, FlowRunListQuery, FlowRunTriggerRequest, IngestCaptureRequest, LogIdsRequest,
+        ManagerError, RequestLibraryQuery, SessionQuery, WorkflowListQuery, WorkflowUpdateRequest,
     },
     manager::ProxyCrabManager,
     permission::{
@@ -278,6 +278,34 @@ const REGISTRY: &[ToolDescriptor] = &[
             ("limit", "integer", "Max entries to return."),
             ("offset", "integer", "Entries to skip."),
         ],
+    },
+    ToolDescriptor {
+        name: "workflow_run_trigger",
+        description: "Trigger one workflow run, mirroring POST /api/flow/runs.",
+        route: ("POST", "/api/flow/runs"),
+        tier: ToolTier::Execute,
+        params: &[
+            ("workflowId", "string", "Workflow to run."),
+            (
+                "sessionId",
+                "integer",
+                "Optional target Session; defaults to the active one.",
+            ),
+        ],
+    },
+    ToolDescriptor {
+        name: "workflow_run_cancel",
+        description: "Cancel one workflow run, mirroring POST /api/flow/runs/{id}/cancel.",
+        route: ("POST", "/api/flow/runs/{id}/cancel"),
+        tier: ToolTier::Execute,
+        params: &[("id", "string", "Workflow run id to cancel.")],
+    },
+    ToolDescriptor {
+        name: "workflow_run_detail",
+        description: "Fetch one workflow run detail with node checkpoints, mirroring GET /api/flow/runs/{id}.",
+        route: ("GET", "/api/flow/runs/{id}"),
+        tier: ToolTier::Read,
+        params: &[("id", "string", "Workflow run id.")],
     },
 ];
 
@@ -531,6 +559,20 @@ async fn execute(
             let id = path_argument(arguments, "id")?;
             serialize_result(manager.validate_workflow(id).await?)
         }
+        /* ---- 运行 ---- */
+        "workflow_run_trigger" => {
+            let request: FlowRunTriggerRequest = parse_arguments(arguments)?;
+            serialize_result(manager.trigger_workflow_run(request).await?)
+        }
+        "workflow_run_cancel" => {
+            let id = path_argument(arguments, "id")?;
+            manager.cancel_workflow_run(id).await?;
+            Ok(json!({ "cancelled": true }))
+        }
+        "workflow_run_detail" => {
+            let id = path_argument(arguments, "id")?;
+            serialize_result(manager.workflow_run_detail(id).await?)
+        }
         #[cfg(test)]
         "test_slow_tool" => Ok(slow_tool_stub::run().await),
         // lookup 已把执行器与注册表对齐；此分支不可达。
@@ -673,7 +715,7 @@ mod tests {
     fn tools_list_envelope_declares_the_curated_surface() {
         let envelope = list_envelope(&McpTiers::default());
         let tools = envelope["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 10);
+        assert_eq!(tools.len(), 11);
         let runs_list = tools
             .iter()
             .find(|tool| tool["name"] == "workflow_runs_list")
@@ -721,7 +763,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            10
+            11
         );
         // 读档关闭：tools/list 不再出现该类别工具。
         let read_off = McpTiers {
