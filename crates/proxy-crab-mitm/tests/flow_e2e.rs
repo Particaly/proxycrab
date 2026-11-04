@@ -1,10 +1,10 @@
 //! 端到端自动化验收（ReqFlow 复刻计划 Task 28 Step 1）。
 //!
 //! 一条测试链路串起 ReqFlow 的核心公开面：请求库条目入库 → 构建多节点流程
-//! （httpReplay 引用请求库条目 + assert 断言 + condition 条件分支 + loop 循环
-//! + 循环体回放）→ 触发运行 → 校验运行记录、节点检查点与图快照。运行
-//! harness 沿用 flow_run.rs 口径，请求库入库沿用 request_library.rs 口径，
-//! 出站请求由本地测试上游承接（复用 replay_await.rs 的本地上游模式）。
+//! （httpReplay 引用请求库条目、assert 断言、condition 条件分支、loop 循环与
+//! 循环体回放）→ 触发运行 → 校验运行记录、节点检查点与图快照。运行 harness
+//! 沿用 flow_run.rs 口径，请求库入库沿用 request_library.rs 口径，出站请求
+//! 由本地测试上游承接（复用 replay_await.rs 的本地上游模式）。
 
 mod flow_e2e {
     use std::{
