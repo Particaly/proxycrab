@@ -79,6 +79,37 @@
 
 原 5 项待确认契约（画布库 / 载荷工程 / 存储介质 / 运行记录留存 / MCP）已全部拍板，结论并入 Agreed contract 表；MCP 的传输形态与工具面在阶段 5 展开。实施中若出现新的设计分叉，按 `AGENTS.md`「不确定先问」处理，不自行决定。
 
+## 三面对账结论（Task 28 Step 4，2026-11-05）
+
+对上游 `_archive/reqflow` ROADMAP（main @ 485fa00）逐条核对，三面均无遗漏项：
+
+**第一面：上游功能面 M0–M18 → 本计划落点**（功能在实现中，或在「明确不迁移」有理由行）：
+
+| 上游里程碑 | 落点 |
+|---|---|
+| M0 工程地基 | ProxyCrab 既有基座（Vite+Vue+TS / 浮窗 / 工作区存储）；Chrome 专有构建与外壳 → 不迁移行 2 |
+| M1 请求捕获 + 入库 | 复刻映射行 1（代理抓包替换 DevTools）；存入请求库 → Task 5/6 |
+| M2 请求中心 | 请求库窗口 → Task 5/6/7；快照体积管理 → Task 21 截断形态 |
+| M3 项目与流程 | Task 10/11（模型、持久化、API） |
+| M4 画布编辑器 | Task 12–16（画布/交互/配置/模板/逻辑节点）；前后置脚本 → Task 18 |
+| M5 执行引擎 | Task 1/2/3（rquickjs 载荷+宿主桥+同步重放）、Task 19/20（编排+语义）、Task 21（记录落库） |
+| M6 运行记录与调试 | Task 19/22（历史、详情、运行画布） |
+| M7 增强 | 逻辑节点 → Task 16/20；变量系统 → Task 17；导入 → Task 8；导入导出 → Task 23；chrome.debugger 增强与 i18n/引导 → 不迁移行 2/3/6 |
+| M8 反馈修复 | Response 捕获语义由代理抓包天然覆盖；面板主题/右栏/引导 → 不迁移行 6 |
+| M9 正确性与安全 | offscreen 沙箱 → rquickjs（Task 1）；DNR 头保真 → Rust 直发（映射行 3）；checkpoint 恢复 → Task 19/21（interrupted 收敛）；导入脚本审查 → Task 23；secret → Task 17；Playwright → 不迁移行 4（改 Rust 集成 + vitest + 手工清单） |
+| M10 差异化与效率 | 依赖推断/断言/transform/CSV → Task 20 载荷；导出与代码生成 → Task 9；环境变量集 → Task 17；pinned/重跑 → Task 14/19/20；降噪 → 不迁移行 6（自有 filter 体系） |
+| M11 动效打磨 | 不迁移行 6（ProxyCrab 自有窗口与样式体系） |
+| M12 重放桥与保真 | 桥 → 不迁移行 1（决策 5）；cookie 归一/数据保真 → 载荷 har-cookies + Rust 直发 |
+| M13 编辑器易用性 | 试跑 → Task 18；refId → Task 10 迁移链+载荷；条件可视化/深路径/字段拖拽/循环逐轮摘要 → Task 15/16/22；stickyNote → 9 类节点含 StickyNote |
+| M14 环境变量体系 | Task 17（独立窗口 + 脚本注入只读 + 写回） |
+| M15/M16 配置与语义增强 | 条件双出口 sourceHandle、条件构建器落库、汇合 join 语义与节点级并行调度 → Task 16/19/20；头编辑细节 → Task 14/15 |
+| M17 运行画布 | Task 21/22（RunGraphSnapshot 契约 + 只读运行画布 + 节点快照面板） |
+| M18 详情收口 | 运行对比上游已自行移除（本就未复刻）；面板 UI 细节按基座形态 |
+
+**第二面：M19/MCP 功能面** → 阶段 5 Task 24–26 全量落地（端点/鉴权/审批、策展工具+三档开关+审计、文档/评测），并已按 DD-10 / M19-T1..T7 逐条对账于 `docs/mcp.md`「ReqFlow M19 reconciliation」；不适用项（宿主 MCP、桥侧声明、命令通道、长轮询）显式声明，与「明确不迁移」行 5 一致。此处复核无出入。
+
+**第三面：明确不迁移清单** → 6 行经此对账仍完整：行 1（桥）、行 2（Chrome 平台专有，覆盖 M7-T4/M9-T2/T3）、行 3（i18n）、行 4（Playwright，覆盖 M9-T1）、行 5（M19 宿主/桥形态）、行 6（扩展外壳特性，覆盖 M8/M11/M18 打磨类）。无需新增行。
+
 ---
 
 ## 阶段 1 — 基座准备（Task 1–4）
@@ -416,4 +447,4 @@
 - [x] **Step 1: 自动化**：Rust 集成测试跑通「建请求库条目 → 建流程（请求 + 条件 + 循环 + 断言）→ 运行 → 校验运行记录与图快照」；前端 vitest 覆盖纯函数与窗口启动契约。
 - [ ] **Step 2: 门禁**：`cargo check --workspace` / `cargo clippy --workspace --all-targets -- -D warnings` / `cargo test --workspace` / `pnpm build` / `pnpm test:unit` / `pnpm format` 全绿。
 - [x] **Step 3: 手工场景清单**（`docs/flow-acceptance.md`）：真实流量入库并重放、头保真（Origin/Referer/UA 与 Cookie 快照）、条件真/假走向、循环并发与取消、脚本写回环境变量、运行中断与重启收敛、Agent 经 HTTP API 触发工作流（审批链）、**外部 AI 经 MCP 触发工作流（档位与审批链）**、导入导出往返。
-- [ ] **Step 4: 三面对账**：逐条比对 ReqFlow `ROADMAP.md` 的功能面（M0–M18）、**M19/MCP 功能面**（阶段 5 已逐条对账，此处复核）与 `明确不迁移` 清单，确认无遗漏项；把结论回写本计划（勾选状态）。
+- [x] **Step 4: 三面对账**：逐条比对 ReqFlow `ROADMAP.md` 的功能面（M0–M18）、**M19/MCP 功能面**（阶段 5 已逐条对账，此处复核）与 `明确不迁移` 清单，确认无遗漏项；把结论回写本计划（勾选状态）。
