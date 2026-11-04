@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runWorkflow } from "./run-workflow";
 import { computeUpstreamClosure } from "./executor";
+import { asEdgeId, asNodeId, asWorkflowId } from "./types";
 import type { WorkflowNode } from "./types";
 
 /**
@@ -26,12 +27,12 @@ function makeNode(
   type: WorkflowNode["type"] = "httpReplay",
   config: WorkflowNode["config"] = {},
 ): WorkflowNode {
-  return { id, type, position: { x: 0, y: 0 }, config };
+  return { id: asNodeId(id), type, position: { x: 0, y: 0 }, config };
 }
 
 /** 构造连线（id 由 source→target 拼出） */
 function makeEdge(source: string, target: string) {
-  return { id: `${source}->${target}`, source, target };
+  return { id: asEdgeId(`${source}->${target}`), source: asNodeId(source), target: asNodeId(target) };
 }
 
 /** 桩重放宿主：按 url 记录出站请求并回 200 JSON 信封 */
@@ -52,7 +53,7 @@ describe("runWorkflow 宿主取消接线（Task 20）", () => {
     vi.stubGlobal("host", { cancelled: async () => true });
     vi.useFakeTimers();
     const workflow = {
-      id: "wf-cancel",
+      id: asWorkflowId("wf-cancel"),
       nodes: [
         makeNode("s", "start"),
         makeNode("d1", "delay", { durationMs: 2000 }),
@@ -68,9 +69,9 @@ describe("runWorkflow 宿主取消接线（Task 20）", () => {
     const summary = await promise;
     expect(summary.status).toBe("cancelled");
     expect(summary.error).toBe("运行已被取消");
-    expect(summary.nodeRuns.d1?.status).toBe("failed");
+    expect(summary.nodeRuns[asNodeId("d1")]?.status).toBe("failed");
     // 取消后不再启动新节点：end 保持 skipped
-    expect(summary.nodeRuns.end?.status).toBe("skipped");
+    expect(summary.nodeRuns[asNodeId("end")]?.status).toBe("skipped");
   });
 
   it("显式传入 signal 时不轮询宿主取消（调用方信号优先）", async () => {
@@ -79,7 +80,7 @@ describe("runWorkflow 宿主取消接线（Task 20）", () => {
     const controller = new AbortController();
     const summary = await runWorkflow(
       {
-        id: "wf-explicit-signal",
+        id: asWorkflowId("wf-explicit-signal"),
         nodes: [
           makeNode("s", "start"),
           makeNode("a", "httpReplay", {
@@ -96,12 +97,12 @@ describe("runWorkflow 宿主取消接线（Task 20）", () => {
 
   it("无宿主桥时不接线：运行行为与既有逐字节一致", async () => {
     const summary = await runWorkflow({
-      id: "wf-no-bridge",
+      id: asWorkflowId("wf-no-bridge"),
       nodes: [makeNode("s", "start")],
       edges: [],
     });
     expect(summary.status).toBe("success");
-    expect(summary.nodeRuns.s?.status).toBe("success");
+    expect(summary.nodeRuns[asNodeId("s")]?.status).toBe("success");
   });
 
   it("取消时循环节点已完成轮次照常结算：聚合输出保留、在途轮记 cancelled", async () => {
@@ -121,7 +122,7 @@ describe("runWorkflow 宿主取消接线（Task 20）", () => {
     vi.stubGlobal("host", { replay });
     const summary = await runWorkflow(
       {
-        id: "wf-loop-cancel",
+        id: asWorkflowId("wf-loop-cancel"),
         nodes: [
           makeNode("s", "start"),
           makeNode("loop", "loop", { items: [1, 2, 3] }),
@@ -135,12 +136,12 @@ describe("runWorkflow 宿主取消接线（Task 20）", () => {
     );
     expect(summary.status).toBe("cancelled");
     // 循环节点自然结算（success）：已完成轮次聚合保留
-    expect(summary.nodeRuns.loop?.status).toBe("success");
-    const output = summary.nodeRuns.loop?.output as Array<{ body: string }>;
+    expect(summary.nodeRuns[asNodeId("loop")]?.status).toBe("success");
+    const output = summary.nodeRuns[asNodeId("loop")]?.output as Array<{ body: string }>;
     expect(output).toHaveLength(1);
     expect(output[0]?.body).toBe(JSON.stringify({ item: "https://example.test/it-1" }));
     // 逐迭代明细：第 1 轮 success、第 2 轮 cancelled（第 3 轮未启动）
-    const iterations = summary.nodeRuns.loop?.iterations as {
+    const iterations = summary.nodeRuns[asNodeId("loop")]?.iterations as {
       total: number;
       done: number;
       records: Array<{ index: number; status: string }>;
@@ -159,7 +160,7 @@ describe("runWorkflow 指定节点重跑装配面（Task 20）", () => {
   it("上游闭包预置输出与快照（不再出站），起点及其下游重新执行", async () => {
     const replay = stubReplayHost();
     const workflow = {
-      id: "wf-resume",
+      id: asWorkflowId("wf-resume"),
       nodes: [
         makeNode("s", "start"),
         makeNode("a", "httpReplay", {
@@ -176,28 +177,34 @@ describe("runWorkflow 指定节点重跑装配面（Task 20）", () => {
     expect(replay).toHaveBeenCalledTimes(2);
 
     // 重跑 b：上游闭包（a 与 start）以源运行输出 / 快照预置（start 输出为 null）
-    const closure = computeUpstreamClosure(workflow.nodes, workflow.edges, "b");
+    const closure = computeUpstreamClosure(workflow.nodes, workflow.edges, asNodeId("b"));
     expect(closure).toEqual(["a", "s"]);
     const second = await runWorkflow(workflow, {
       resume: {
-        fromNode: "b",
-        outputs: { a: first.nodeRuns.a?.output, s: first.nodeRuns.s?.output },
-        nodeRuns: { a: first.nodeRuns.a as never, s: first.nodeRuns.s as never },
+        fromNode: asNodeId("b"),
+        outputs: {
+          [asNodeId("a")]: first.nodeRuns[asNodeId("a")]?.output,
+          [asNodeId("s")]: first.nodeRuns[asNodeId("s")]?.output,
+        },
+        nodeRuns: {
+          [asNodeId("a")]: first.nodeRuns[asNodeId("a")] as never,
+          [asNodeId("s")]: first.nodeRuns[asNodeId("s")] as never,
+        },
       },
     });
     expect(second.status).toBe("success");
     // 只有 b 重新出站（a 沿用源运行）
     expect(replay).toHaveBeenCalledTimes(3);
-    expect(second.nodeRuns.a?.status).toBe("success");
-    expect(second.nodeRuns.a?.output).toEqual(first.nodeRuns.a?.output);
-    expect(second.nodeRuns.b?.status).toBe("success");
-    expect(second.nodeRuns.b?.input).toEqual(first.nodeRuns.a?.output);
+    expect(second.nodeRuns[asNodeId("a")]?.status).toBe("success");
+    expect(second.nodeRuns[asNodeId("a")]?.output).toEqual(first.nodeRuns[asNodeId("a")]?.output);
+    expect(second.nodeRuns[asNodeId("b")]?.status).toBe("success");
+    expect(second.nodeRuns[asNodeId("b")]?.input).toEqual(first.nodeRuns[asNodeId("a")]?.output);
   });
 
   it("上游闭包缺输出：建档前整单判 failed 并列出缺输出节点，不执行任何节点", async () => {
     const replay = stubReplayHost();
     const workflow = {
-      id: "wf-resume-missing",
+      id: asWorkflowId("wf-resume-missing"),
       nodes: [
         makeNode("s", "start"),
         makeNode("a", "httpReplay", {
@@ -210,7 +217,7 @@ describe("runWorkflow 指定节点重跑装配面（Task 20）", () => {
       edges: [makeEdge("s", "a"), makeEdge("a", "b")],
     };
     const summary = await runWorkflow(workflow, {
-      resume: { fromNode: "b", outputs: { s: null }, nodeRuns: {} },
+      resume: { fromNode: asNodeId("b"), outputs: { [asNodeId("s")]: null }, nodeRuns: {} },
     });
     expect(summary.status).toBe("failed");
     expect(summary.error).toContain("a");
