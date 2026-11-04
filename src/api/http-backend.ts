@@ -68,6 +68,9 @@ import type {
   UpdateScriptRequest,
   UpdateSessionRequest,
   Workflow,
+  WorkflowExportEnvelope,
+  WorkflowImportRequest,
+  WorkflowImportResult,
   WorkflowValidationResult,
   WorkflowsPage,
   WorkspacePaths,
@@ -469,6 +472,29 @@ export function createHttpBackend(
           `/api/workflows/${encodeURIComponent(id)}/validate`,
           json("POST"),
         ),
+      // 导出返回原始信封文档（非 {ok,data} 包装），错误时仍按管理信封解析。
+      exportWorkflows: async (ids: string[]) => {
+        const response = await fetch(
+          new URL(query("/api/workflows/export", { ids: ids.join(",") }), baseUrl),
+          { headers: { Authorization: authorization(token) } },
+        );
+        if (!response.ok) {
+          let error: ManagerError = {
+            code: `http_${response.status}`,
+            message: `HTTP ${response.status}`,
+          };
+          try {
+            const payload = (await response.json()) as ApiEnvelope<unknown>;
+            if (payload.error) error = payload.error;
+          } catch {
+            // Keep the status-derived fallback when the server did not return JSON.
+          }
+          throw new BackendError(error);
+        }
+        return (await response.json()) as WorkflowExportEnvelope;
+      },
+      importWorkflows: (request: WorkflowImportRequest) =>
+        call<WorkflowImportResult>("/api/workflows/import", json("POST", request)),
     },
     requestLibrary: {
       page: (filter: RequestLibraryQuery) =>
