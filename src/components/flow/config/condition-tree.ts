@@ -13,8 +13,8 @@
  * 落库形状（对齐 Rust serde 契约，crates/proxy-crab-mitm/src/flow/model.rs 的
  * ConditionGroup / ConditionNode / ConditionLeaf）：根组**不带 type 判别键**
  * （{ op, not?, children }，Rust 根 ConditionGroup 无该字段）；嵌套子项按
- * type 分派（'cond' / 'group'，serde internally tagged）；一元操作符叶子不落
- * right（编辑草稿保留切换操作符前的输入，落库时收敛）。
+ * type 分派（'cond' / 'group'，serde internally tagged）；叶子 right 仅保留
+ * 标量（一元操作符保留编辑草稿值，切换操作符往返稳定，编译期忽略）。
  */
 
 import type {
@@ -27,7 +27,6 @@ import {
   compileConditionTree,
   emptyConditionGroup,
   migrateConditionRules,
-  operatorNeedsRight,
   parseConditionTree,
   parseRightValue,
 } from "../../../../flow-engine/src/condition-builder";
@@ -51,7 +50,10 @@ export interface ConditionConfigShard {
  * 落库形状（serializeConditionTree 的产物，写入 config.condition）
  * ------------------------------------------------------------------ */
 
-/** 叶子落库形状：一元操作符不落 right（标量收敛同引擎 parseConditionGroup） */
+/**
+ * 叶子落库形状：right 仅保留标量。一元操作符保留草稿 right（编译与校验对
+ * 一元忽略 right；保留可让「一元 ⇄ 二元」切换往返不丢输入）。
+ */
 export interface StoredConditionLeaf {
   type: "cond";
   left: string;
@@ -125,18 +127,18 @@ export function getGroupAt(tree: ConditionGroup, path: ConditionPath): Condition
 }
 
 /**
- * 通用变换：clone 后按 path 定位目标组，交由 mutator 原地修改；目标组缺失
- * （path 越界 / 命中叶子）→ 原树原样返回（不抛错，编辑操作天然幂等）。
+ * 通用变换：clone 后按 path 定位目标组，交由 mutator 原地修改；mutator 返回
+ * 是否发生了修改（目标组缺失 / 下标越界等无操作时返回 false）——未修改时返回
+ * 原树引用（编辑操作幂等，调用方可用引用相等判断「无变化」）。
  */
 function mutateGroupAt(
   tree: ConditionGroup,
   path: ConditionPath,
-  mutator: (group: ConditionGroup) => void,
+  mutator: (group: ConditionGroup) => boolean,
 ): ConditionGroup {
   const next = cloneGroup(tree);
   const target = getGroupAt(next, path);
-  if (target === null) return tree;
-  mutator(target);
+  if (target === null || !mutator(target)) return tree;
   return next;
 }
 
@@ -144,6 +146,7 @@ function mutateGroupAt(
 export function appendLeaf(tree: ConditionGroup, path: ConditionPath): ConditionGroup {
   return mutateGroupAt(tree, path, (group) => {
     group.children.push(createConditionLeaf());
+    return true;
   });
 }
 
@@ -151,6 +154,7 @@ export function appendLeaf(tree: ConditionGroup, path: ConditionPath): Condition
 export function appendGroup(tree: ConditionGroup, path: ConditionPath): ConditionGroup {
   return mutateGroupAt(tree, path, (group) => {
     group.children.push(createConditionGroup());
+    return true;
   });
 }
 
@@ -161,8 +165,9 @@ export function removeChildAt(
   index: number,
 ): ConditionGroup {
   return mutateGroupAt(tree, path, (group) => {
-    if (index < 0 || index >= group.children.length) return;
+    if (index < 0 || index >= group.children.length) return false;
     group.children.splice(index, 1);
+    return true;
   });
 }
 
@@ -178,8 +183,9 @@ export function updateLeafAt(
 ): ConditionGroup {
   return mutateGroupAt(tree, path, (group) => {
     const child = group.children[index];
-    if (child === undefined || child.type !== "cond") return;
+    if (child === undefined || child.type !== "cond") return false;
     group.children[index] = { ...child, ...patch };
+    return true;
   });
 }
 
@@ -194,6 +200,7 @@ export function updateGroupAt(
 ): ConditionGroup {
   return mutateGroupAt(tree, path, (group) => {
     Object.assign(group, patch);
+    return true;
   });
 }
 
@@ -241,19 +248,17 @@ export function resolveConditionDraft(config: ConditionConfigShard): ConditionGr
   return emptyConditionGroup();
 }
 
-/** 叶子 → 落库形状：一元操作符不落 right；right 仅保留标量（脏类型按缺省剥离） */
+/** 叶子 → 落库形状：right 仅保留标量（脏类型按缺省剥离；一元操作符保留草稿值） */
 function toStoredLeaf(leaf: ConditionLeaf): StoredConditionLeaf {
   const stored: StoredConditionLeaf = { type: "cond", left: leaf.left, operator: leaf.operator };
-  if (operatorNeedsRight(leaf.operator)) {
-    const right = leaf.right;
-    if (
-      typeof right === "string" ||
-      typeof right === "number" ||
-      typeof right === "boolean" ||
-      right === null
-    ) {
-      stored.right = right;
-    }
+  const right = leaf.right;
+  if (
+    typeof right === "string" ||
+    typeof right === "number" ||
+    typeof right === "boolean" ||
+    right === null
+  ) {
+    stored.right = right;
   }
   return stored;
 }
@@ -274,8 +279,8 @@ function toStoredNode(node: ConditionNode): StoredConditionNode {
 
 /**
  * 草稿树 → config.condition 落库形状：根组剥离 type 判别键（对齐 Rust 根
- * ConditionGroup 的 serde 形状），嵌套子项按 type 分派；一元操作符叶子不落
- * right；not = false 不落键。
+ * ConditionGroup 的 serde 形状），嵌套子项按 type 分派；right 仅保留标量；
+ * not = false 不落键。
  */
 export function serializeConditionTree(tree: ConditionGroup): StoredConditionTree {
   return {
@@ -295,4 +300,99 @@ export function buildConditionShard(
   tree: ConditionGroup,
 ): { condition: StoredConditionTree; expression: string } {
   return { condition: serializeConditionTree(tree), expression: compileConditionTree(tree) };
+}
+
+/* ------------------------------------------------------------------ *
+ * 展示辅助（扁平行视图 / 右值类型标注）
+ * ------------------------------------------------------------------ */
+
+/** 叶子是否「整行留白」（与引擎 isBlankLeaf 口径一致：左值与右值均空白且操作符仍是缺省 eq） */
+export function isBlankConditionLeaf(leaf: ConditionLeaf): boolean {
+  return leaf.left.trim() === "" && conditionRightText(leaf).trim() === "" && leaf.operator === "eq";
+}
+
+/** 扁平行视图的行：组头（连接方式 / 取反 / 增删操作）或叶子行（左值 / 操作符 / 右值） */
+export type ConditionTreeRow =
+  | {
+      kind: "group";
+      key: string;
+      /** 组的定位路径（组头操作目标；根 = []） */
+      path: ConditionPath;
+      /** 嵌套深度（根 = 0，缩进用） */
+      depth: number;
+      isRoot: boolean;
+      op: "and" | "or";
+      not: boolean;
+      childCount: number;
+    }
+  | {
+      kind: "leaf";
+      key: string;
+      /** 所属组的定位路径（叶子操作目标） */
+      groupPath: ConditionPath;
+      /** 组内下标 */
+      leafIndex: number;
+      /** 嵌套深度（= 所属组深度 + 1，缩进用） */
+      depth: number;
+      /** 有效条件序号（从 1 起，留白叶子不递增；与校验 / 编译的编号口径一致） */
+      position: number;
+      leaf: ConditionLeaf;
+    };
+
+/**
+ * 条件树 → 扁平行序列（深度优先，children 数组顺序）：组头行在前、子项随后，
+ * 供组件以 v-for 平铺渲染（缩进表达嵌套），免去模板递归组件。位置编号在
+ * 文档顺序上跳过留白叶子（与 validateConditionTree 的「第 N 条条件」一致）。
+ */
+export function flattenConditionTree(tree: ConditionGroup): ConditionTreeRow[] {
+  const rows: ConditionTreeRow[] = [];
+  let validCount = 0;
+
+  const visit = (group: ConditionGroup, path: ConditionPath, depth: number): void => {
+    rows.push({
+      kind: "group",
+      key: `g-${path.join("-")}`,
+      path,
+      depth,
+      isRoot: path.length === 0,
+      op: group.op,
+      not: group.not === true,
+      childCount: group.children.length,
+    });
+    group.children.forEach((child, index) => {
+      if (child.type === "group") {
+        visit(child, [...path, index], depth + 1);
+        return;
+      }
+      const blank = isBlankConditionLeaf(child);
+      const position = blank ? validCount + 1 : (validCount += 1);
+      rows.push({
+        kind: "leaf",
+        key: `l-${path.join("-")}.${index}`,
+        groupPath: path,
+        leafIndex: index,
+        depth: depth + 1,
+        position,
+        leaf: child,
+      });
+    });
+  };
+
+  visit(tree, [], 0);
+  return rows;
+}
+
+/**
+ * 右值编辑文本 → 类型标注文案（右值输入框旁的收敛提示）：空文本 → null
+ * （不渲染）；含 {{ → 「模板」；按引擎 parseRightValue 收敛结果标注
+ * 「数字」 / 「布尔」 / 「null」 / 「文本」。
+ */
+export function describeConditionRightType(text: string): string | null {
+  if (text.trim() === "") return null;
+  if (text.includes("{{")) return "模板";
+  const parsed = parseConditionRightText(text);
+  if (typeof parsed === "number") return "数字";
+  if (typeof parsed === "boolean") return "布尔";
+  if (parsed === null) return "null";
+  return "文本";
 }
