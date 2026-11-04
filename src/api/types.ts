@@ -230,6 +230,7 @@ export type HttpApiResource =
   | "system_logs"
   | "env_sets"
   | "request_library"
+  | "flow_runs"
   | "all";
 
 export interface HttpApiChange {
@@ -911,6 +912,12 @@ export interface FlowRunRecord {
    * 仅节点/连线骨架（顶层 `truncated: true`）。快照特性之前的旧记录缺省。
    */
   graphSnapshot?: unknown;
+}
+
+/** 触发一次流程运行的请求体（`POST /api/flow/runs`；sessionId 缺省由后端取活动 Session）。 */
+export interface FlowRunTriggerRequest {
+  workflowId: string;
+  sessionId?: number;
 }
 
 /** 循环节点单轮迭代明细（引擎 LoopIterationRecord 同形）。 */

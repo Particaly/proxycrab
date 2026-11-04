@@ -31,6 +31,8 @@ import type {
   FlowRunDetail,
   FlowRunListQuery,
   FlowRunPage,
+  FlowRunRecord,
+  FlowRunTriggerRequest,
   ExecuteTemporaryScriptRequest,
   ExtendBreakpointRequest,
   FlowProject,
@@ -551,6 +553,8 @@ export function createHttpBackend(
         call<FlowRunPage>(query("/api/flow/runs", filter as unknown as Record<string, unknown>)),
       get: (id: string) =>
         call<FlowRunDetail>(`/api/flow/runs/${encodeURIComponent(id)}`),
+      trigger: (request: FlowRunTriggerRequest) =>
+        call<FlowRunRecord>("/api/flow/runs", json("POST", request)),
       cancel: async (id: string) => {
         await call(`/api/flow/runs/${encodeURIComponent(id)}/cancel`, json("POST"));
       },
