@@ -201,3 +201,35 @@ test("env set operations map onto the management routes with camelCase bodies", 
   expect(JSON.parse(calls[3]![1].body)).toEqual({ setId: null });
   expect(JSON.parse(calls[5]![1].body)).toEqual({ setId: "env-dev", writes: { count: 2 } });
 });
+
+test("MCP audit reads the recent-call list with an optional limit", async () => {
+  const page = {
+    entries: [
+      {
+        seq: 2,
+        timestampMs: 1730000000000,
+        tool: "run_flow",
+        identity: "local",
+        argumentsSummary: "{}",
+        outcome: "ok",
+        decision: "allowed",
+      },
+    ],
+  };
+  const fetchMock = vi
+    .fn()
+    .mockImplementation(async () => new Response(JSON.stringify({ ok: true, data: page })));
+  vi.stubGlobal("fetch", fetchMock);
+  const backend = createHttpBackend("http://backend:18089", "test-key", {
+    target: "cli",
+    workspace: { current_path: "/workspace", configured_path: "/workspace" },
+    http_service: { running: true, host: "0.0.0.0", port: 18089, error: null },
+  });
+  expect(await backend.mcpAudit!.list()).toEqual(page);
+  expect(await backend.mcpAudit!.list(500)).toEqual(page);
+  const [first, second] = fetchMock.mock.calls as Array<[URL, RequestInit]>;
+  expect(first[0].pathname).toBe("/api/mcp-audit");
+  expect(first[0].search).toBe("");
+  expect(second[0].search).toBe("?limit=500");
+  expect(first[1].headers.get("Authorization")).toBe("Bearer test-key");
+});
