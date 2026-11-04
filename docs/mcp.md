@@ -167,3 +167,45 @@ read it in the settings window's “MCP 调用审计” section.
 - The MCP surface intentionally exposes no script library, permission management, sharing, CA,
   system-log, bypass, redaction-library, env-set, flow-project, or workflow import/export
   operations.
+
+## ReqFlow M19 reconciliation
+
+The upstream ReqFlow plan (milestone M19, decision DD-10) specifies an MCP exposure for a browser
+extension that cannot listen on ports. ProxyCrab is a desktop/CLI application that already owns
+its management HTTP server, so several M19 mechanisms are structurally inapplicable here:
+
+- **DD-10 (host MCP service + bridge-side tool declaration)** — not applicable: there is no
+  ZTools host, no `reqflow-bridge` plugin, and no `plugin.json`/`registerTool`/`mcpName`
+  declaration layer. The MCP server is built into `proxy-crab-mgr` (`POST /mcp` on the
+  management listen address, JSON-RPC 2.0, Bearer or loopback identity, 1 MiB request cap) and
+  tools are declared in the in-repo curated registry (`crates/proxy-crab-mgr/src/mcp/tools.rs`).
+- **M19-T1 (bridge ↔ extension command channel)** — not applicable: no browser extension, no
+  long-poll command channel, no result backfill, no command TTL/correlation machinery. Tool
+  calls execute in-process against the same `ProxyCrabManager` trait the HTTP routes use.
+- **M19-T2 (read tools)** — covered: capture reads (`sessions_list`, `log_ids`, `log_detail`,
+  `log_body`), request library, workflow and run queries mirror the upstream intent of a curated
+  query surface. Env sets, three-layer variables, and bridge status are deliberately not exposed
+  (curated-surface decision, see Known limitations). Upstream's secret non-disclosure maps to the
+  redaction binding; upstream's header redaction at MCP ingest maps to executing bound callers
+  through the same redaction path as `/api/*` reads.
+- **M19-T3 (execute tools)** — partially covered: `workflow_run_trigger` and
+  `workflow_run_cancel` mirror `run_workflow`/`cancel_run`. There is no server-side `wait_run`
+  (clients poll `workflow_run_detail`/`workflow_runs_list`), and no `debug_node`,
+  `rerun_from_node`, or `rerun_loop_iteration`.
+- **M19-T4 (write tools)** — partially covered: `workflow_save` persists a whole graph with
+  structural validation (upstream's validate-before-write), and `request_library_from_capture`
+  covers capture ingestion. Project CRUD, workflow import/export (and therefore the
+  `confirmScripts` gate), env-set CRUD, and three-layer variable writes are not exposed.
+- **M19-T5 (primitive request tools)** — not exposed: no `replay_request`/`send_http_request`
+  MCP tool; replay stays on the existing `POST /api/replay` HTTP route outside the curated
+  surface.
+- **M19-T6 (three-tier switch + audit)** — covered and tightened: read (default on) / write /
+  execute (default off) switches persist per workspace, closed tiers hide tools from
+  `tools/list` and hard-reject `tools/call`, and every auditable call lands in
+  `flow/mcp-audit.json` (tool, identity, arguments summary, outcome, decision, time) with an
+  HTTP query and a settings-window view. ProxyCrab additionally stacks a per-route permission
+  check with the desktop approval window (stricter of the three gates wins), which upstream's
+  two-gate design does not have.
+- **M19-T7 (docs + verification)** — covered: this guide plus the implementation-level sections
+  in [backend-api.md](backend-api.md), MCP-driven eval cases in
+  `skills/proxycrab/evals/evals.json`, and the two-layer tier/bounds/audit test matrix.
