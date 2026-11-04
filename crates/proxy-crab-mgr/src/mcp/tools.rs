@@ -131,7 +131,11 @@ const REGISTRY: &[ToolDescriptor] = &[
                 "integer",
                 "Optional inclusive upper bound of the log id range.",
             ),
-            ("limit", "integer", "Max ids to return."),
+            (
+                "limit",
+                "integer",
+                "Max ids to return; the manager caps it at 10000.",
+            ),
         ],
     },
     ToolDescriptor {
@@ -181,7 +185,11 @@ const REGISTRY: &[ToolDescriptor] = &[
                 "Comma-separated tag list; entries must carry every requested tag.",
             ),
             ("source", "string", "Filter by entry source."),
-            ("limit", "integer", "Max entries to return."),
+            (
+                "limit",
+                "integer",
+                "Max entries to return, between 1 and 1000; defaults to 200.",
+            ),
             ("offset", "integer", "Entries to skip."),
         ],
     },
@@ -223,9 +231,9 @@ const REGISTRY: &[ToolDescriptor] = &[
             (
                 "limit",
                 "integer",
-                "Max entries to return; omitted returns every workflow.",
+                "Max entries to return, between 1 and 200; omitted defaults to 50.",
             ),
-            ("offset", "integer", "Entries to skip."),
+            ("offset", "integer", "Entries to skip; must be non-negative."),
         ],
     },
     ToolDescriptor {
@@ -275,7 +283,11 @@ const REGISTRY: &[ToolDescriptor] = &[
         params: &[
             ("workflowId", "string", "Filter by workflow id."),
             ("status", "string", "Filter by run status."),
-            ("limit", "integer", "Max entries to return."),
+            (
+                "limit",
+                "integer",
+                "Max entries to return, between 1 and 1000; defaults to 200.",
+            ),
             ("offset", "integer", "Entries to skip."),
         ],
     },
@@ -492,21 +504,67 @@ fn manager_error_reason(error: &ManagerError) -> String {
     }
 }
 
+/// 读类工具的工具层分页界限（plan Task 25 Step 3）：`(工具名, (缺省
+/// limit, 上限))`。上限与既有 manager 侧校验量级对齐；未列入的工具
+/// 不在此检查——已有 manager 侧校验的（如 workflow_runs_list）依赖
+/// 既有校验，单资源读取与天然少量的清单（sessions_list）无需分页。
+const PAGE_BOUNDS: &[(&str, (usize, usize))] = &[("workflows_list", (50, 200))];
+
+/// 读类工具强制分页（plan Task 25 Step 3）：对声明了分页界限的工具，
+/// 分发前统一检查 limit/offset——limit 为 0/负数或超上限、offset 为
+/// 负数时以 bad_request 拒绝并说明合法范围（文案经 manager_error_reason
+/// 原样透出）；未带 limit 时注入安全缺省值，避免一次拉爆全量返回。
+/// 类型不符的入参仍交由 parse_arguments 报错，未声明界限的工具原样放行。
+fn enforce_page_bounds(name: &str, arguments: &Value) -> Result<Value, ManagerError> {
+    let Some(&(_, (default_limit, max_limit))) = PAGE_BOUNDS.iter().find(|(tool, _)| *tool == name)
+    else {
+        return Ok(arguments.clone());
+    };
+    if !arguments.is_object() {
+        return Ok(arguments.clone());
+    }
+    let mut bounded = arguments.clone();
+    let has_limit = matches!(bounded.get("limit"), Some(value) if !value.is_null());
+    if !has_limit {
+        bounded["limit"] = json!(default_limit);
+    } else if let Some(limit) = bounded.get("limit").and_then(Value::as_i64)
+        && !(1..=(max_limit as i64)).contains(&limit)
+    {
+        return Err(ManagerError::bad_request(format!(
+            "limit must be between 1 and {max_limit}"
+        )));
+    }
+    if let Some(offset) = bounded.get("offset").and_then(Value::as_i64)
+        && offset < 0
+    {
+        return Err(ManagerError::bad_request(
+            "offset must be a non-negative integer",
+        ));
+    }
+    Ok(bounded)
+}
+
 /// 工具体执行：按注册表名分发。执行错误统一为 `ManagerError`，文案
-/// 出口收敛在 `manager_error_reason`。
+/// 出口收敛在 `manager_error_reason`。分发前先做读类工具的分页界限
+/// 检查（plan Task 25 Step 3）。
 async fn execute(
     name: &str,
     arguments: &Value,
     manager: &Arc<dyn ProxyCrabManager>,
 ) -> Result<Value, ManagerError> {
+    let arguments = &enforce_page_bounds(name, arguments)?;
     match name {
         "workflow_runs_list" => {
+            // manager 侧已校验 limit（1..=1000，缺省 200），工具层依赖既有校验。
             let query: FlowRunListQuery = parse_arguments(arguments)?;
             serialize_result(manager.workflow_runs(query).await?)
         }
         /* ---- 抓包读取 ---- */
+        // 会话数量天然少：无分页入参，全量返回可接受。
         "sessions_list" => serialize_result(manager.sessions().await?),
         "log_ids" => {
+            // manager 侧已限界：缺省 10000 且收敛到 ≤10000，limit=0 亦合法
+            // （仅校验过滤条件不扫描），工具层无需重复检查。
             let request: LogIdsRequest = parse_arguments(arguments)?;
             serialize_result(manager.log_ids(request).await?)
         }
@@ -528,6 +586,7 @@ async fn execute(
         }
         /* ---- 请求库 ---- */
         "request_library_list" => {
+            // manager 侧已校验 limit（1..=1000，缺省 200），工具层依赖既有校验。
             let query: RequestLibraryQuery = parse_arguments(arguments)?;
             serialize_result(manager.request_library_page(query).await?)
         }
@@ -872,6 +931,115 @@ mod tests {
             )),
             "invalid arguments: limit must be between 1 and 200"
         );
+    }
+
+    #[test]
+    fn page_bounds_inject_safe_default_and_reject_out_of_range() {
+        // 未声明界限的工具原样放行（含已有 manager 侧校验的 workflow_runs_list）。
+        let raw = json!({ "limit": 999, "offset": -1 });
+        assert_eq!(enforce_page_bounds("workflow_runs_list", &raw).unwrap(), raw);
+        // 不带 limit（含显式 null）时注入安全缺省值，避免一次拉爆全量。
+        assert_eq!(
+            enforce_page_bounds("workflows_list", &json!({})).unwrap(),
+            json!({ "limit": 50 })
+        );
+        assert_eq!(
+            enforce_page_bounds("workflows_list", &json!({ "limit": null, "offset": 10 }))
+                .unwrap(),
+            json!({ "limit": 50, "offset": 10 })
+        );
+        // 越界拒绝：limit=0/超上限/负 limit/负 offset，文案说明合法范围。
+        for arguments in [
+            json!({ "limit": 0 }),
+            json!({ "limit": 201 }),
+            json!({ "limit": -1 }),
+            json!({ "limit": 50, "offset": -1 }),
+        ] {
+            let error = enforce_page_bounds("workflows_list", &arguments).unwrap_err();
+            assert_eq!(error.code, ErrorCode::BadRequest);
+            assert!(
+                error.message.contains("1 and 200") || error.message.contains("non-negative"),
+                "{}",
+                error.message
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn call_rejects_out_of_bounds_pagination_with_the_legal_range() {
+        let app_data = tempdir().unwrap();
+        let runtime = ProxyCrab::open(app_data.path(), Arc::new(LogBuffer::default())).unwrap();
+        let context = test_context(
+            MitmManager::new(runtime),
+            Arc::new(Semaphore::new(MAX_IN_FLIGHT_TOOL_CALLS)),
+        );
+        // 工具层界限（workflows_list）：越界在执行前即拒，文案带合法范围。
+        for (arguments, reason) in [
+            (json!({ "limit": 0 }), "limit must be between 1 and 200"),
+            (json!({ "limit": 201 }), "limit must be between 1 and 200"),
+            (
+                json!({ "offset": -1 }),
+                "offset must be a non-negative integer",
+            ),
+        ] {
+            let request = RpcRequest {
+                id: json!(1),
+                method: "tools/call".into(),
+                params: json!({ "name": "workflows_list", "arguments": arguments }),
+            };
+            let response = call(&request, &context, TOOL_CALL_TIMEOUT).await;
+            assert_eq!(response["result"]["isError"], true, "{reason}");
+            assert!(response.get("error").is_none());
+            assert!(
+                response["result"]["content"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains(reason)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn call_applies_the_safe_default_and_keeps_manager_validated_bounds() {
+        let app_data = tempdir().unwrap();
+        let runtime = ProxyCrab::open(app_data.path(), Arc::new(LogBuffer::default())).unwrap();
+        let context = test_context(
+            MitmManager::new(runtime),
+            Arc::new(Semaphore::new(MAX_IN_FLIGHT_TOOL_CALLS)),
+        );
+        // 不带 limit：工具层注入安全缺省后调用成功（空工作区返回空页）。
+        let request = RpcRequest {
+            id: json!(2),
+            method: "tools/call".into(),
+            params: json!({ "name": "workflows_list", "arguments": {} }),
+        };
+        let response = call(&request, &context, TOOL_CALL_TIMEOUT).await;
+        assert!(response.get("error").is_none());
+        assert!(response["result"]["isError"].is_null());
+        let text = response["result"]["content"][0]["text"].as_str().unwrap();
+        let payload: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(payload["workflows"], json!([]));
+        assert_eq!(payload["total"], 0);
+        // 边界值 limit=200 仍在合法范围内。
+        let request = RpcRequest {
+            id: json!(3),
+            method: "tools/call".into(),
+            params: json!({ "name": "workflows_list", "arguments": { "limit": 200 } }),
+        };
+        let response = call(&request, &context, TOOL_CALL_TIMEOUT).await;
+        assert!(response.get("error").is_none());
+        assert!(response["result"]["isError"].is_null());
+        // 已有 manager 侧校验的工具抽检（workflow_runs_list）：limit=0 走
+        // manager 校验路径同样被拒，文案带 manager 的合法范围（1..=1000）。
+        let request = RpcRequest {
+            id: json!(4),
+            method: "tools/call".into(),
+            params: json!({ "name": "workflow_runs_list", "arguments": { "limit": 0 } }),
+        };
+        let response = call(&request, &context, TOOL_CALL_TIMEOUT).await;
+        assert_eq!(response["result"]["isError"], true);
+        let text = response["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("limit must be between 1 and 1000"), "{text}");
     }
 
     #[tokio::test]
