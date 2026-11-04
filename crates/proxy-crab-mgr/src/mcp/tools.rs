@@ -492,13 +492,55 @@ fn manager_error_reason(error: &ManagerError) -> String {
     }
 }
 
+/// 读类工具的工具层分页界限（plan Task 25 Step 3）：`(工具名, (缺省
+/// limit, 上限))`。上限与既有 manager 侧校验量级对齐；未列入的工具
+/// 不在此检查——已有 manager 侧校验的（如 workflow_runs_list）依赖
+/// 既有校验，单资源读取与天然少量的清单（sessions_list）无需分页。
+const PAGE_BOUNDS: &[(&str, (usize, usize))] = &[("workflows_list", (50, 200))];
+
+/// 读类工具强制分页（plan Task 25 Step 3）：对声明了分页界限的工具，
+/// 分发前统一检查 limit/offset——limit 为 0/负数或超上限、offset 为
+/// 负数时以 bad_request 拒绝并说明合法范围（文案经 manager_error_reason
+/// 原样透出）；未带 limit 时注入安全缺省值，避免一次拉爆全量返回。
+/// 类型不符的入参仍交由 parse_arguments 报错，未声明界限的工具原样放行。
+fn enforce_page_bounds(name: &str, arguments: &Value) -> Result<Value, ManagerError> {
+    let Some(&(_, (default_limit, max_limit))) = PAGE_BOUNDS.iter().find(|(tool, _)| *tool == name)
+    else {
+        return Ok(arguments.clone());
+    };
+    if !arguments.is_object() {
+        return Ok(arguments.clone());
+    }
+    let mut bounded = arguments.clone();
+    let has_limit = matches!(bounded.get("limit"), Some(value) if !value.is_null());
+    if !has_limit {
+        bounded["limit"] = json!(default_limit);
+    } else if let Some(limit) = bounded.get("limit").and_then(Value::as_i64) {
+        if !(1..=(max_limit as i64)).contains(&limit) {
+            return Err(ManagerError::bad_request(format!(
+                "limit must be between 1 and {max_limit}"
+            )));
+        }
+    }
+    if let Some(offset) = bounded.get("offset").and_then(Value::as_i64) {
+        if offset < 0 {
+            return Err(ManagerError::bad_request(
+                "offset must be a non-negative integer",
+            ));
+        }
+    }
+    Ok(bounded)
+}
+
 /// 工具体执行：按注册表名分发。执行错误统一为 `ManagerError`，文案
-/// 出口收敛在 `manager_error_reason`。
+/// 出口收敛在 `manager_error_reason`。分发前先做读类工具的分页界限
+/// 检查（plan Task 25 Step 3）。
 async fn execute(
     name: &str,
     arguments: &Value,
     manager: &Arc<dyn ProxyCrabManager>,
 ) -> Result<Value, ManagerError> {
+    let arguments = &enforce_page_bounds(name, arguments)?;
     match name {
         "workflow_runs_list" => {
             let query: FlowRunListQuery = parse_arguments(arguments)?;
