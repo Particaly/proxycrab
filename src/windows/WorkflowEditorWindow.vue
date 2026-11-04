@@ -29,9 +29,12 @@ import { notifyEditLocked } from "../components/flow/canvas-edit-lock";
 import { getWorkflowNodeMeta, nodeSummary } from "../components/flow/node-meta";
 import { takenRefKeys } from "../components/flow/config/node-config";
 import ReplayNodeConfig from "../components/flow/config/ReplayNodeConfig.vue";
+import NodeIoDrawer from "../components/flow/NodeIoDrawer.vue";
+import { collectJsonPaths } from "../components/expression-input/input-paths";
 import { appStore, reportError } from "../stores/app";
 import { confirmDialog } from "../stores/dialog";
 import { flowRunStore } from "../stores/flow-run";
+import { flowTrialStore } from "../stores/flow-trial";
 import { windowsStore } from "../stores/windows";
 import "../styles/flow.css";
 
@@ -171,6 +174,26 @@ const selectedVariableNames = computed<readonly string[]>(() =>
   Object.keys(workflow.value?.variables ?? {}),
 );
 
+// ---------- IO 抽屉（Task 15 薄片 C Step 3/4） ----------
+
+/** 节点数据抽屉（入参 / 出参）开关：随选中节点挂载，选中切换保持开启。 */
+const ioDrawerOpen = ref(false);
+
+/** 选中节点的试跑样本（编辑器内脚本试跑产出；会话态见 stores/flow-trial.ts） */
+const selectedTrial = computed(() =>
+  workflow.value && selectedNode.value
+    ? flowTrialStore.get(workflow.value.id, selectedNode.value.id)
+    : null,
+);
+
+/** 试跑徽标路径集：试跑样本经 collectJsonPaths 派生（入参 / 出参合并——同
+ * path 在两组命中都标注，语义为「该字段来自试跑结果」）。 */
+const selectedTrialPaths = computed<readonly string[]>(() => {
+  const trial = selectedTrial.value;
+  if (!trial) return [];
+  return [...collectJsonPaths(trial.input ?? null), ...collectJsonPaths(trial.output ?? null)];
+});
+
 /** 列表行时间展示（Unix 毫秒 → 月-日 时:分）。 */
 function fmtTime(ts: number): string {
   const date = new Date(ts);
@@ -234,13 +257,15 @@ async function selectWorkflow(target: Workflow): Promise<void> {
   }
 }
 
-/** 关闭当前流程时清空画布编辑态（含历史与校验）。 */
+/** 关闭当前流程时清空画布编辑态（含历史与校验）与试跑样本会话态。 */
 function closeWorkflowEditor(): void {
+  if (workflow.value) flowTrialStore.clearWorkflow(workflow.value.id);
   workflow.value = null;
   nodes.value = [];
   edges.value = [];
   selectedNodeId.value = null;
   serverIssues.value = [];
+  ioDrawerOpen.value = false;
   history.value = createGraphHistory([], []);
 }
 
@@ -587,6 +612,14 @@ onBeforeUnmount(() => {
         <span class="wf-drawer-title" :title="nodeLabel(selectedNode)">{{
           nodeLabel(selectedNode)
         }}</span>
+        <button
+          class="btn compact"
+          :aria-pressed="ioDrawerOpen"
+          title="打开节点入参 / 出参字段面板（点击复制或拖入表达式输入框生成模板引用）"
+          @click="ioDrawerOpen = !ioDrawerOpen"
+        >
+          入参/出参
+        </button>
         <button class="btn icon" title="关闭" @click="selectedNodeId = null">
           <Io5Close :size="14" />
         </button>
@@ -627,6 +660,19 @@ onBeforeUnmount(() => {
         </template>
       </div>
     </aside>
+
+    <!-- 节点数据抽屉（入参 / 出参；样本来自编辑器内试跑会话态，无样本时
+         组件内空态明示）。定位层借 transform 把组件的 fixed 收敛到本窗口。 -->
+    <div v-if="selectedNode && ioDrawerOpen" class="wf-io-layer">
+      <NodeIoDrawer
+        :node-ref-id="selectedNode.refId ?? selectedNode.id"
+        :node-label="nodeLabel(selectedNode)"
+        :input-sample="selectedTrial?.input ?? null"
+        :output-sample="selectedTrial?.output ?? null"
+        :trial-paths="selectedTrialPaths"
+        @close="ioDrawerOpen = false"
+      />
+    </div>
   </div>
 </template>
 
@@ -885,5 +931,20 @@ onBeforeUnmount(() => {
 .wf-drawer-hint {
   margin-top: var(--space-2);
   font-size: 12px;
+}
+
+/* ---------- 节点数据抽屉定位层 ---------- */
+
+/* NodeIoDrawer 用 fixed 定位（组件只读复用）；借 transform 建立包含块把
+ * fixed 收敛到本窗口（左缘贴窗口、高度同窗口），不外溢到应用其他窗面。 */
+.wf-io-layer {
+  position: absolute;
+  inset: 0;
+  transform: translateX(0);
+  pointer-events: none;
+}
+
+.wf-io-layer :deep(aside) {
+  pointer-events: auto;
 }
 </style>
