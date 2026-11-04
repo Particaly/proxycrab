@@ -8,6 +8,7 @@ import { openDropdownMenu, type MenuItem } from "../../../stores/dialog";
 import ExpressionInput from "../../expression-input/ExpressionInput.vue";
 import type { SuggestNodeOption } from "../../expression-input/expression-suggest";
 import type { TemplateSampleContext } from "../../expression-input/use-expression-preview";
+import { hasIoPathPayload, readIoPathPayload } from "../template-dnd";
 import type { HeaderRowDraft } from "./node-config";
 
 /** 表达式输入组件实例（defineExpose 的插入出口） */
@@ -107,6 +108,25 @@ async function insertSnippetAt(index: number, snippet: string): Promise<void> {
   if (!input) return;
   await input.insertSnippet(snippet);
   commit();
+}
+
+// ---------- IO 字段 chip 拖放承接（协议见 template-dnd.ts） ----------
+
+/** 值列 dragover：仅接管携带 IO 字段载荷的拖拽（其余保持浏览器默认）。 */
+function onValueDragOver(event: DragEvent): void {
+  if (props.disabled || !event.dataTransfer) return;
+  if (!hasIoPathPayload(event.dataTransfer.types)) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = "copy";
+}
+
+/** 值列 drop：读 IO 字段载荷，经组件 ref 插入完整模板引用。 */
+function onValueDrop(index: number, event: DragEvent): void {
+  if (props.disabled || !event.dataTransfer) return;
+  const snippet = readIoPathPayload(event.dataTransfer);
+  if (snippet === null) return;
+  event.preventDefault();
+  void insertSnippetAt(index, snippet);
 }
 
 // ---------- 行内菜单 ----------
@@ -251,8 +271,14 @@ function onHandlePointerDown(index: number, event: PointerEvent): void {
             />
           </td>
           <td class="mono kv-value">
-            <!-- inert 包裹层：置灰时阻断整子树交互（组件无 disabled prop，不改其源） -->
-            <div class="kv-value-host" :inert="disabled || undefined">
+            <!-- inert 包裹层：置灰时阻断整子树交互（组件无 disabled prop，不改其源）；
+                 拖放承接 IO 字段 chip（dragover 按 MIME 标记接管，drop 插入引用） -->
+            <div
+              class="kv-value-host"
+              :inert="disabled || undefined"
+              @dragover="onValueDragOver"
+              @drop="onValueDrop(index, $event)"
+            >
               <ExpressionInput
                 :ref="(el) => setValueRef(index, el)"
                 v-model="row.value"

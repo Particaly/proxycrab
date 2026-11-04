@@ -14,6 +14,8 @@ import CustomSelect from "../../CustomSelect.vue";
 import AssetTreePicker from "../../AssetTreePicker.vue";
 import ExpressionInput from "../../expression-input/ExpressionInput.vue";
 import type { SuggestNodeOption } from "../../expression-input/expression-suggest";
+import { buildDropInsertPlan } from "../../expression-input/expression-suggest";
+import { hasIoPathPayload, readIoPathPayload } from "../template-dnd";
 import { formatBytes, formatDateTime } from "../../../utils/format";
 import { REPLAY_METHODS } from "../../../utils/replay";
 import ScriptEditor from "./ScriptEditor.vue";
@@ -127,6 +129,50 @@ const methodOptions = REPLAY_METHODS.map((value) => ({ value, label: value }));
 const headerError = computed(() => validateHeaderRows(headerRows.value));
 const timeoutResult = computed(() => parseTimeoutMs(timeoutInput.value));
 const urlWarning = computed(() => urlHint(url.value));
+
+/* --------------------- 模板字段拖放承接（IO 字段 chip） --------------------- */
+
+/** 表达式输入组件实例（URL 字段；拖放插入出口） */
+type ExpressionInputInstance = InstanceType<typeof ExpressionInput>;
+const urlInput = ref<ExpressionInputInstance | null>(null);
+const bodyInput = ref<HTMLTextAreaElement | null>(null);
+
+/** dragover 接管判定：仅接管携带 IO 字段载荷的拖拽（协议见 template-dnd.ts；
+ * 其余拖拽——如原生文本拖入 textarea——保持浏览器默认行为）。 */
+function ioDragOver(event: DragEvent): void {
+  if (props.disabled || !event.dataTransfer) return;
+  if (!hasIoPathPayload(event.dataTransfer.types)) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = "copy";
+}
+
+/** 读取 IO 字段拖放载荷（drop 阶段；命中时阻止浏览器默认放入）。 */
+function ioDropSnippet(event: DragEvent): string | null {
+  const snippet = event.dataTransfer ? readIoPathPayload(event.dataTransfer) : null;
+  if (snippet !== null) event.preventDefault();
+  return snippet;
+}
+
+/** URL drop：经组件 ref 插入完整模板引用（url 由 v-model 回流，persist 走 watch）。 */
+async function onUrlDrop(event: DragEvent): Promise<void> {
+  const snippet = ioDropSnippet(event);
+  if (snippet === null) return;
+  await urlInput.value?.insertSnippet(snippet);
+}
+
+/** body drop：多行字段不接表达式输入（15C 克制裁剪），原生 textarea 光标处
+ * 插入引用（写入计划与拖放落点单一口径，见 buildDropInsertPlan）。 */
+function onBodyDrop(event: DragEvent): void {
+  const snippet = ioDropSnippet(event);
+  if (snippet === null) return;
+  const caret = bodyInput.value?.selectionStart ?? body.value.length;
+  const plan = buildDropInsertPlan(body.value, caret, snippet);
+  body.value = plan.text;
+  void nextTick(() => {
+    bodyInput.value?.focus();
+    bodyInput.value?.setSelectionRange(plan.caret, plan.caret);
+  });
+}
 
 /* ------------------------------ 引用快照基线 ------------------------------ */
 
@@ -585,11 +631,16 @@ function toggleScript(section: "pre" | "post"): void {
       </div>
       <div class="rnc-field">
         <span class="rnc-label">URL</span>
-        <!-- URL 为模板语义字段（引擎对 override/manual url 渲染 `{{ }}`）：
-             表达式输入承接建议与预览；inert 包裹层承担置灰（组件无 disabled
-             prop，不改其源） -->
-        <div class="rnc-url-host" :inert="disabled || undefined">
+        <!-- inert 包裹层：置灰 + IO 字段 chip 拖放承接（dragover 按 MIME 标记接管，
+             drop 经组件 ref 插入引用） -->
+        <div
+          class="rnc-url-host"
+          :inert="disabled || undefined"
+          @dragover="ioDragOver"
+          @drop="onUrlDrop"
+        >
           <ExpressionInput
+            ref="urlInput"
             v-model="url"
             placeholder="https://"
             :available-node-ids="availableNodeIds"
@@ -670,6 +721,7 @@ function toggleScript(section: "pre" | "post"): void {
           />
         </div>
         <textarea
+          ref="bodyInput"
           v-model="body"
           class="input mono rnc-body-text"
           rows="4"
@@ -677,6 +729,8 @@ function toggleScript(section: "pre" | "post"): void {
           spellcheck="false"
           :disabled="disabled"
           aria-label="请求体内容"
+          @dragover="ioDragOver"
+          @drop="onBodyDrop"
         />
       </template>
     </div>
