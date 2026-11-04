@@ -93,5 +93,9 @@ QuickJS 无 DOM / Node / 浏览器 API；归档代码中的环境依赖按「宿
   import/export；引擎对外契约挂全局 `__flowEngine`）。
 - 出站二进制请求体经 `bodyBase64`（base64 文本）进 `host.replay` 的 JSON
   载荷，宿主侧解码后按原始字节发送；响应信封形状对齐计划 Task 3。
-- 运行编排（取消 / 进度 / checkpoint / 运行记录落库）由计划 Task 19/20 在
-  Rust 侧接线；载荷侧取消语义已按 `CancelSignal` 预留。
+- 运行编排（取消 / 进度 / checkpoint / 运行记录落库）由计划 Task 19 在 Rust
+  侧接线；载荷侧取消语义已接线：`runWorkflow` 在宿主桥提供 `host.cancelled`
+  且未显式传 signal 时以轮询（50ms）驱动引擎级取消信号——取消优先于失败、
+  循环节点已完成轮次照常结算（VM 级硬取消仍由 `FlowCancel` 中断处理器承担，
+  宿主实现可分别控制两者）；`resume`（指定节点重跑）已并入 `runWorkflow`
+  选项。

@@ -3986,6 +3986,44 @@ ${source}`
     return request;
   }
 
+  // flow-engine/src/cancel-signal.ts
+  function createCancelSource() {
+    let aborted = false;
+    const listeners = /* @__PURE__ */ new Set();
+    const signal = {
+      get aborted() {
+        return aborted;
+      },
+      addEventListener(_type, listener, options) {
+        if (aborted) {
+          listener();
+          return;
+        }
+        listeners.add({ listener, once: options?.once });
+      },
+      removeEventListener(_type, listener) {
+        for (const entry of listeners) {
+          if (entry.listener === listener) {
+            listeners.delete(entry);
+            return;
+          }
+        }
+      }
+    };
+    return {
+      signal,
+      cancel() {
+        if (aborted) return;
+        aborted = true;
+        for (const entry of [...listeners]) {
+          if (entry.once) listeners.delete(entry);
+          entry.listener();
+        }
+        listeners.clear();
+      }
+    };
+  }
+
   // flow-engine/src/json-equal.ts
   function jsonDeepEqual(a, b) {
     if (a === b) return true;
@@ -5046,6 +5084,29 @@ ${lines.join("\n")}`;
     }
     return replay(payload);
   }
+  var HOST_CANCEL_POLL_MS = 50;
+  function connectHostCancelSignal() {
+    const probe = globalThis.host?.cancelled;
+    if (typeof probe !== "function") return void 0;
+    const source = createCancelSource();
+    void (async () => {
+      while (!source.signal.aborted) {
+        await new Promise((resolve) => {
+          hostSetTimeout(resolve, HOST_CANCEL_POLL_MS);
+        });
+        if (source.signal.aborted) return;
+        try {
+          if (await probe() === true) {
+            source.cancel();
+            return;
+          }
+        } catch {
+          return;
+        }
+      }
+    })();
+    return source.signal;
+  }
   async function runWorkflow(workflow, options = {}) {
     const scriptPort = options.scriptPort ?? createLocalScriptPort();
     const envSnapshot = options.env !== void 0 ? { ...options.env } : void 0;
@@ -5104,12 +5165,14 @@ ${lines.join("\n")}`;
       assert: createAssertRunner(),
       transform: createTransformRunner()
     };
+    const signal = options.signal ?? connectHostCancelSignal();
     return executeWorkflow(workflow, {
       runners,
-      ...options.signal !== void 0 ? { signal: options.signal } : {},
+      ...signal !== void 0 ? { signal } : {},
       ...options.generateId !== void 0 ? { generateId: options.generateId } : {},
       ...options.defaultFailPolicy !== void 0 ? { defaultFailPolicy: options.defaultFailPolicy } : {},
       ...options.maxNodeConcurrency !== void 0 ? { maxNodeConcurrency: options.maxNodeConcurrency } : {},
+      ...options.resume !== void 0 ? { resume: options.resume } : {},
       variables: () => variableStore.snapshot(),
       ...envSnapshot !== void 0 ? { env: () => envSnapshot } : {},
       selectDownstream: createWorkflowDownstreamSelector(workflow.nodes, workflow.edges),
