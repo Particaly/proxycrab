@@ -4,6 +4,7 @@ pub mod env_sets;
 pub mod host;
 pub mod model;
 pub mod request_library;
+pub mod run;
 pub mod run_store;
 pub mod runtime;
 pub mod store;

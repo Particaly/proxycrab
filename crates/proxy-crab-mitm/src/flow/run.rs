@@ -28,12 +28,13 @@
 //! 脱敏清单，节点快照（input / output / iterations）与错误文本在落库和
 //! 广播前过掩码（对齐上游 M9-T5 的记录侧契约）。
 //!
-//! 脚本 env 写回：引擎 `onEnvWrite` → 写队列（`submit_env_write_back` +
-//! flush）落库到派发时定格的激活集合（快照语义：运行中切换激活环境对进行中
-//! 的 run 不生效），完成 Task 17 写回链路的运行侧接线。
+//! 脚本 env 写回：引擎 `onEnvWrite` → 写队列落库到派发时定格的激活集合
+//! （快照语义：运行中切换激活环境对进行中的 run 不生效），完成 Task 17
+//! 写回链路的运行侧接线。
 
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::BTreeMap,
+    future::Future,
     path::PathBuf,
     sync::{Arc, Mutex},
     time::Duration,
@@ -41,7 +42,7 @@ use std::{
 
 use anyhow::{anyhow, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{json, Value as JsonValue};
 use tokio::sync::{broadcast, mpsc};
 
@@ -64,10 +65,6 @@ use crate::{
 /// 引擎载荷一次性 eval 的预算（与脚本试跑口径一致；与节点超时分离，避免
 /// 冷启动慢的机器上载荷加载挤占运行预算）。
 const PAYLOAD_LOAD_BUDGET: Duration = Duration::from_secs(30);
-
-/// 取消轮询间隔：引擎批次边界之外的取消感知延迟上限（宿主调用竞速与 VM
-/// 中断处理器不依赖该轮询，轮询只负责把取消翻转为引擎信号）。
-const CANCEL_POLL_INTERVAL_MS: u64 = 150;
 
 /// 图快照字节上限（计划 W5 的第三档；三档截断体系由 Task 21 收口，此处
 /// 先落实「恒剥离 pinnedOutput + 超限降级骨架并自说明」）。
@@ -235,7 +232,12 @@ impl FlowRunManager {
             Some(id) => id,
             None => return Err(RunTriggerError::NoSession),
         };
-        if !self.runtime.sessions().iter().any(|session| session.id == session_id) {
+        if !self
+            .runtime
+            .sessions()
+            .iter()
+            .any(|session| session.id == session_id)
+        {
             return Err(RunTriggerError::SessionMissing(session_id));
         }
         let issues = validate_workflow_graph(&workflow.nodes, &workflow.edges);
@@ -348,18 +350,20 @@ impl FlowRunManager {
         ));
         // 引擎参数引导：JSON 字面量一次性注入 globalThis（防注入，模板不含
         // 用户数据），驱动脚本保持静态常量。
-        let bootstrap = build_args_bootstrap(&inputs);
         let host = Arc::new(RunHost {
             runtime: self.runtime.clone(),
             session_id,
             events: tx.clone(),
             cancel: cancel.clone(),
         });
-        let outcome = drive_vm(host, cancel.clone(), bootstrap).await;
-        if let Err(message) = outcome {
+        let outcome = match build_args_bootstrap(&workflow, &inputs) {
+            Ok(bootstrap) => drive_vm(host, cancel.clone(), bootstrap).await,
+            Err(error) => Err(FlowError::unknown(format!("引擎参数不可序列化：{error:#}"))),
+        };
+        if let Err(error) = outcome {
             // 引擎未产出终态（载荷加载失败 / VM 失败 / 取消竞速退出）：
             // 补发中止事件，由消费者定稿（取消优先于失败）。
-            let _ = tx.send(RunEvent::RunAbort { message });
+            let _ = tx.send(RunEvent::RunAbort { message: error.message });
         }
         drop(tx);
         let _ = consumer.await;
@@ -380,7 +384,7 @@ impl FlowRunManager {
         while let Some(event) = rx.recv().await {
             match event {
                 RunEvent::NodeStart { node_id, input } => {
-                    let input = masked(input, &secrets);
+                    let input = masked(&input, &secrets);
                     let record = FlowNodeRunRecord {
                         run_id: run_id.clone(),
                         node_id: node_id.clone(),
@@ -410,20 +414,39 @@ impl FlowRunManager {
                     });
                 }
                 RunEvent::EnvWrite { writes } => {
-                    if let Some(set_id) = active_set_id.clone()
-                        && let Some(writes) = env_write_table(&writes)
-                    {
-                        let result = self
-                            .store_call(move |store| {
-                                store.submit_env_write_back(set_id, writes)?;
+                    if let Some(table) = env_write_table(&writes) {
+                        // 写回值并入脱敏清单（记录侧不落 secret 明文；对齐
+                        // 上游 onSecretWrite 的保守口径：写回值视为潜在 secret）。
+                        if let Ok(mut secrets) = secrets.lock() {
+                            for value in table.values() {
+                                secrets.push(match value.as_str() {
+                                    Some(text) => text.to_owned(),
+                                    None => value.to_string(),
+                                });
+                            }
+                        }
+                        // 落库到派发时定格的激活集合（快照语义）。提交即入队
+                        // （已提交批次不因后续失败撤回），持久化失败只告警。
+                        if let Some(set_id) = active_set_id.clone() {
+                            let root = self.workspace_root.clone();
+                            let result = tokio::task::spawn_blocking(move || {
+                                let store = FlowStore::open(&root)?;
+                                store.submit_env_write_back(set_id, table)?;
                                 store.flush_env_write_backs()
                             })
                             .await;
-                        if let Ok(flush) = result {
-                            // 写回值并入脱敏清单（记录侧不落 secret 明文）。
-                            if let Ok(mut secrets) = secrets.lock() {
-                                for (key, value) in flush.applied.to_string().into_bytes() {
-                                    let _ = (key, value);
+                            match result {
+                                Ok(Ok(flush)) if flush.dropped > 0 => tracing::warn!(
+                                    "flow env write-back: {} applied, {} dropped",
+                                    flush.applied,
+                                    flush.dropped
+                                ),
+                                Ok(Ok(_)) => {}
+                                Ok(Err(error)) => {
+                                    tracing::warn!("flow env write-back dropped: {error:#}")
+                                }
+                                Err(error) => {
+                                    tracing::warn!("flow env write-back task failed: {error}")
                                 }
                             }
                         }
@@ -527,7 +550,309 @@ impl FlowRunManager {
     }
 }
 
-use std::future::Future;
+/// 运行驱动脚本（静态常量）：从 `globalThis.__runArgs` 取引擎参数（由
+/// bootstrap 以 JSON 字面量注入，防模板注入），装配取消信号垫片（引擎
+/// `signal` 约定的 AbortSignal 子集：`aborted` 标记 + abort 监听器表），
+/// 节点 / 环境 / 终态事件经 `host.emit` 交付 Rust 写队列。
+///
+/// 取消感知：宿主调用等待期间微任务才可调度，轮询依托 `host.sleep`——
+/// 取消发生时该调用被运行时放弃并归一为 `cancelled`（reject），据此翻转
+/// 引擎信号，引擎在批次边界停止调度（当前节点自然完成），终态摘要原生
+/// 归 `cancelled`；VM 中断处理器兜底纯 JS 执行段的取消。
+const RUN_DRIVER_JS: &str = r"(async () => {
+  const engine = globalThis.__flowEngine;
+  const args = globalThis.__runArgs;
+  if (!engine) throw new Error('engine payload missing __flowEngine global');
+  if (!args) throw new Error('run args missing __runArgs global');
+  const listeners = [];
+  const signal = {
+    aborted: false,
+    addEventListener: (_type, fn) => { listeners.push(fn); },
+    removeEventListener: (_type, fn) => {
+      const index = listeners.indexOf(fn);
+      if (index >= 0) listeners.splice(index, 1);
+    },
+  };
+  const abort = () => {
+    if (signal.aborted) return;
+    signal.aborted = true;
+    for (const fn of listeners.splice(0)) { try { fn(); } catch (_error) {} }
+  };
+  void (async () => {
+    while (!signal.aborted) {
+      try {
+        await host.sleep(150);
+      } catch (_error) {
+        // sleep 被放弃即运行被取消（运行时归一 cancelled），翻转信号退出。
+        abort();
+        return;
+      }
+    }
+  })();
+  const emit = (payload) => { host.emit(payload).catch(() => {}); };
+  try {
+    const summary = await engine.runWorkflow(args.workflow, {
+      variables: args.variables,
+      env: args.env,
+      harEntries: args.harEntries,
+      signal,
+      onNodeStart: (node, input) => emit({ type: 'node-start', nodeId: node.id, input }),
+      onNodeFinish: (node, nodeRun) => emit({ type: 'node-finish', nodeId: node.id, nodeRun }),
+      onEnvWrite: (writes) => emit({ type: 'env-write', writes }),
+    });
+    emit({ type: 'run-finish', summary });
+  } finally {
+    abort();
+  }
+  return null;
+})()";
+
+/// 运行宿主桥：把引擎的宿主调用接到真实运行时——重放走
+/// [`ProxyCrab::replay_await`]（错误按 `[kind]` 前缀约定归一，引擎按前缀
+/// 分类），事件经 mpsc 交付本运行的写队列消费者，取消轮询读取共享
+/// [`FlowCancel`]。
+struct RunHost {
+    runtime: Arc<crate::runtime::ProxyCrab>,
+    session_id: u64,
+    events: mpsc::UnboundedSender<RunEvent>,
+    cancel: FlowCancel,
+}
+
+#[async_trait::async_trait]
+impl FlowHost for RunHost {
+    async fn replay(&self, payload: JsonValue) -> Result<JsonValue, FlowError> {
+        let url = payload
+            .get("url")
+            .and_then(JsonValue::as_str)
+            .ok_or_else(|| FlowError::new(FlowErrorKind::Blocked, "重放载荷缺少 url"))?
+            .to_owned();
+        let request = ReplayRequest {
+            method: payload
+                .get("method")
+                .and_then(JsonValue::as_str)
+                .unwrap_or("GET")
+                .to_owned(),
+            headers: payload
+                .get("headers")
+                .and_then(JsonValue::as_object)
+                .map(|entries| {
+                    entries
+                        .iter()
+                        .filter_map(|(key, value)| {
+                            value.as_str().map(|value| (key.clone(), value.to_owned()))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            // 引擎约定：文本体走 body，字节体走 bodyBase64（HAR 基线回填的
+            // base64）；字节体按 UTF-8 有损文本化重放（信封能力所限，见计划
+            // Task 20 的信封字节通道）。
+            body: if let Some(text) = payload.get("body").and_then(JsonValue::as_str) {
+                Some(ReplayBody::Text { text: text.to_owned() })
+            } else {
+                payload
+                    .get("bodyBase64")
+                    .and_then(JsonValue::as_str)
+                    .and_then(|encoded| BASE64_STANDARD.decode(encoded).ok())
+                    .map(|bytes| ReplayBody::Text {
+                        text: String::from_utf8_lossy(&bytes).into_owned(),
+                    })
+            },
+        };
+        let timeout = payload
+            .get("timeoutMs")
+            .and_then(JsonValue::as_u64)
+            .map(Duration::from_millis)
+            .unwrap_or(REPLAY_DEFAULT_TIMEOUT);
+        match self.runtime.replay_await(self.session_id, request, timeout).await {
+            Ok(response) => serde_json::to_value(&response)
+                .map_err(|error| FlowError::unknown(format!("重放信封不可序列化：{error}"))),
+            Err(ReplayAwaitError::Timeout) => Err(FlowError::timeout(format!(
+                "重放请求超时（上限 {}ms）：{url}",
+                timeout.as_millis()
+            ))),
+            Err(ReplayAwaitError::Cancelled) => Err(FlowError::cancelled("重放已被取消")),
+            Err(ReplayAwaitError::Network(message)) => {
+                Err(FlowError::new(FlowErrorKind::Network, message))
+            }
+            // 发起阶段的环境性失败（Session 缺失 / 代理已停止 / 参数非法）：
+            // 运行环境拒绝，归 blocked（对齐 FlowErrorKind 分类约定）。
+            Err(ReplayAwaitError::Replay(error)) => {
+                Err(FlowError::new(FlowErrorKind::Blocked, error.to_string()))
+            }
+        }
+    }
+
+    async fn now(&self) -> Result<JsonValue, FlowError> {
+        Ok(JsonValue::from(now_millis()))
+    }
+
+    async fn log(&self, payload: JsonValue) -> Result<JsonValue, FlowError> {
+        tracing::debug!(payload = %payload, "flow run log");
+        Ok(JsonValue::Null)
+    }
+
+    async fn sleep(&self, payload: JsonValue) -> Result<JsonValue, FlowError> {
+        tokio::time::sleep(Duration::from_millis(payload.as_u64().unwrap_or(0))).await;
+        Ok(JsonValue::Null)
+    }
+
+    async fn emit(&self, payload: JsonValue) -> Result<JsonValue, FlowError> {
+        let event = match payload.get("type").and_then(JsonValue::as_str) {
+            Some("node-start") => RunEvent::NodeStart {
+                node_id: payload
+                    .get("nodeId")
+                    .and_then(JsonValue::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                input: payload.get("input").cloned().unwrap_or(JsonValue::Null),
+            },
+            Some("node-finish") => RunEvent::NodeFinish {
+                node_id: payload
+                    .get("nodeId")
+                    .and_then(JsonValue::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                run: payload.get("nodeRun").cloned().unwrap_or(JsonValue::Null),
+            },
+            Some("env-write") => RunEvent::EnvWrite {
+                writes: payload.get("writes").cloned().unwrap_or(JsonValue::Null),
+            },
+            Some("run-finish") => RunEvent::RunFinish {
+                summary: payload.get("summary").cloned().unwrap_or(JsonValue::Null),
+            },
+            // 未知事件类型丢弃（向前兼容新事件）。
+            _ => return Ok(JsonValue::Null),
+        };
+        let _ = self.events.send(event);
+        Ok(JsonValue::Null)
+    }
+
+    async fn cancelled(&self) -> Result<JsonValue, FlowError> {
+        Ok(JsonValue::from(self.cancel.is_cancelled()))
+    }
+}
+
+/// 驱动一次运行的 VM：装配 [`FlowRuntime`]（独立上下文，运行结束整体
+/// 丢弃），加载引擎载荷后注入参数并执行驱动脚本。载荷加载预算独立
+/// （30s）；工作流执行依赖 VM 三重上限与取消竞速，不设整体硬超时
+/// （长运行是合法形态，取消入口始终可用）。
+async fn drive_vm(host: Arc<RunHost>, cancel: FlowCancel, bootstrap: String) -> Result<(), FlowError> {
+    let vm = FlowRuntime::new(host, cancel, FlowLimits::default()).await?;
+    tokio::time::timeout(PAYLOAD_LOAD_BUDGET, vm.run(FLOW_ENGINE_JS))
+        .await
+        .map_err(|_| FlowError::timeout("engine payload did not load in time"))??;
+    vm.run(&bootstrap).await?;
+    vm.run(RUN_DRIVER_JS).await.map(|_| ())
+}
+
+/// 引擎参数引导：把工作流定义与运行输入以 JSON 字面量一次性注入
+/// `globalThis.__runArgs`（数据不进模板源码，防注入；驱动脚本保持静态常量）。
+fn build_args_bootstrap(workflow: &Workflow, inputs: &RunInputs) -> Result<String> {
+    let args = json!({
+        "workflow": workflow,
+        "variables": inputs.variables,
+        "env": inputs.env,
+        "harEntries": inputs.har_entries,
+    });
+    let text = serde_json::to_string(&args).map_err(|error| anyhow!("运行参数不可序列化: {error}"))?;
+    Ok(format!("globalThis.__runArgs = {text};"))
+}
+
+/// 建单图快照：恒剥离 `pinnedOutput`（固定输出属节点执行态，不属于图结构），
+/// 序列化超过 [`GRAPH_SNAPSHOT_MAX_BYTES`] 时降级为自说明骨架（只含节点 /
+/// 连线骨架与 `truncated` 标记）。
+fn graph_snapshot(workflow: &Workflow) -> JsonValue {
+    let mut snapshot = json!({
+        "nodes": serde_json::to_value(&workflow.nodes).unwrap_or_default(),
+        "edges": serde_json::to_value(&workflow.edges).unwrap_or_default(),
+    });
+    if let Some(nodes) = snapshot.get_mut("nodes").and_then(JsonValue::as_array_mut) {
+        for node in nodes {
+            if let Some(config) = node.get_mut("config").and_then(JsonValue::as_object_mut) {
+                config.remove("pinnedOutput");
+            }
+        }
+    }
+    match serde_json::to_string(&snapshot) {
+        Ok(text) if text.len() <= GRAPH_SNAPSHOT_MAX_BYTES => snapshot,
+        _ => json!({
+            "truncated": true,
+            "nodes": workflow
+                .nodes
+                .iter()
+                .map(|node| json!({ "id": node.id, "type": node.node_type }))
+                .collect::<Vec<_>>(),
+            "edges": workflow
+                .edges
+                .iter()
+                .map(|edge| json!({ "id": edge.id, "source": edge.source, "target": edge.target }))
+                .collect::<Vec<_>>(),
+        }),
+    }
+}
+
+/// 脱敏清单快照（锁不可用时按空清单降级：缺脱敏好过误判全量 secret）。
+fn secrets_list(secrets: &Mutex<Vec<String>>) -> Vec<String> {
+    secrets
+        .lock()
+        .map(|list| list.as_slice().to_vec())
+        .unwrap_or_default()
+}
+
+/// 深度脱敏一个 JSON 值（节点快照 input / output / iterations）。
+fn masked(value: &JsonValue, secrets: &Mutex<Vec<String>>) -> JsonValue {
+    mask_secrets_deep(value, &secrets_list(secrets))
+}
+
+/// 脱敏一段错误 / 摘要文本。
+fn masked_text(text: &str, secrets: &Mutex<Vec<String>>) -> String {
+    mask_secrets_in_text(text, &secrets_list(secrets))
+}
+
+/// 引擎节点运行快照（camelCase `NodeRun`）→ 落库记录：逐字段映射并把
+/// input / output / iterations 深度脱敏、error 文本脱敏。形状不符时防御性
+/// 按 failed 节点落库（不丢事件）。
+fn masked_node_record(
+    run_id: &str,
+    node_id: &str,
+    node_run: &JsonValue,
+    secrets: &Mutex<Vec<String>>,
+) -> FlowNodeRunRecord {
+    let field = |name: &str| node_run.get(name);
+    let secret_list = secrets_list(secrets);
+    let masked_value = |value: Option<JsonValue>| {
+        value.map(|value| mask_secrets_deep(&value, &secret_list))
+    };
+    FlowNodeRunRecord {
+        run_id: run_id.to_owned(),
+        node_id: node_id.to_owned(),
+        status: field("status")
+            .and_then(JsonValue::as_str)
+            .unwrap_or("failed")
+            .to_owned(),
+        input: masked_value(field("input").cloned()),
+        output: masked_value(field("output").cloned()),
+        error: field("error")
+            .and_then(JsonValue::as_str)
+            .map(|message| mask_secrets_in_text(message, &secret_list)),
+        started_at: field("startedAt").and_then(JsonValue::as_u64),
+        duration_ms: field("durationMs").and_then(JsonValue::as_u64),
+        iterations: masked_value(field("iterations").cloned()),
+        updated_at: now_millis(),
+    }
+}
+
+/// 引擎 env 写回载荷 → 落库表（非对象载荷视为无效写回，返回 `None` 丢弃）。
+fn env_write_table(writes: &JsonValue) -> Option<BTreeMap<String, JsonValue>> {
+    Some(
+        writes
+            .as_object()?
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect(),
+    )
+}
 
 /// 阻塞加载工作流定义与运行输入（变量三层合并、环境快照、HAR 基线、
 /// 脱敏清单）。
@@ -588,16 +913,23 @@ fn load_run_inputs(root: &std::path::Path, workflow_id: &str) -> Result<(Workflo
                 .and_then(|log| log.get_mut("entries"))
                 .and_then(|entries| entries.as_array_mut())
                 .and_then(|entries| entries.first_mut());
-            if let (Some(first), true) = (first, entry.body_ref.is_some()) {
-                if let Ok(Some(bytes)) = store.read_request_body(&entry)
-                    && let Some(request) = first.get_mut("request")
-                {
-                    *request = json!({})set_post_data_placeholder;
-                }
+            let Some(first) = first else {
+                continue;
+            };
+            // body 落 blob 的条目回填 postData（base64 + encoding 标记）；
+            // 只补 text / encoding，保留既有 mimeType 与其余字段。
+            if entry.body_ref.is_some()
+                && let Ok(Some(bytes)) = store.read_request_body(&entry)
+                && let Some(post_data) = first
+                    .get_mut("request")
+                    .and_then(JsonValue::as_object_mut)
+                    .map(|request| request.entry("postData").or_insert_with(|| json!({})))
+                && let Some(post_data) = post_data.as_object_mut()
+            {
+                post_data.insert("text".into(), json!(BASE64_STANDARD.encode(&bytes)));
+                post_data.insert("encoding".into(), json!("base64"));
             }
-            if let Some(first) = first {
-                har_entries.insert(entry.id.clone(), first.clone());
-            }
+            har_entries.insert(entry.id.clone(), first.clone());
         }
     }
 
@@ -611,4 +943,144 @@ fn load_run_inputs(root: &std::path::Path, workflow_id: &str) -> Result<(Workflo
         secrets: Arc::new(Mutex::new(secrets)),
     };
     Ok((workflow, inputs))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::flow::model::{
+        NodeConfig, NodePinnedOutput, Position, WorkflowEdge, WorkflowNode, WorkflowNodeType,
+    };
+    use serde_json::Value;
+
+    fn sample_workflow() -> Workflow {
+        Workflow {
+            id: "wf-1".into(),
+            project_id: "proj-1".into(),
+            name: "demo".into(),
+            description: String::new(),
+            nodes: vec![
+                WorkflowNode {
+                    id: "s".into(),
+                    node_type: WorkflowNodeType::Start,
+                    position: Position { x: 0.0, y: 0.0 },
+                    config: NodeConfig::default(),
+                    label: None,
+                    ref_id: None,
+                },
+                WorkflowNode {
+                    id: "r".into(),
+                    node_type: WorkflowNodeType::HttpReplay,
+                    position: Position { x: 1.0, y: 0.0 },
+                    config: NodeConfig {
+                        pinned_output: Some(NodePinnedOutput {
+                            value: json!(42),
+                            pinned_at: 7,
+                            source_run_id: "run-0".into(),
+                        }),
+                        ..NodeConfig::default()
+                    },
+                    label: None,
+                    ref_id: None,
+                },
+            ],
+            edges: vec![WorkflowEdge {
+                id: "e1".into(),
+                source: "s".into(),
+                target: "r".into(),
+                source_handle: None,
+            }],
+            variables: BTreeMap::new(),
+            secret_variables: BTreeMap::new(),
+            schema_version: 1,
+            created_at: 1,
+            updated_at: 2,
+        }
+    }
+
+    #[test]
+    fn bootstrap_injects_json_literal_args() {
+        let workflow = sample_workflow();
+        let inputs = RunInputs {
+            variables: json!({ "a": 1 }),
+            env: json!({}),
+            har_entries: json!({}),
+            active_set_id: None,
+            secrets: Arc::new(Mutex::new(Vec::new())),
+        };
+        let bootstrap = build_args_bootstrap(&workflow, &inputs).unwrap();
+        assert!(bootstrap.starts_with("globalThis.__runArgs = "));
+        // 工作流定义以 JSON 字面量注入（数据不进模板源码）。
+        assert!(bootstrap.contains("\"wf-1\""));
+        assert!(bootstrap.ends_with(';'));
+    }
+
+    #[test]
+    fn graph_snapshot_strips_pinned_output_but_keeps_other_config() {
+        let snapshot = graph_snapshot(&sample_workflow());
+        let node = &snapshot["nodes"][1];
+        assert!(node["config"].get("pinnedOutput").is_none());
+        assert_eq!(snapshot["edges"][0]["target"], json!("r"));
+        assert!(snapshot.get("truncated").is_none());
+    }
+
+    #[test]
+    fn graph_snapshot_degrades_to_self_describing_skeleton_over_cap() {
+        let mut workflow = sample_workflow();
+        workflow.nodes[1].config = NodeConfig {
+            text: Some("x".repeat(GRAPH_SNAPSHOT_MAX_BYTES + 1024)),
+            ..NodeConfig::default()
+        };
+        let snapshot = graph_snapshot(&workflow);
+        assert_eq!(snapshot["truncated"], json!(true));
+        // 骨架只保留定位所需的最小字段。
+        assert_eq!(snapshot["nodes"][1], json!({ "id": "r", "type": "httpReplay" }));
+        assert_eq!(snapshot["edges"][0]["target"], json!("r"));
+        assert!(snapshot.get("config").is_none());
+    }
+
+    #[test]
+    fn masked_node_record_maps_engine_snapshot_and_masks_secrets() {
+        let secrets = Mutex::new(vec!["supersecret".to_owned()]);
+        let record = masked_node_record(
+            "run-1",
+            "n1",
+            &json!({
+                "status": "success",
+                "input": { "password": "supersecret" },
+                "output": { "text": "prefix-supersecret-suffix" },
+                "error": "boom supersecret",
+                "startedAt": 11,
+                "durationMs": 22,
+                "iterations": { "done": 2 },
+            }),
+            &secrets,
+        );
+        assert_eq!(record.run_id, "run-1");
+        assert_eq!(record.node_id, "n1");
+        assert_eq!(record.status, "success");
+        assert_eq!(record.input, Some(json!({ "password": "******" })));
+        assert_eq!(record.output, Some(json!({ "text": "prefix-******-suffix" })));
+        assert_eq!(record.error.as_deref(), Some("boom ******"));
+        assert_eq!(record.started_at, Some(11));
+        assert_eq!(record.duration_ms, Some(22));
+        assert_eq!(record.iterations, Some(json!({ "done": 2 })));
+    }
+
+    #[test]
+    fn masked_node_record_survives_malformed_snapshot() {
+        let secrets = Mutex::new(Vec::new());
+        let record = masked_node_record("run-1", "n1", &json!("not-an-object"), &secrets);
+        assert_eq!(record.status, "failed");
+        assert_eq!(record.input, None);
+    }
+
+    #[test]
+    fn env_write_table_requires_an_object_payload() {
+        let table = env_write_table(&json!({ "token": "abc", "count": 3 })).unwrap();
+        assert_eq!(table.len(), 2);
+        assert_eq!(table["token"], json!("abc"));
+        assert!(env_write_table(&json!([1, 2])).is_none());
+        assert!(env_write_table(&Value::Null).is_none());
+    }
 }
