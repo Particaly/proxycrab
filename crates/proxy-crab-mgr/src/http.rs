@@ -51,7 +51,8 @@ use crate::{
         RequestLibraryBodyQuery, RequestLibraryQuery, RoutingSelection, SaveEnvSetRequest,
         ScriptRequest, SessionQuery, SystemLogsQuery, UpdateRequestLibraryRequest,
         UpdateScriptRequest, UpdateSessionRequest, WebSocketQuery, WorkflowCreateRequest,
-        WorkflowListQuery, WorkflowUpdateRequest, default_body_max_size
+        WorkflowExportQuery, WorkflowImportRequest, WorkflowListQuery, WorkflowUpdateRequest,
+        default_body_max_size,
     },
     manager::ProxyCrabManager,
     permission::{
@@ -442,6 +443,8 @@ fn router_with_changes_and_extra(
         )
         .route("/api/workflows/{id}/validate", post(validate_workflow))
         .route("/api/flow/script/dry-run", post(flow_script_dry_run))
+        .route("/api/workflows/export", get(export_workflows))
+        .route("/api/workflows/import", post(import_workflows))
         .route(
             "/api/request-library",
             get(request_library_list).post(request_library_create),
@@ -1689,6 +1692,42 @@ async fn flow_script_dry_run(
     ApiJson(request): ApiJson<FlowScriptDryRunRequest>,
 ) -> ApiResult {
     success(manager.flow_script_dry_run(request).await?)
+}
+
+// Workflow transfer (plan Task 23). The export response is the raw envelope
+// document itself (a JSON file download aligned with the CA-certificate
+// download precedent), not the management `{ok,data}` wrapper, so the saved
+// file is directly importable.
+async fn export_workflows(
+    State(manager): State<ManagerState>,
+    ApiQuery(query): ApiQuery<WorkflowExportQuery>,
+) -> Result<Response, ApiError> {
+    let ids: Vec<String> = query
+        .ids
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
+        .collect();
+    let file = manager.export_workflows(ids).await?;
+    let body = serde_json::to_string(&file)
+        .map_err(|error| ApiError(ManagerError::internal(error.to_string())))?;
+    let mut response = Response::new(Body::from(body));
+    let headers = response.headers_mut();
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    headers.insert(
+        CONTENT_DISPOSITION,
+        HeaderValue::from_static("attachment; filename=\"reqflow-workflows.json\""),
+    );
+    Ok(response)
+}
+
+async fn import_workflows(
+    State(manager): State<ManagerState>,
+    ApiJson(request): ApiJson<WorkflowImportRequest>,
+) -> ApiResult {
+    success(manager.import_workflows(request).await?)
 }
 
 // Environment variable sets and global variables; reads return masked secret

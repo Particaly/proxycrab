@@ -259,6 +259,12 @@ pub static API_ACTIONS: &[ApiAction] = &[
     // `approval`; the request body is excluded from the audit preview so the
     // script content never reaches logs or the approval window.
     action!("POST", "/api/flow/script/dry-run", Approval),
+    // Workflow import/export (plan Task 23). Export is a pure read of stored
+    // definitions (`allow`); import creates new definitions and envelope
+    // extension entries (never overwriting existing ones), so it defaults to
+    // `approval` like the other definition writes.
+    action!("GET", "/api/workflows/export", Allow),
+    action!("POST", "/api/workflows/import", Approval),
 ];
 
 pub const OBSOLETE_API_ACTION_IDS: &[&str] = &[
