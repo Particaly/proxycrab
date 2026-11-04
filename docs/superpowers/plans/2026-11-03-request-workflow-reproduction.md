@@ -246,10 +246,10 @@
 - Create: `src/components/flow/config/{ReplayNodeConfig.vue,RequestPicker.vue,HeaderRows.vue,FidelityModeControl.vue,CookieModeControl.vue,RetryFields.vue,RefIdField.vue}`
 - Modify: `src/windows/WorkflowEditorWindow.vue`
 
-- [ ] **Step 1: 请求选择器**：从请求库挑选（搜索/标签/预览），支持手工请求（等价 `ReplayWindow` 的 body 三态：文本 / 引用请求库 body / 工作区资产）。
-- [ ] **Step 2: 覆盖项**：method/url/headers/removedHeaders/body；头行复用 `EditableKvTable.vue` 形态，带「删除 / 插入模板引用 / 插入环境变量」行内菜单。
-- [ ] **Step 3: 保真与 Cookie**：`headerFidelity{origin,referer,userAgent}` 每项「捕获值 / 自定义」二态；`cookieMode` 快照/自定义 + 值编辑。
-- [ ] **Step 4: 其余字段**：`timeoutMs`、`failPolicy`、`retry{maxAttempts,backoffMs,multiplier}`、`pinnedOutput`（含清除）、`refId` 编辑（5 位短码、流程内唯一、可改）。
+- [x] **Step 1: 请求选择器**：从请求库挑选（搜索/标签/预览），支持手工请求（等价 `ReplayWindow` 的 body 三态：文本 / 引用请求库 body / 工作区资产）。
+- [x] **Step 2: 覆盖项**：method/url/headers/removedHeaders/body；头行复用 `EditableKvTable.vue` 形态，带「删除 / 插入模板引用 / 插入环境变量」行内菜单。
+- [x] **Step 3: 保真与 Cookie**：`headerFidelity{origin,referer,userAgent}` 每项「捕获值 / 自定义」二态；`cookieMode` 快照/自定义 + 值编辑。
+- [x] **Step 4: 其余字段**：`timeoutMs`、`failPolicy`、`retry{maxAttempts,backoffMs,multiplier}`、`pinnedOutput`（含清除）、`refId` 编辑（5 位短码、流程内唯一、可改）。
 
 ### Task 15: 模板引用、表达式输入与 IO 面板
 
