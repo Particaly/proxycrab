@@ -57,6 +57,7 @@ import type {
   LogIdsRequest,
   LogViewsPayload,
   LogViewsRequest,
+  McpAuditPage,
   McpTiers,
   ProxyStatus,
   PendingApproval,
@@ -159,6 +160,14 @@ export interface Backend {
     save(tiers: McpTiers): Promise<McpTiers>;
     /** 当前 tools/list 实际暴露的工具数量（随档位过滤变化）。 */
     toolCount(): Promise<number>;
+  };
+  /**
+   * MCP 工具调用审计（plan Task 25 Step 4）：最近调用记录，seq 倒序，只读。
+   * 未实现时 UI 不展示「MCP 调用审计」分区。
+   */
+  readonly mcpAudit?: {
+    /** 读取最近 limit 条；缺省 100，服务端上限 500。 */
+    list(limit?: number): Promise<McpAuditPage>;
   };
   /**
    * 请求工作流域：项目 / 流程定义 CRUD、图整体保存与结构校验。未实现时

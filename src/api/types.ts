@@ -627,6 +627,24 @@ export interface McpTiers {
   execute: boolean;
 }
 
+/** MCP 工具调用审计单条记录（plan Task 25 Step 4；wire format 为 camelCase）。 */
+export interface McpAuditEntry {
+  seq: number;
+  timestampMs: number;
+  tool: string;
+  identity: string;
+  /** 参数摘要（服务端已截断）；denied/error 时配合 reason 展示。 */
+  argumentsSummary: string;
+  outcome: "ok" | "denied" | "error";
+  decision: "allowed" | "denied";
+  reason?: string;
+}
+
+/** `GET /api/mcp-audit` 返回：按 seq 倒序的最近调用记录。 */
+export interface McpAuditPage {
+  entries: McpAuditEntry[];
+}
+
 export interface CreateEnvSetRequest {
   name: string;
   /** 提供时按该集合复制（含 secret 值），新集合使用生成的 id。 */

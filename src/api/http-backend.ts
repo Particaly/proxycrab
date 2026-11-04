@@ -47,6 +47,7 @@ import type {
   LogDetail,
   LogIdsRequest,
   LogViewsRequest,
+  McpAuditPage,
   McpTiers,
   ManagerError,
   CreateRequestLibraryRequest,
@@ -480,6 +481,9 @@ export function createHttpBackend(
         const envelope = (await response.json()) as { result?: { tools?: unknown[] } };
         return envelope.result?.tools?.length ?? 0;
       },
+    },
+    mcpAudit: {
+      list: (limit?: number) => call<McpAuditPage>(query("/api/mcp-audit", { limit })),
     },
     workflows: {
       listProjects: () => call<FlowProjectsPage>("/api/flow-projects"),
