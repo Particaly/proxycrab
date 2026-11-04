@@ -7,6 +7,7 @@ import type {
   Workflow,
   WorkflowEdge,
   WorkflowNode,
+  WorkflowNodeConfig,
   WorkflowValidationIssue,
 } from "../api/types";
 import Canvas from "../components/flow/Canvas.vue";
@@ -25,6 +26,8 @@ import {
 } from "../components/flow/node-issue-badge";
 import { notifyEditLocked } from "../components/flow/canvas-edit-lock";
 import { getWorkflowNodeMeta, nodeSummary } from "../components/flow/node-meta";
+import { takenRefKeys } from "../components/flow/config/node-config";
+import ReplayNodeConfig from "../components/flow/config/ReplayNodeConfig.vue";
 import { appStore, reportError } from "../stores/app";
 import { confirmDialog } from "../stores/dialog";
 import { flowRunStore } from "../stores/flow-run";
@@ -99,6 +102,30 @@ const selectedNode = computed<WorkflowNode | null>(() => {
 const selectedMeta = computed(() =>
   selectedNode.value ? getWorkflowNodeMeta(selectedNode.value.type) : null,
 );
+
+/** 流程内已占用短码键集合（节点 id + 既有短码），供引用短码编辑查重。 */
+const selectedTakenKeys = computed(() => takenRefKeys(nodes.value));
+
+/** 就地替换画布节点（配置 / 引用短码编辑上抛时）。 */
+function replaceNode(next: WorkflowNode): void {
+  const index = nodes.value.findIndex((node) => node.id === next.id);
+  if (index >= 0) {
+    nodes.value = nodes.value.map((node, current) => (current === index ? next : node));
+  }
+}
+
+function updateSelectedConfig(config: WorkflowNodeConfig): void {
+  if (selectedNode.value) replaceNode({ ...selectedNode.value, config });
+}
+
+function updateSelectedRefId(refId: string | null): void {
+  const node = selectedNode.value;
+  if (!node) return;
+  const next = { ...node };
+  if (refId === null) delete next.refId;
+  else next.refId = refId;
+  replaceNode(next);
+}
 
 function nodeLabel(node: WorkflowNode): string {
   const custom = node.label?.trim();
@@ -538,15 +565,25 @@ onBeforeUnmount(() => {
           <span class="wf-field-label">节点 ID</span>
           <span class="mono">{{ selectedNode.id }}</span>
         </div>
-        <div class="wf-field">
-          <span class="wf-field-label">引用短码</span>
-          <span class="mono">{{ selectedNode.refId ?? "—" }}</span>
-        </div>
-        <div class="wf-field">
-          <span class="wf-field-label">配置摘要</span>
-          <span class="text-secondary">{{ nodeSummary(selectedNode) }}</span>
-        </div>
-        <div class="wf-drawer-hint text-faint">节点配置编辑将在后续任务提供</div>
+        <ReplayNodeConfig
+          v-if="selectedNode.type === 'httpReplay'"
+          :key="selectedNode.id"
+          :node="selectedNode"
+          :taken-keys="selectedTakenKeys"
+          @update:config="updateSelectedConfig"
+          @update:ref-id="updateSelectedRefId"
+        />
+        <template v-else>
+          <div class="wf-field">
+            <span class="wf-field-label">引用短码</span>
+            <span class="mono">{{ selectedNode.refId ?? "—" }}</span>
+          </div>
+          <div class="wf-field">
+            <span class="wf-field-label">配置摘要</span>
+            <span class="text-secondary">{{ nodeSummary(selectedNode) }}</span>
+          </div>
+          <div class="wf-drawer-hint text-faint">节点配置编辑将在后续任务提供</div>
+        </template>
       </div>
     </aside>
   </div>
@@ -557,6 +594,8 @@ onBeforeUnmount(() => {
   flex: 1;
   min-height: 0;
   display: flex;
+  /* 请求选择弹窗等抽屉内浮层的定位基准。 */
+  position: relative;
 }
 
 /* ---------- 左侧：项目 / 流程两级列表 ---------- */
@@ -743,7 +782,7 @@ onBeforeUnmount(() => {
 /* ---------- 右侧：节点配置抽屉（占位） ---------- */
 
 .wf-drawer {
-  width: 280px;
+  width: 360px;
   flex: none;
   display: flex;
   flex-direction: column;
