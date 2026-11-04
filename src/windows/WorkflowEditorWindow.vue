@@ -55,7 +55,12 @@ import NodeIoDrawer from "../components/flow/NodeIoDrawer.vue";
 import { collectJsonPaths } from "../components/expression-input/input-paths";
 import { appStore, reportError } from "../stores/app";
 import { confirmDialog } from "../stores/dialog";
-import { flowRunStore } from "../stores/flow-run";
+import {
+  ensureFlowRunListening,
+  isWorkflowRunning,
+  latestRunningRunId,
+  refreshFlowRuns,
+} from "../stores/flow-run";
 import { flowTrialStore } from "../stores/flow-trial";
 import { windowsStore } from "../stores/windows";
 import "../styles/flow.css";
@@ -72,6 +77,8 @@ const WINDOW_ID = "workflow-editor";
 const backend = useBackend();
 // 能力位由 launcher 检查后才可能挂载本窗口。
 const api = backend.workflows!;
+/** 运行域能力位：缺失时（老后端）不展示运行 / 取消入口。 */
+const flowRunApi = backend.flowRuns;
 
 const projects = ref<FlowProject[]>([]);
 const workflows = ref<Workflow[]>([]);
@@ -90,6 +97,9 @@ const loading = ref(false);
 const loadingWorkflows = ref(false);
 const saving = ref(false);
 const validating = ref(false);
+/** 运行触发 / 取消的在途标记（按钮防抖）。 */
+const triggering = ref(false);
+const cancelling = ref(false);
 const newProjectName = ref("");
 const newWorkflowName = ref("");
 /** 画布重挂载计数：切换流程后重新 fit-view。 */
@@ -115,9 +125,9 @@ const mergedIssues = computed<NodeIssue[]>(() =>
 const canUndo = computed(() => history.value.past.length > 0);
 const canRedo = computed(() => history.value.future.length > 0);
 
-/** 运行期画布编辑锁定（运行态来源见 stores/flow-run.ts 接缝；Task 19 接真实 API）。 */
+/** 运行期画布编辑锁定：运行态来自 stores/flow-run.ts 的事件对账（Task 22）。 */
 const runLocked = computed(
-  () => workflow.value !== null && flowRunStore.runningWorkflowId === workflow.value.id,
+  () => workflow.value !== null && isWorkflowRunning(workflow.value.id),
 );
 
 const selectedNode = computed<WorkflowNode | null>(() => {
@@ -546,6 +556,41 @@ async function save(): Promise<void> {
   }
 }
 
+/**
+ * 触发一次运行（按最近保存的流程定义；后端做前置校验并回错误码）。
+ * 启动成功立即对账一次，让画布锁定与取消按钮马上生效。
+ */
+async function triggerRun(): Promise<void> {
+  if (!workflow.value || runLocked.value || !flowRunApi || triggering.value) return;
+  triggering.value = true;
+  try {
+    const run = await flowRunApi.trigger({ workflowId: workflow.value.id });
+    await refreshFlowRuns();
+    appStore.toast(`运行已启动（${run.id}）`, "success");
+  } catch (error) {
+    reportError(error, "触发运行失败");
+  } finally {
+    triggering.value = false;
+  }
+}
+
+/** 取消该流程最新的在途运行（同一流程多个在途 run 时逐次点按逐个取消）。 */
+async function cancelRun(): Promise<void> {
+  const workflowId = workflow.value?.id;
+  const runId = workflowId ? latestRunningRunId(workflowId) : null;
+  if (!runId || !flowRunApi || cancelling.value) return;
+  cancelling.value = true;
+  try {
+    await flowRunApi.cancel(runId);
+    await refreshFlowRuns();
+    appStore.toast(`已请求取消运行（${runId}）`, "success");
+  } catch (error) {
+    reportError(error, "取消运行失败");
+  } finally {
+    cancelling.value = false;
+  }
+}
+
 async function validate(): Promise<void> {
   if (!workflow.value || validating.value) return;
   validating.value = true;
@@ -576,6 +621,7 @@ function onKeydown(event: KeyboardEvent): void {
 onMounted(() => {
   windowsStore.registerCloseGuard(WINDOW_ID, confirmDiscard);
   window.addEventListener("keydown", onKeydown);
+  ensureFlowRunListening();
   void refresh();
   void loadActiveEnv();
 });
@@ -687,6 +733,26 @@ onBeforeUnmount(() => {
             <Io5Refresh :size="14" />
           </button>
           <button class="btn" :disabled="validating" @click="validate">校验</button>
+          <template v-if="flowRunApi">
+            <button
+              v-if="runLocked"
+              class="btn"
+              :disabled="cancelling"
+              title="取消该流程当前进行中的运行"
+              @click="cancelRun"
+            >
+              取消运行
+            </button>
+            <button
+              v-else
+              class="btn"
+              :disabled="triggering"
+              title="按最近保存的流程定义触发一次运行（未保存修改不参与）"
+              @click="triggerRun"
+            >
+              运行
+            </button>
+          </template>
           <button class="btn primary" :disabled="saving || !dirty" @click="save">
             <Io5Save :size="14" /> 保存
           </button>

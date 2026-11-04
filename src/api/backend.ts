@@ -31,6 +31,8 @@ import type {
   FlowRunDetail,
   FlowRunListQuery,
   FlowRunPage,
+  FlowRunRecord,
+  FlowRunTriggerRequest,
   ExecuteTemporaryScriptRequest,
   ExtendBreakpointRequest,
   FlowProject,
@@ -174,11 +176,16 @@ export interface Backend {
   flowScriptDryRun?(request: FlowScriptDryRunRequest): Promise<FlowScriptDryRunResult>;
   /**
    * 流程运行记录（计划 Task 19）：分页列表 / 详情（run 主记录 + 逐节点
-   * checkpoint）/ 取消进行中的运行。未实现时 UI 不展示「运行记录」入口。
+   * checkpoint）/ 触发与取消。未实现时 UI 不展示「运行记录」入口与运行按钮。
    */
   readonly flowRuns?: {
     list(query: FlowRunListQuery): Promise<FlowRunPage>;
     get(id: string): Promise<FlowRunDetail>;
+    /**
+     * 触发一次运行（按最近保存的流程定义）。前置校验失败时报
+     * 409 proxy_not_running / 404 not_found / 409 conflict / 422 workflow_graph_invalid。
+     */
+    trigger(request: FlowRunTriggerRequest): Promise<FlowRunRecord>;
     /** 取消进行中的运行；运行已结算（或不存在）时报 not_found。 */
     cancel(id: string): Promise<void>;
   };
