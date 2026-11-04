@@ -502,7 +502,7 @@ impl FlowRunManager {
         cancel: &FlowCancel,
         secrets: &Arc<Mutex<Vec<String>>>,
     ) {
-        let empty = BTreeMap::new();
+        let empty = serde_json::Map::new();
         let node_runs = summary
             .get("nodeRuns")
             .and_then(JsonValue::as_object)
@@ -536,8 +536,11 @@ impl FlowRunManager {
     async fn finalize(&self, run_id: &str, status: &str, error: Option<String>) {
         let run_id = run_id.to_owned();
         let status = status.to_owned();
+        let finish_id = run_id.clone();
         let result = self
-            .store_call(move |store| store.finish_run(&run_id, &status, error.as_deref(), now_millis()))
+            .store_call(move |store| {
+                store.finish_run(&finish_id, &status, error.as_deref(), now_millis())
+            })
             .await;
         if let Err(result_error) = result {
             tracing::warn!("flow run finalize dropped: {result_error:#}");
@@ -632,6 +635,7 @@ impl FlowHost for RunHost {
                 .and_then(JsonValue::as_str)
                 .unwrap_or("GET")
                 .to_owned(),
+            url: url.clone(),
             headers: payload
                 .get("headers")
                 .and_then(JsonValue::as_object)
@@ -869,16 +873,16 @@ fn load_run_inputs(root: &std::path::Path, workflow_id: &str) -> Result<(Workflo
         variables.insert(key.clone(), value.clone());
     }
     let mut secrets: Vec<String> = globals.secret_values.values().cloned().collect();
-    if let Ok(projects) = store.list_projects() {
-        if let Some(project) = projects.iter().find(|project| project.id == workflow.project_id) {
-            for (key, value) in &project.variables {
-                variables.insert(key.clone(), value.clone());
-            }
-            for (key, value) in &project.secret_variables {
-                variables.insert(key.clone(), value.clone());
-            }
-            secrets.extend(project.secret_variables.values().cloned());
+    if let Ok(projects) = store.list_projects()
+        && let Some(project) = projects.iter().find(|project| project.id == workflow.project_id)
+    {
+        for (key, value) in &project.variables {
+            variables.insert(key.clone(), value.clone());
         }
+        for (key, value) in &project.secret_variables {
+            variables.insert(key.clone(), value.clone());
+        }
+        secrets.extend(project.secret_variables.values().cloned());
     }
     for (key, value) in &workflow.variables {
         variables.insert(key.clone(), value.clone());
