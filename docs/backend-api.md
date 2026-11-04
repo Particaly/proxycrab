@@ -1298,3 +1298,10 @@ Call boundaries (plan Task 24 Step 4): a single execution is capped at 30 second
 Unknown methods get `-32601`, structurally broken envelopes get `-32600` (with the id preserved when possible), unparsable JSON gets `-32700`, and notifications (no `id`) are acknowledged with `202 Accepted` and no body. Request bodies are capped at 1 MiB; read failures map to `-32700`.
 
 Unlike `/api/*` responses, MCP envelopes are raw JSON-RPC — `{jsonrpc, id, result}` / `{jsonrpc, id, error}` — and never wrap in the management `{ok, data}` / `{ok, error}` contract.
+
+## MCP exposure tiers (plan Task 25 Step 2)
+
+The curated MCP tool surface is gated by three workspace-level switches — read / write / execute — persisted as a versioned envelope at `<workspace>/flow/mcp-tools.json` (defaults: read on, write off, execute off). Every curated tool declares a tier (`read`/`write`/`execute`); `tools/list` only lists tools whose tier switch is on, and `tools/call` hard-rejects a disabled tier with the tool-level error shape even when the tool is addressed by name (`tool '<name>': 该工具类别的 MCP 档位已关闭`). The tier gate stacks on the endpoint check (`POST /mcp`) and the mapped-route check — the stricter of the three always wins. A corrupt envelope degrades reads to the defaults with a warning and refuses writes.
+
+- `GET /api/mcp-tiers` (default `allow`): returns the current switches as `{read, write, execute}` booleans.
+- `PUT /api/mcp-tiers` (default `approval`): replaces all three switches with the request body `{read, write, execute}` and returns the stored value.

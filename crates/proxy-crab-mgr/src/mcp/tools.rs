@@ -23,6 +23,8 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use tokio::sync::Semaphore;
 
+use proxy_crab_mitm::flow::mcp_tiers::McpTiers;
+
 use crate::{
     dto::{ErrorCode, FlowRunListQuery, ManagerError},
     manager::ProxyCrabManager,
@@ -49,16 +51,40 @@ pub fn tool_call_permits() -> Arc<Semaphore> {
     TOOL_CALL_PERMITS.clone()
 }
 
-/// 单个策展工具的静态描述：名称、说明、映射路由与入参契约。
+/// 工具档位（plan Task 25 Step 2）：MCP 暴露三档开关按该分级门控。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ToolTier {
+    /// 读类：只读查询（如列表/详情）。
+    Read,
+    /// 写类：修改工作区状态（如保存/删除）。
+    Write,
+    /// 执行类：触发运行/工作流等有副作用的操作。
+    Execute,
+}
+
+/// 单个策展工具的静态描述：名称、说明、映射路由、档位分级与入参契约。
 pub struct ToolDescriptor {
     pub name: &'static str,
     pub description: &'static str,
     /// 映射的管理路由 `(METHOD, PATH)`；鉴权档位由 permission 层对该
     /// 路由登记的 action 决定，未登记路由的工具不得上架。
     pub route: (&'static str, &'static str),
+    /// 工具档位分级：read/write/execute，MCP 三档开关据此门控。
+    pub tier: ToolTier,
     /// 入参契约：`(参数名, JSON Schema 类型, 说明)`，与映射路由的
     /// 查询/请求体字段保持一致。
     pub params: &'static [(&'static str, &'static str, &'static str)],
+}
+
+impl ToolTier {
+    /// MCP 暴露档位是否放行该工具（plan Task 25 Step 2）。
+    pub fn enabled(self, tiers: &McpTiers) -> bool {
+        match self {
+            ToolTier::Read => tiers.read,
+            ToolTier::Write => tiers.write,
+            ToolTier::Execute => tiers.execute,
+        }
+    }
 }
 
 /// 工具注册表：仅登记已实现且映射路由已有 action 档位的工具。
@@ -66,6 +92,7 @@ const REGISTRY: &[ToolDescriptor] = &[ToolDescriptor {
     name: "workflow_runs_list",
     description: "List workflow runs, mirroring GET /api/flow/runs.",
     route: ("GET", "/api/flow/runs"),
+    tier: ToolTier::Read,
     params: &[
         ("workflowId", "string", "Filter by workflow id."),
         ("status", "string", "Filter by run status."),
@@ -79,11 +106,13 @@ pub fn list() -> &'static [ToolDescriptor] {
     REGISTRY
 }
 
-/// `tools/list` 应答的策展工具清单（含各工具的 inputSchema）。
-pub fn list_envelope() -> Value {
+/// `tools/list` 应答的策展工具清单（含各工具的 inputSchema），按 MCP 暴露
+/// 档位过滤：档位关闭的工具不出现在清单里（plan Task 25 Step 2）。
+pub fn list_envelope(tiers: &McpTiers) -> Value {
     json!({
         "tools": REGISTRY
             .iter()
+            .filter(|tool| tool.tier.enabled(tiers))
             .map(|tool| json!({
                 "name": tool.name,
                 "description": tool.description,
@@ -124,12 +153,16 @@ pub fn lookup(name: &str) -> Option<&'static ToolDescriptor> {
 }
 
 /// 一次 `tools/call` 的执行环境：管理状态、权限服务、调用者身份
-/// （身份已由 `authorize_request` 依据既有体系解析完成）与在途许可闸。
+/// （身份已由 `authorize_request` 依据既有体系解析完成）、MCP 暴露档位
+/// 与在途许可闸。
 #[derive(Clone)]
 pub struct ToolCallContext {
     pub manager: Arc<dyn ProxyCrabManager>,
     pub permissions: Arc<dyn PermissionManager>,
     pub credential: ManagementCredential,
+    /// MCP 暴露三档开关（plan Task 25 Step 2）：与端点档位、映射路由档位
+    /// 叠加为三检，任一拒绝即拒。
+    pub tiers: McpTiers,
     pub permits: Arc<Semaphore>,
 }
 
@@ -152,6 +185,11 @@ pub async fn call(request: &RpcRequest, context: &ToolCallContext, timeout: Dura
     let Some(tool) = lookup(name) else {
         return tool_error(&request.id, name, "unknown tool");
     };
+    // 三检之一：MCP 暴露档位（plan Task 25 Step 2）。档位关闭时即使直呼
+    // 工具名也硬拒，与 tools/list 的过滤保持一致（更严者生效）。
+    if !tool.tier.enabled(&context.tiers) {
+        return tool_error(&request.id, name, "该工具类别的 MCP 档位已关闭");
+    }
     let arguments = request
         .params
         .get("arguments")
@@ -280,6 +318,7 @@ const TEST_SLOW_TOOL: ToolDescriptor = ToolDescriptor {
     name: "test_slow_tool",
     description: "test-only long task stub",
     route: ("GET", "/api/flow/runs"),
+    tier: ToolTier::Read,
     params: &[],
 };
 
@@ -345,10 +384,19 @@ mod tests {
     }
 
     fn test_context(manager: Arc<dyn ProxyCrabManager>, permits: Arc<Semaphore>) -> ToolCallContext {
+        test_context_with_tiers(manager, McpTiers::default(), permits)
+    }
+
+    fn test_context_with_tiers(
+        manager: Arc<dyn ProxyCrabManager>,
+        tiers: McpTiers,
+        permits: Arc<Semaphore>,
+    ) -> ToolCallContext {
         ToolCallContext {
             manager,
             permissions: Arc::new(AllowTools),
             credential: ManagementCredential::LocalLoopback,
+            tiers,
             permits,
         }
     }
@@ -374,7 +422,7 @@ mod tests {
 
     #[test]
     fn tools_list_envelope_declares_the_curated_surface() {
-        let envelope = list_envelope();
+        let envelope = list_envelope(&McpTiers::default());
         let tools = envelope["tools"].as_array().unwrap();
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0]["name"], "workflow_runs_list");
@@ -382,6 +430,86 @@ mod tests {
         assert_eq!(
             tools[0]["inputSchema"]["properties"]["limit"]["type"],
             "integer"
+        );
+    }
+
+    #[test]
+    fn tier_gate_matrix_matches_the_three_switches() {
+        let all_on = McpTiers {
+            read: true,
+            write: true,
+            execute: true,
+        };
+        let all_off = McpTiers {
+            read: false,
+            write: false,
+            execute: false,
+        };
+        // 缺省：读开 / 写关 / 执行关；全开全放行；全关全拒绝。
+        for (tier, default_allowed) in [
+            (ToolTier::Read, true),
+            (ToolTier::Write, false),
+            (ToolTier::Execute, false),
+        ] {
+            assert_eq!(
+                tier.enabled(&McpTiers::default()),
+                default_allowed,
+                "{tier:?} default"
+            );
+            assert!(tier.enabled(&all_on), "{tier:?} must pass when all on");
+            assert!(!tier.enabled(&all_off), "{tier:?} must fail when all off");
+        }
+    }
+
+    #[test]
+    fn tools_list_omits_tools_of_closed_tiers() {
+        // 缺省档（新工作区）：注册表中的读类工具在列。
+        assert_eq!(
+            list_envelope(&McpTiers::default())["tools"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        // 读档关闭：tools/list 不再出现该类别工具。
+        let read_off = McpTiers {
+            read: false,
+            ..McpTiers::default()
+        };
+        assert_eq!(
+            list_envelope(&read_off)["tools"].as_array().unwrap().len(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn call_hard_rejects_tools_of_closed_tiers() {
+        let app_data = tempdir().unwrap();
+        let runtime = ProxyCrab::open(app_data.path(), Arc::new(LogBuffer::default())).unwrap();
+        // 读档关闭：即使逐次鉴权全放行（AllowTools），tools/call 直呼工具
+        // 名也硬拒——档位门控独立于权限目录，先于执行段生效。
+        let context = test_context_with_tiers(
+            MitmManager::new(runtime),
+            McpTiers {
+                read: false,
+                write: true,
+                execute: true,
+            },
+            Arc::new(Semaphore::new(MAX_IN_FLIGHT_TOOL_CALLS)),
+        );
+        let request = RpcRequest {
+            id: json!(7),
+            method: "tools/call".into(),
+            params: json!({ "name": "workflow_runs_list", "arguments": {} }),
+        };
+        let response = call(&request, &context, TOOL_CALL_TIMEOUT).await;
+        assert_eq!(response["result"]["isError"], true);
+        assert!(response.get("error").is_none());
+        assert!(
+            response["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("该工具类别的 MCP 档位已关闭")
         );
     }
 

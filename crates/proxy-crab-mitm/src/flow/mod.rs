@@ -2,6 +2,7 @@ pub mod bundle;
 pub mod dry_run;
 pub mod env_sets;
 pub mod host;
+pub mod mcp_tiers;
 pub mod model;
 pub mod request_library;
 pub mod run;

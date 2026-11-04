@@ -28,6 +28,7 @@ use futures::{StreamExt, stream};
 use proxy_crab_mitm::model::{InterceptorKind, InterceptorScriptContent, SessionFilter};
 use proxy_crab_mitm::storage::{BodySide, BodySource, BodySourceData};
 use proxy_crab_mitm::flow::run::FlowRunEvent;
+use proxy_crab_mitm::flow::mcp_tiers::McpTiers;
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, BufReader};
@@ -489,6 +490,9 @@ fn router_with_changes_and_extra(
         )
         .route("/api/env-globals", put(replace_env_globals))
         .route("/api/env-write-back", post(env_write_back))
+        /* MCP exposure tiers (plan Task 25 Step 2): read (allow) and write
+        (approval, like other posture-changing settings). */
+        .route("/api/mcp-tiers", get(get_mcp_tiers).put(replace_mcp_tiers))
         .route(
             "/api/system-logs",
             get(system_logs).delete(clear_system_logs),
@@ -1826,6 +1830,19 @@ async fn env_sets(State(manager): State<ManagerState>) -> ApiResult {
     success(manager.env_sets().await?)
 }
 
+/* ---- MCP exposure tiers (plan Task 25 Step 2) ---- */
+
+async fn get_mcp_tiers(State(manager): State<ManagerState>) -> ApiResult {
+    success(manager.mcp_tiers().await?)
+}
+
+async fn replace_mcp_tiers(
+    State(manager): State<ManagerState>,
+    ApiJson(tiers): ApiJson<McpTiers>,
+) -> ApiResult {
+    success(manager.replace_mcp_tiers(tiers).await?)
+}
+
 async fn create_env_set(
     State(manager): State<ManagerState>,
     ApiJson(request): ApiJson<CreateEnvSetRequest>,
@@ -2266,10 +2283,17 @@ async fn mcp_endpoint(
             ));
         }
     };
+    // MCP 暴露档位随请求读取（工作区小 JSON 文件，plan Task 25 Step 2）；
+    // 读取失败降级为缺省档并告警（缺省关写/执行，fail-safe）。
+    let tiers = manager.mcp_tiers().await.unwrap_or_else(|error| {
+        tracing::warn!("degrading MCP exposure tiers to defaults: {}", error.message);
+        McpTiers::default()
+    });
     let context = mcp::tools::ToolCallContext {
         manager,
         permissions,
         credential,
+        tiers,
         permits: mcp::tools::tool_call_permits(),
     };
     let body = match axum::body::to_bytes(request.into_body(), mcp::MAX_MESSAGE_BYTES).await {
@@ -5910,6 +5934,83 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<Value>(text).unwrap(),
             json!({ "runs": [], "total": 0 })
+        );
+    }
+
+    /// `tools/list` 的 HTTP 级助手：POST /mcp JSON-RPC 信封并返回应答。
+    async fn mcp_tools_list(app: axum::Router, id: i64) -> Value {
+        let mut request = Request::builder()
+            .method(Method::POST)
+            .uri("/mcp")
+            .header("host", "127.0.0.1:18089")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/list","params":{{}}}}"#)
+                    .into_bytes(),
+            ))
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(SocketAddr::from((
+                std::net::Ipv4Addr::LOCALHOST,
+                40000,
+            ))));
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn mcp_tools_list_and_call_follow_the_exposure_tiers() {
+        let app_data = tempdir().unwrap();
+        let runtime = ProxyCrab::open(app_data.path(), Arc::new(LogBuffer::default())).unwrap();
+        // router()（测试用）把请求标记为本机进程内调用，/api/* 无需身份头。
+        let app = router(MitmManager::new(runtime), allow_all());
+
+        // 新工作区缺省档：读开 / 写关 / 执行关，读类工具在 tools/list。
+        let payload = mcp_tools_list(app.clone(), 1).await;
+        assert_eq!(
+            payload["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|tool| tool["name"].clone())
+                .collect::<Vec<_>>(),
+            vec![json!("workflow_runs_list")]
+        );
+        let (status, payload) = flow_request(app.clone(), Method::GET, "/api/mcp-tiers", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            payload["data"],
+            json!({ "read": true, "write": false, "execute": false })
+        );
+
+        // 关闭读档：tools/list 不再出现该工具，tools/call 直呼工具名也硬拒。
+        let body = json!({ "read": false, "write": false, "execute": true }).to_string();
+        let (status, payload) =
+            flow_request(app.clone(), Method::PUT, "/api/mcp-tiers", Some(&body)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            payload["data"],
+            json!({ "read": false, "write": false, "execute": true })
+        );
+        let payload = mcp_tools_list(app.clone(), 2).await;
+        assert_eq!(payload["result"]["tools"].as_array().unwrap().len(), 0);
+        let payload = mcp_tools_call_workflow_runs_list(app.clone(), 3).await;
+        assert_eq!(payload["result"]["isError"], true);
+        assert!(
+            payload["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("该工具类别的 MCP 档位已关闭")
+        );
+
+        // 持久化往返：管理器每请求重读工作区文件，保存后读取一致。
+        let (status, payload) = flow_request(app, Method::GET, "/api/mcp-tiers", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            payload["data"],
+            json!({ "read": false, "write": false, "execute": true })
         );
     }
 

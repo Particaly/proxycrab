@@ -111,9 +111,8 @@ pub fn handle(incoming: Incoming) -> Option<Value> {
 fn handle_request(request: RpcRequest) -> Value {
     match request.method.as_str() {
         "initialize" => initialize(&request),
-        // 策展清单由注册表（tools 模块）声明，Task 25 扩充工具面。
-        "tools/list" => success(&request.id, super::tools::list_envelope()),
-        // tools/call 在 mcp::respond 中先于本分派被接管（见 tools 模块）。
+        // tools/list 与 tools/call 依赖调用上下文（MCP 暴露档位），统一在
+        // mcp::respond 中先于本分派被接管（见 tools 模块）。
         _ => error(
             &request.id,
             METHOD_NOT_FOUND,
@@ -215,11 +214,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn tools_list_declares_the_registry_curated_surface() {
-        let response = handle(parse(&request("tools/list", json!({})))).unwrap();
-        let tools = response["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools[0]["name"], "workflow_runs_list");
-        assert_eq!(tools[0]["inputSchema"]["properties"]["limit"]["type"], "integer");
-    }
+    // tools/list 依赖调用上下文（MCP 暴露档位过滤），分派在 mcp::respond；
+    // 其清单内容的覆盖见 tools 模块测试。
 }

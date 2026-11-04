@@ -57,6 +57,7 @@ import type {
   LogIdsRequest,
   LogViewsPayload,
   LogViewsRequest,
+  McpTiers,
   ProxyStatus,
   PendingApproval,
   PermissionEntry,
@@ -148,6 +149,16 @@ export interface Backend {
     setActive(id: string | null): Promise<string | null>;
     saveGlobals(request: ReplaceEnvGlobalsRequest): Promise<EnvGlobalVariables>;
     writeBack(request: EnvWriteBackRequest): Promise<EnvWriteBackResult>;
+  };
+  /**
+   * MCP 暴露三档开关（读/写/执行）与当前暴露的工具数量。未实现时 UI 不
+   * 展示「MCP 暴露」分区。
+   */
+  readonly mcpTiers?: {
+    get(): Promise<McpTiers>;
+    save(tiers: McpTiers): Promise<McpTiers>;
+    /** 当前 tools/list 实际暴露的工具数量（随档位过滤变化）。 */
+    toolCount(): Promise<number>;
   };
   /**
    * 请求工作流域：项目 / 流程定义 CRUD、图整体保存与结构校验。未实现时

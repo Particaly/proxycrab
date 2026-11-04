@@ -620,6 +620,13 @@ export interface EnvSetsPayload {
   globals: EnvGlobalVariables;
 }
 
+/** MCP 暴露三档开关（plan Task 25 Step 2）：缺省读开 / 写关 / 执行关。 */
+export interface McpTiers {
+  read: boolean;
+  write: boolean;
+  execute: boolean;
+}
+
 export interface CreateEnvSetRequest {
   name: string;
   /** 提供时按该集合复制（含 secret 值），新集合使用生成的 id。 */

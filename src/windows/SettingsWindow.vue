@@ -13,6 +13,7 @@ import type {
   ApiActionView,
   HttpApiChange,
   HttpServiceStatus,
+  McpTiers,
   PermissionIdentitySummary,
   PermissionMode,
 } from "../api/types";
@@ -52,6 +53,22 @@ const loadedPermissions = ref<Record<string, PermissionMode>>({});
 const loadingPermissions = ref(false);
 const savingPermissions = ref(false);
 const showCreateDialog = ref(false);
+
+// MCP 暴露三档开关（读/写/执行）：改动即保存，跟随本窗口 RedactionSelect
+// 的即改即存惯例；工具数量为只读展示（tools/list 实际暴露数）。
+const mcpTiers = ref<McpTiers | null>(null);
+const mcpToolCount = ref<number | null>(null);
+const savingMcpTier = ref(false);
+const mcpTierRows: {
+  key: keyof McpTiers;
+  name: string;
+  description: string;
+  aria: string;
+}[] = [
+  { key: "read", name: "读", description: "只读查询类工具", aria: "切换读档" },
+  { key: "write", name: "写", description: "修改工作区状态的工具", aria: "切换写档" },
+  { key: "execute", name: "执行", description: "触发运行等有副作用的工具", aria: "切换执行档" },
+];
 
 const permissionDirty = computed(
   () => JSON.stringify(permissions.value) !== JSON.stringify(loadedPermissions.value),
@@ -200,6 +217,41 @@ async function openDevtools(): Promise<void> {
   }
 }
 
+/** 读取 MCP 暴露档位与当前工具数量；能力缺失时整个分区不展示。 */
+async function refreshMcpTiers(): Promise<void> {
+  if (!backend.mcpTiers) return;
+  try {
+    mcpTiers.value = await backend.mcpTiers.get();
+  } catch (error) {
+    reportError(error, "获取 MCP 暴露档位失败");
+    return;
+  }
+  try {
+    mcpToolCount.value = await backend.mcpTiers.toolCount();
+  } catch {
+    mcpToolCount.value = null;
+  }
+}
+
+/** 切换单个档位：乐观更新，保存失败回滚到先前值。 */
+async function setMcpTier(key: keyof McpTiers, value: boolean): Promise<void> {
+  if (!backend.mcpTiers || !mcpTiers.value || savingMcpTier.value) return;
+  const previous = mcpTiers.value;
+  const next = { ...previous, [key]: value };
+  mcpTiers.value = next;
+  savingMcpTier.value = true;
+  try {
+    mcpTiers.value = await backend.mcpTiers.save(next);
+    const count = await backend.mcpTiers.toolCount();
+    mcpToolCount.value = count;
+  } catch (error) {
+    mcpTiers.value = previous;
+    reportError(error, "保存 MCP 暴露档位失败");
+  } finally {
+    savingMcpTier.value = false;
+  }
+}
+
 async function savePermissions(): Promise<void> {
   if (!selectedIdentityId.value || !permissionDirty.value || savingPermissions.value) return;
   savingPermissions.value = true;
@@ -275,7 +327,7 @@ onMounted(() => {
   windowsStore.registerCloseGuard(WINDOW_ID, confirmDiscardCurrentPage);
   window.addEventListener(HTTP_API_CHANGE_EVENT, onHttpApiChange);
   window.addEventListener("keydown", onKeydown);
-  void Promise.all([refreshWorkspace(), refreshManagement()]);
+  void Promise.all([refreshWorkspace(), refreshManagement(), refreshMcpTiers()]);
 });
 
 onBeforeUnmount(() => {
@@ -454,6 +506,30 @@ onBeforeUnmount(() => {
               :allowed-modes="permissionModes"
               :disabled="savingPermissions"
             />
+          </section>
+
+          <section v-if="mcpTiers" class="settings-section mcp-tiers-section">
+            <h3>MCP 暴露</h3>
+            <div class="mcp-tier-grid">
+              <div v-for="tier in mcpTierRows" :key="tier.key" class="mcp-tier">
+                <div class="mcp-tier-text">
+                  <span class="mcp-tier-name">{{ tier.name }}</span>
+                  <span class="mcp-tier-desc">{{ tier.description }}</span>
+                </div>
+                <button
+                  class="switch"
+                  :class="{ on: mcpTiers[tier.key] }"
+                  type="button"
+                  :aria-pressed="mcpTiers[tier.key]"
+                  :aria-label="tier.aria"
+                  :disabled="savingMcpTier"
+                  @click="setMcpTier(tier.key, !mcpTiers[tier.key])"
+                />
+              </div>
+            </div>
+            <p class="mcp-tier-hint">
+              当前暴露 {{ mcpToolCount ?? "—" }} 个工具；执行档关闭时运行类工具不可用。修改档位需审批确认。
+            </p>
           </section>
         </template>
       </template>
@@ -731,5 +807,49 @@ onBeforeUnmount(() => {
     justify-content: center;
     gap: 5px;
   }
+}
+.mcp-tiers-section {
+  padding-top: 14px;
+}
+.mcp-tier-grid {
+  display: flex;
+  flex-direction: column;
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+.mcp-tier {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 10px;
+}
+.mcp-tier + .mcp-tier {
+  border-top: 1px solid var(--border);
+}
+.mcp-tier-text {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.mcp-tier-name {
+  flex: none;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+.mcp-tier-desc {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mcp-tier-hint {
+  margin: 7px 0 0;
+  color: var(--text-faint);
+  font-size: 10px;
 }
 </style>

@@ -13,6 +13,7 @@ use proxy_crab_mitm::{
         env_sets::{
             self, EnvGlobalVariables, mask_env_set, mask_globals, restore_masked_secret_values,
         },
+        mcp_tiers::McpTiers,
         model::{Project, Workflow, WORKFLOW_SCHEMA_VERSION, generate_ref_id},
         request_library::{CapturedRequest, RequestLibraryEntry, RequestSource},
         run::{FlowRunEvent, FlowRunManager, RunTriggerError},
@@ -379,6 +380,8 @@ pub trait ProxyCrabManager: Send + Sync {
         request: ReplaceEnvGlobalsRequest,
     ) -> ManagerResult<EnvGlobalVariables>;
     async fn env_write_back(&self, request: EnvWriteBackRequest) -> ManagerResult<EnvWriteBackResult>;
+    async fn mcp_tiers(&self) -> ManagerResult<McpTiers>;
+    async fn replace_mcp_tiers(&self, tiers: McpTiers) -> ManagerResult<McpTiers>;
 }
 
 #[derive(Clone)]
@@ -2938,6 +2941,24 @@ impl ProxyCrabManager for MitmManager {
                 applied: flush.applied,
                 dropped: flush.dropped,
             })
+        })
+        .await
+    }
+
+    async fn mcp_tiers(&self) -> ManagerResult<McpTiers> {
+        let root = self.runtime.workspace().root().to_path_buf();
+        self.run_blocking("read mcp tiers", move || {
+            FlowStore::open(&root).and_then(|store| store.mcp_tiers()).map_err(map_error)
+        })
+        .await
+    }
+
+    async fn replace_mcp_tiers(&self, tiers: McpTiers) -> ManagerResult<McpTiers> {
+        let root = self.runtime.workspace().root().to_path_buf();
+        self.run_blocking("save mcp tiers", move || {
+            let store = FlowStore::open(&root).map_err(map_error)?;
+            store.save_mcp_tiers(&tiers).map_err(map_error)?;
+            Ok(tiers)
         })
         .await
     }}

@@ -1884,6 +1884,13 @@ Methods: `initialize` (required first call) negotiates the protocol version — 
 
 `tools/call` runs per-tool authorization: each curated tool declares the management route it mirrors, and the call re-checks that route's catalog action for the same caller identity on top of the endpoint-level check — the stricter tier wins. Tool visibility and availability are governed by the settings-window tier switches, and when the mapped route resolves to `approval`, the same desktop approval chain as the HTTP route applies: denial or approval timeout surfaces as the MCP tool-level error shape — HTTP 200 with `result:{content:[{type:"text",text:...}],isError:true}` and a readable reason — never a silent downgrade or hang. Omitting an empty `name` is `-32602`; unknown tool names and invalid arguments are tool-level errors. A single execution is capped at 30 seconds, at most 4 tool calls are in flight process-wide, and a client disconnect cancels the in-flight execution. Error text is centrally mapped and never contains file paths or credentials.
 
+## MCP exposure tiers
+
+The curated tool surface is gated by three workspace switches persisted at `<workspace>/flow/mcp-tools.json` — read / write / execute, defaults on / off / off. `tools/list` only lists tools whose tier switch is on; `tools/call` hard-rejects a disabled tier with a tool-level error (`tool '<name>': 该工具类别的 MCP 档位已关闭`) even when the tool is addressed by name. The tier gate stacks on the endpoint check and the mapped-route check — the stricter of the three wins.
+
+- `GET /api/mcp-tiers` (default `allow`) → `{ok,data:{read,write,execute}}` booleans.
+- `PUT /api/mcp-tiers` (default `approval`) with body `{read,write,execute}` replaces all three switches and returns the stored value.
+
 ### `POST /mcp` example
 
 ```json
