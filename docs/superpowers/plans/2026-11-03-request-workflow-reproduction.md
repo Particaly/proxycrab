@@ -405,8 +405,8 @@
 
 - [x] **Step 1: 脚本**：请求库入库/查询、工作流 CRUD、运行与取消、运行记录查询（含 `log-wait.mjs` 式轮询形态）。
 - [ ] **Step 2: 文档**：`http-api.md` 补全新端点与权限档位；`best-practices.md` 补「Agent 驱动工作流」的推荐姿势与风险（写/执行默认审批）；`SKILL.md` 链接 `docs/mcp.md` 并说明 MCP 与 HTTP API 是同一权限体系与同一审批链。
-- [ ] **Step 3: 评测**：`evals.json` 增加可判定的评测用例（如「从指定 capture 建请求库条目并跑通一个两节点流程」）。
-- [ ] **Step 4: README**：能力清单与截图位。
+- [x] **Step 3: 评测**：`evals.json` 增加可判定的评测用例（如「从指定 capture 建请求库条目并跑通一个两节点流程」）。
+- [x] **Step 4: README**：能力清单与截图位。
 
 ### Task 28: 端到端验收
 
