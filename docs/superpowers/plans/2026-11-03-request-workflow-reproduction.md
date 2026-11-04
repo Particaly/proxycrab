@@ -268,10 +268,10 @@
 - Create: `src/components/flow/config/{ConditionBuilder.vue,LoopConfig.vue,DelayConfig.vue,SetVariableConfig.vue,AssertConfig.vue,TransformConfig.vue,StickyNoteConfig.vue}`
 - Modify: `src/components/flow/config/*`
 
-- [ ] **Step 1: 条件构建器**：递归分组树（且/或 + 整组取反 + 增删）、15 操作符、右值类型收敛；保存时编译为 `expression`（编译逻辑在载荷里，前端只编辑树）。
-- [ ] **Step 2: 循环**：items / maxIterations / CSV 文本与分隔符 / 并发度 / 间隔；表单校验与上限提示（并发需隔离变量作用域门控）。
-- [ ] **Step 3: 其余节点表单**：延时（上限校验）、变量赋值（来源四态与路径）、断言规则（status/jsonPath/schema）、转换提取（jsonPath/jmespath）、便签（文本/颜色/尺寸）。
-- [ ] **Step 4: 测试**：条件树往返（树 ⇄ 表达式）、各表单校验边界。
+- [x] **Step 1: 条件构建器**：递归分组树（且/或 + 整组取反 + 增删）、15 操作符、右值类型收敛；保存时编译为 `expression`（编译逻辑在载荷里，前端只编辑树）。
+- [x] **Step 2: 循环**：items / maxIterations / CSV 文本与分隔符 / 并发度 / 间隔；表单校验与上限提示（并发需隔离变量作用域门控）。
+- [x] **Step 3: 其余节点表单**：延时（上限校验）、变量赋值（来源四态与路径）、断言规则（status/jsonPath/schema）、转换提取（jsonPath/jmespath）、便签（文本/颜色/尺寸）。
+- [x] **Step 4: 测试**：条件树往返（树 ⇄ 表达式）、各表单校验边界。
 
 ### Task 17: 环境变量集与全局变量
 
