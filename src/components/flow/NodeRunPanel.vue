@@ -5,6 +5,8 @@ import { useBackend } from "../../api";
 import JsonTree from "./JsonTree.vue";
 import { isTruncatedSnapshot } from "./json-tree";
 import { appStore, reportError } from "../../stores/app";
+import { requestEditorFocus } from "../../stores/editor-focus";
+import { openWorkflowEditor } from "../../windows/launcher";
 import {
   formatDurationMs,
   formatLoopIterationProgress,
@@ -143,9 +145,16 @@ async function pinOutput(): Promise<void> {
  * RERUN_SEAM（重跑类入口接缝，本薄片刻意不渲染）：
  *   - 「从此起重跑」：需运行 API 携带 rerunFrom + 上游输出沿用参数（未交付）；
  *   - 「重跑该轮」：需按迭代项构造 var.loop 的单轮重跑入参（未交付）；
- *   - 「在编辑器打开」：需编辑器窗口的 focusNode 聚焦通道（Step 4 接线点）。
+ *   - 「在编辑器打开」已接 editor-focus 聚焦通道（Task 22C），动作区见 openInEditor。
  * API 交付后在此处补动作区按钮，勿另起面板区域。
  */
+
+/** 「在编辑器打开」：定位运行来源流程并选中本节点（workflows 能力位把关）。 */
+function openInEditor(): void {
+  if (!backend.workflows) return;
+  requestEditorFocus(props.run.workflowId, props.nodeId);
+  openWorkflowEditor();
+}
 
 /* ------------------------------ 快照查看器 ------------------------------ */
 
@@ -219,8 +228,17 @@ function safeStringify(value: unknown): string {
       </div>
     </div>
 
-    <!-- 动作区：仅「固定输出」（重跑类入口见 RERUN_SEAM 接缝注释） -->
-    <div v-if="canPin || pinnedConfig !== null" class="nrp-actions">
+    <!-- 动作区：「固定输出」+「在编辑器打开」（重跑类入口见 RERUN_SEAM 接缝注释） -->
+    <div v-if="canPin || pinnedConfig !== null || backend.workflows" class="nrp-actions">
+      <button
+        v-if="backend.workflows"
+        type="button"
+        class="btn nrp-action"
+        title="打开工作流编辑器并定位到本节点（按运行来源流程）"
+        @click="openInEditor"
+      >
+        在编辑器打开
+      </button>
       <button
         v-if="canPin"
         type="button"
