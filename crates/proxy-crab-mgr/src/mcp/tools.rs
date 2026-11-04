@@ -715,6 +715,7 @@ mod tests {
     fn tools_list_envelope_declares_the_curated_surface() {
         let envelope = list_envelope(&McpTiers::default());
         let tools = envelope["tools"].as_array().unwrap();
+        // 缺省档只放行 Read 类：注册表 15 个工具中的 11 个读类在列。
         assert_eq!(tools.len(), 11);
         let runs_list = tools
             .iter()
@@ -724,6 +725,25 @@ mod tests {
         assert_eq!(
             runs_list["inputSchema"]["properties"]["limit"]["type"],
             "integer"
+        );
+        // 抽查 log_body：side 参数在 inputSchema 中声明且写明合法取值。
+        let log_body = tools
+            .iter()
+            .find(|tool| tool["name"] == "log_body")
+            .unwrap();
+        assert_eq!(log_body["inputSchema"]["properties"]["side"]["type"], "string");
+        assert!(
+            log_body["inputSchema"]["properties"]["side"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("request or response")
+        );
+        // 写/执行类工具缺省不出现在清单里（更严者生效）。
+        assert!(
+            tools
+                .iter()
+                .all(|tool| tool["name"] != "workflow_run_trigger"
+                    && tool["name"] != "workflow_save")
         );
     }
 
@@ -773,6 +793,34 @@ mod tests {
         assert_eq!(
             list_envelope(&read_off)["tools"].as_array().unwrap().len(),
             0
+        );
+        // 三档全开：完整策展清单（15 个）在列，并抽查 execute 档的
+        // workflow_run_trigger 及其入参 schema。
+        let all_on = McpTiers {
+            read: true,
+            write: true,
+            execute: true,
+        };
+        let envelope = list_envelope(&all_on);
+        let tools = envelope["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 15);
+        let trigger = tools
+            .iter()
+            .find(|tool| tool["name"] == "workflow_run_trigger")
+            .unwrap();
+        assert_eq!(
+            trigger["inputSchema"]["properties"]["workflowId"]["type"],
+            "string"
+        );
+        // 仅开写档：只有两个 Write 类工具在列。
+        let write_only = McpTiers {
+            read: false,
+            write: true,
+            execute: false,
+        };
+        assert_eq!(
+            list_envelope(&write_only)["tools"].as_array().unwrap().len(),
+            2
         );
     }
 
