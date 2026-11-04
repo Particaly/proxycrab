@@ -14,15 +14,19 @@
  *     其余按字符串（支持模板）。
  */
 
-import type { VariableAssignment, VariableAssignmentSource } from "../../../../flow-engine/src/types";
+import type {
+  VariableAssignment,
+  VariableAssignmentSource,
+} from "../../../../flow-engine/src/types";
 
 /** 赋值项来源的展示清单（下拉选项；value 为落库值） */
-export const ASSIGNMENT_SOURCES: ReadonlyArray<{ value: VariableAssignmentSource; label: string }> = [
-  { value: "input", label: "入参 input" },
-  { value: "node", label: "节点输出" },
-  { value: "var", label: "既有变量" },
-  { value: "literal", label: "字面量" },
-];
+export const ASSIGNMENT_SOURCES: ReadonlyArray<{ value: VariableAssignmentSource; label: string }> =
+  [
+    { value: "input", label: "入参 input" },
+    { value: "node", label: "节点输出" },
+    { value: "var", label: "既有变量" },
+    { value: "literal", label: "字面量" },
+  ];
 
 /** 变量赋值节点 config 分片（NodeConfig 相关字段的宽容子集） */
 export interface SetVariableConfigShard {

@@ -217,7 +217,9 @@ defineExpose({
             取反（非）
           </label>
           <span class="cb-group-actions">
-            <button class="btn icon cb-mini" :disabled="disabled" @click="addLeaf(row.path)">+ 条件</button>
+            <button class="btn icon cb-mini" :disabled="disabled" @click="addLeaf(row.path)">
+              + 条件
+            </button>
             <button
               class="btn icon cb-mini"
               :disabled="disabled"
@@ -275,7 +277,10 @@ defineExpose({
             :aria-label="`条件 ${row.position} 右值`"
             @update:model-value="patchLeaf(row, { right: $event })"
           />
-          <span v-if="describeConditionRightType(conditionRightText(row.leaf))" class="badge cb-type">
+          <span
+            v-if="describeConditionRightType(conditionRightText(row.leaf))"
+            class="badge cb-type"
+          >
             {{ describeConditionRightType(conditionRightText(row.leaf)) }}
           </span>
         </template>

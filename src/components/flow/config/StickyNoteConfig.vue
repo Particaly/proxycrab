@@ -70,18 +70,24 @@ watch(
 
 /* ------------------------------ 派生视图与变更出口 ------------------------------ */
 
-const widthError = computed(() => parseStickySizeInput(
-  widthText.value,
-  STICKY_NOTE_MIN_SIZE.width,
-  STICKY_NOTE_MAX_SIZE.width,
-  STICKY_NOTE_DEFAULT_SIZE.width,
-).error ?? null);
-const heightError = computed(() => parseStickySizeInput(
-  heightText.value,
-  STICKY_NOTE_MIN_SIZE.height,
-  STICKY_NOTE_MAX_SIZE.height,
-  STICKY_NOTE_DEFAULT_SIZE.height,
-).error ?? null);
+const widthError = computed(
+  () =>
+    parseStickySizeInput(
+      widthText.value,
+      STICKY_NOTE_MIN_SIZE.width,
+      STICKY_NOTE_MAX_SIZE.width,
+      STICKY_NOTE_DEFAULT_SIZE.width,
+    ).error ?? null,
+);
+const heightError = computed(
+  () =>
+    parseStickySizeInput(
+      heightText.value,
+      STICKY_NOTE_MIN_SIZE.height,
+      STICKY_NOTE_MAX_SIZE.height,
+      STICKY_NOTE_DEFAULT_SIZE.height,
+    ).error ?? null,
+);
 const validationError = computed(() => widthError.value ?? heightError.value);
 
 function emitShard(): void {

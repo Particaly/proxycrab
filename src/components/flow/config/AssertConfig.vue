@@ -32,6 +32,9 @@ const props = defineProps<{
 
 const emit = defineEmits<{ "update:modelValue": [shard: AssertConfigShard] }>();
 
+/** Schema 定义输入占位（最小合法对象示例）。 */
+const SCHEMA_PLACEHOLDER = '{"type":"object"}';
+
 /* ------------------------------ 行草稿状态 ------------------------------ */
 
 const rows = ref<AssertionRow[]>(assertionsToRows(props.modelValue.assertions));
@@ -155,7 +158,9 @@ defineExpose({
           :disabled="disabled"
           @change="onJsonOpChange(index, $event)"
         >
-          <option v-for="op in JSON_PATH_OPS" :key="op.value" :value="op.value">{{ op.label }}</option>
+          <option v-for="op in JSON_PATH_OPS" :key="op.value" :value="op.value">
+            {{ op.label }}
+          </option>
         </select>
         <input
           v-if="row.jsonOp !== 'exists'"
@@ -183,7 +188,7 @@ defineExpose({
           class="input mono as-schema"
           rows="2"
           :value="row.schemaText"
-          :placeholder="'{"type":"object"}'"
+          :placeholder="SCHEMA_PLACEHOLDER"
           :aria-label="`断言 ${index + 1} Schema 定义`"
           spellcheck="false"
           :disabled="disabled"

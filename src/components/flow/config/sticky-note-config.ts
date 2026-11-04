@@ -82,7 +82,12 @@ export interface ParsedStickySize {
 }
 
 /** 尺寸输入 → 落库值：留空 = 对应维度缺省值；非负整数且落在允许区间内放行 */
-export function parseStickySizeInput(text: string, min: number, max: number, fallback: number): ParsedStickySize {
+export function parseStickySizeInput(
+  text: string,
+  min: number,
+  max: number,
+  fallback: number,
+): ParsedStickySize {
   const trimmed = text.trim();
   if (trimmed === "") return { value: fallback };
   if (!/^\d+$/.test(trimmed)) return { error: `尺寸需为 ${min}~${max} 的整数（像素）` };
@@ -92,7 +97,10 @@ export function parseStickySizeInput(text: string, min: number, max: number, fal
 }
 
 /** 便签表单的整体校验（保存门控数据源；正文与配色恒合法，仅尺寸可错） */
-export function validateStickyNoteDraft(draft: { widthText: string; heightText: string }): string | null {
+export function validateStickyNoteDraft(draft: {
+  widthText: string;
+  heightText: string;
+}): string | null {
   return (
     parseStickySizeInput(
       draft.widthText,

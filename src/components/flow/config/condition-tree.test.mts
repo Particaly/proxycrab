@@ -27,7 +27,11 @@ import {
 } from "./condition-tree";
 
 /** 快捷构造叶子（右值可选）。 */
-function leaf(left: string, operator: ConditionLeaf["operator"] = "eq", right?: unknown): ConditionLeaf {
+function leaf(
+  left: string,
+  operator: ConditionLeaf["operator"] = "eq",
+  right?: unknown,
+): ConditionLeaf {
   return { type: "cond", left, operator, ...(right !== undefined ? { right } : {}) };
 }
 
@@ -157,10 +161,16 @@ describe("落库序列化往返（树 ⇄ config.condition）", () => {
 
 describe("草稿解析（resolveConditionDraft 回填优先级）", () => {
   it("condition 优先；缺树时 conditionRules 旧扁平行迁移为分组树", () => {
-    const tree: ConditionGroup = { type: "group", op: "and", children: [leaf("{{ a }}", "eq", "1")] };
-    expect(resolveConditionDraft({ condition: JSON.parse(JSON.stringify(serializeConditionTree(tree))) })).toEqual(
-      tree,
-    );
+    const tree: ConditionGroup = {
+      type: "group",
+      op: "and",
+      children: [leaf("{{ a }}", "eq", "1")],
+    };
+    expect(
+      resolveConditionDraft({
+        condition: JSON.parse(JSON.stringify(serializeConditionTree(tree))),
+      }),
+    ).toEqual(tree);
     const migrated = resolveConditionDraft({
       conditionRules: [
         { join: "and", left: "{{ a }}", op: "eq", right: "1" },
@@ -278,9 +288,9 @@ describe("扁平行视图（flattenConditionTree）", () => {
 
 describe("保存前校验口径（组件错误位的数据源）", () => {
   it("二元操作符左值必填；node / env 引用阻断；留白叶子放行", () => {
-    expect(validateConditionTree({ type: "group", op: "and", children: [leaf("", "eq", "x")] })).toContain(
-      "左值不能为空",
-    );
+    expect(
+      validateConditionTree({ type: "group", op: "and", children: [leaf("", "eq", "x")] }),
+    ).toContain("左值不能为空");
     expect(
       validateConditionTree({
         type: "group",
@@ -304,7 +314,11 @@ describe("构造器缺省形状", () => {
   it("createConditionGroup / createConditionTree", () => {
     expect(createConditionTree()).toEqual({ type: "group", op: "and", children: [] });
     expect(createConditionGroup("or")).toEqual({ type: "group", op: "or", children: [] });
-    expect(createConditionLeaf("contains")).toEqual({ type: "cond", left: "", operator: "contains" });
+    expect(createConditionLeaf("contains")).toEqual({
+      type: "cond",
+      left: "",
+      operator: "contains",
+    });
     expect(isBlankConditionLeaf(createConditionLeaf())).toBe(true);
     expect(isBlankConditionLeaf(leaf("{{ a }}"))).toBe(false);
   });

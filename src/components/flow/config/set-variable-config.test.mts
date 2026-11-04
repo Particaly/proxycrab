@@ -24,7 +24,14 @@ describe("assignmentsToRows 回填", () => {
         { name: "greet", from: "literal", value: "你好 {{ var.name }}" },
       ]),
     ).toEqual([
-      { id: expect.any(String), name: "token", from: "node", path: "body.token", node: "n1", value: "" },
+      {
+        id: expect.any(String),
+        name: "token",
+        from: "node",
+        path: "body.token",
+        node: "n1",
+        value: "",
+      },
       { id: expect.any(String), name: "flag", from: "literal", path: "", node: "", value: "true" },
       {
         id: expect.any(String),
@@ -54,9 +61,7 @@ describe("validateAssignmentRows / validateSetVariableDraft", () => {
     expect(validateAssignmentRows([row({ name: "a" }), row({ name: " a " })])).toContain(
       "变量名重复：a",
     );
-    expect(validateAssignmentRows([row({ name: "a", from: "node" })])).toContain(
-      "未指定节点",
-    );
+    expect(validateAssignmentRows([row({ name: "a", from: "node" })])).toContain("未指定节点");
     expect(
       validateAssignmentRows([
         row({ name: "a", from: "node", node: "n1" }),

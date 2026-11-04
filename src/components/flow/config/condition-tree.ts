@@ -296,9 +296,10 @@ export function serializeConditionTree(tree: ConditionGroup): StoredConditionTre
  * 沙箱语义下执行）。调用方应先经 validateConditionTree 校验（引擎语义：
  * 整树无有效叶子时编译为空串 = 恒 false）。
  */
-export function buildConditionShard(
-  tree: ConditionGroup,
-): { condition: StoredConditionTree; expression: string } {
+export function buildConditionShard(tree: ConditionGroup): {
+  condition: StoredConditionTree;
+  expression: string;
+} {
   return { condition: serializeConditionTree(tree), expression: compileConditionTree(tree) };
 }
 
@@ -308,7 +309,9 @@ export function buildConditionShard(
 
 /** 叶子是否「整行留白」（与引擎 isBlankLeaf 口径一致：左值与右值均空白且操作符仍是缺省 eq） */
 export function isBlankConditionLeaf(leaf: ConditionLeaf): boolean {
-  return leaf.left.trim() === "" && conditionRightText(leaf).trim() === "" && leaf.operator === "eq";
+  return (
+    leaf.left.trim() === "" && conditionRightText(leaf).trim() === "" && leaf.operator === "eq"
+  );
 }
 
 /** 扁平行视图的行：组头（连接方式 / 取反 / 增删操作）或叶子行（左值 / 操作符 / 右值） */

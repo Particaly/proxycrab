@@ -37,11 +37,13 @@ describe("validateTransformRows", () => {
   it("JSONPath 语法预检；JMESPath 试查与运行期同源", () => {
     expect(validateTransformRows([row({ name: "a", path: "$.[" })])).toContain("JSONPath 语法非法");
     expect(validateTransformRows([row({ name: "a", path: "$.data.token" })])).toBeNull();
-    expect(validateTransformRows([row({ name: "a", engine: "jmespath", path: "data[bad" })])).toContain(
-      "JMESPath 语法非法",
-    );
     expect(
-      validateTransformRows([row({ name: "a", engine: "jmespath", path: "locations[?state == 'WA'].name" })]),
+      validateTransformRows([row({ name: "a", engine: "jmespath", path: "data[bad" })]),
+    ).toContain("JMESPath 语法非法");
+    expect(
+      validateTransformRows([
+        row({ name: "a", engine: "jmespath", path: "locations[?state == 'WA'].name" }),
+      ]),
     ).toBeNull();
   });
 });
@@ -56,7 +58,12 @@ describe("rowsToExtractions / buildTransformShard", () => {
   });
 
   it("新增行缺省 jsonPath + 根占位 $；引擎清单为二态", () => {
-    expect(createExtractionRow()).toEqual({ id: expect.any(String), name: "", engine: "jsonPath", path: "$" });
+    expect(createExtractionRow()).toEqual({
+      id: expect.any(String),
+      name: "",
+      engine: "jsonPath",
+      path: "$",
+    });
     expect(TRANSFORM_ENGINES.map((engine) => engine.value)).toEqual(["jsonPath", "jmespath"]);
   });
 });

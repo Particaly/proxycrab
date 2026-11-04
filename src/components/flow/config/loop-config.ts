@@ -56,7 +56,9 @@ export function parseLoopMaxIterations(text: string): ParsedInput<number> {
   if (!/^\d+$/.test(trimmed)) return { error: "迭代上限需为非负整数" };
   const value = Number.parseInt(trimmed, 10);
   if (value > LOOP_HARD_MAX_ITERATIONS) {
-    return { error: `迭代上限需为 0~${LOOP_HARD_MAX_ITERATIONS} 的整数（硬上限 ${LOOP_HARD_MAX_ITERATIONS} 轮）` };
+    return {
+      error: `迭代上限需为 0~${LOOP_HARD_MAX_ITERATIONS} 的整数（硬上限 ${LOOP_HARD_MAX_ITERATIONS} 轮）`,
+    };
   }
   return { value };
 }
@@ -97,7 +99,9 @@ export function parseLoopItemsText(text: string): ParsedInput<string> {
       return { error: 'items 需为 JSON 数组（如 ["a","b"] 或 [{},{},{}]）' };
     }
   } catch (error) {
-    return { error: `items 不是合法 JSON：${error instanceof Error ? error.message : String(error)}` };
+    return {
+      error: `items 不是合法 JSON：${error instanceof Error ? error.message : String(error)}`,
+    };
   }
   return { value: trimmed };
 }
@@ -164,7 +168,9 @@ export function buildLoopShard(draft: {
     ...(maxIterations.value !== undefined ? { maxIterations: maxIterations.value } : {}),
     ...(csvText !== "" ? { csvText } : {}),
     ...(draft.csvDelimiter !== "," ? { csvDelimiter: draft.csvDelimiter } : {}),
-    ...(concurrency.value !== undefined && concurrency.value > 1 ? { concurrency: concurrency.value } : {}),
+    ...(concurrency.value !== undefined && concurrency.value > 1
+      ? { concurrency: concurrency.value }
+      : {}),
     ...(interval.value !== undefined && interval.value > 0 ? { intervalMs: interval.value } : {}),
   };
 }

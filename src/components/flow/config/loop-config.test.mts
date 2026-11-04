@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_LOOP_MAX_ITERATIONS, LOOP_HARD_MAX_ITERATIONS, LOOP_MAX_CONCURRENCY } from "../../../../flow-engine/src/logic-nodes";
+import {
+  DEFAULT_LOOP_MAX_ITERATIONS,
+  LOOP_HARD_MAX_ITERATIONS,
+  LOOP_MAX_CONCURRENCY,
+} from "../../../../flow-engine/src/logic-nodes";
 import {
   buildLoopShard,
   loopItemsText,
@@ -17,7 +21,9 @@ describe("迭代上限（parseLoopMaxIterations）", () => {
     expect(parseLoopMaxIterations("")).toEqual({ value: DEFAULT_LOOP_MAX_ITERATIONS });
     expect(parseLoopMaxIterations("  50 ")).toEqual({ value: 50 });
     expect(parseLoopMaxIterations("0")).toEqual({ value: 0 });
-    expect(parseLoopMaxIterations(String(LOOP_HARD_MAX_ITERATIONS)).value).toBe(LOOP_HARD_MAX_ITERATIONS);
+    expect(parseLoopMaxIterations(String(LOOP_HARD_MAX_ITERATIONS)).value).toBe(
+      LOOP_HARD_MAX_ITERATIONS,
+    );
   });
 
   it("非整数与超硬上限报错", () => {
@@ -168,7 +174,7 @@ describe("落库分片（buildLoopShard 缺省不落键惯例）", () => {
 
 describe("回填（loopItemsText）", () => {
   it("模板字符串原样；数组字面量还原为两空格缩进 JSON；脏数据为空串", () => {
-    expect(loopItemsText({ items: "{{ var.rows }}"})).toBe("{{ var.rows }}");
+    expect(loopItemsText({ items: "{{ var.rows }}" })).toBe("{{ var.rows }}");
     expect(loopItemsText({ items: [1, 2] })).toBe("[\n  1,\n  2\n]");
     expect(loopItemsText({ items: 42 })).toBe("");
     expect(loopItemsText({})).toBe("");

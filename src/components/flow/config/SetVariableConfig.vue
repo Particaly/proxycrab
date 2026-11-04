@@ -55,9 +55,7 @@ const validationError = computed(() => validateSetVariableDraft(rows.value));
 
 function updateRow(index: number, patch: Partial<AssignmentRow>): void {
   if (props.disabled) return;
-  rows.value = rows.value.map((row, rowIndex) =>
-    rowIndex === index ? { ...row, ...patch } : row,
-  );
+  rows.value = rows.value.map((row, rowIndex) => (rowIndex === index ? { ...row, ...patch } : row));
   emitShard();
 }
 
@@ -81,7 +79,9 @@ function emitShard(): void {
 
 /** 路径输入占位（来源相关口径，与上游一致）。 */
 function pathPlaceholder(from: VariableAssignmentSource): string {
-  return from === "var" ? "变量名.子路径（空 = 整个变量表）" : "取值路径，如 body.token（空 = 根值）";
+  return from === "var"
+    ? "变量名.子路径（空 = 整个变量表）"
+    : "取值路径，如 body.token（空 = 根值）";
 }
 
 const hasNodeOptions = computed(() => (props.nodeOptions?.length ?? 0) > 0);
@@ -114,7 +114,11 @@ defineExpose({
         :value="row.from"
         :aria-label="`赋值项 ${index + 1} 来源`"
         :disabled="disabled"
-        @change="updateRow(index, { from: ($event.target as HTMLSelectElement).value as VariableAssignmentSource })"
+        @change="
+          updateRow(index, {
+            from: ($event.target as HTMLSelectElement).value as VariableAssignmentSource,
+          })
+        "
       >
         <option v-for="source in ASSIGNMENT_SOURCES" :key="source.value" :value="source.value">
           {{ source.label }}

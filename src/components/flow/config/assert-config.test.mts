@@ -38,13 +38,83 @@ describe("assertionsToRows 回填", () => {
         null,
       ]),
     ).toEqual([
-      { id: expect.any(String), kind: "status", statusOp: "2xx", statusValue: "", path: "", jsonOp: "eq", jsonValue: "", schemaPath: "", schemaText: "" },
-      { id: expect.any(String), kind: "status", statusOp: "eq", statusValue: "200", path: "", jsonOp: "eq", jsonValue: "", schemaPath: "", schemaText: "" },
-      { id: expect.any(String), kind: "jsonPath", statusOp: "eq", statusValue: "", path: "$.a", jsonOp: "contains", jsonValue: "x", schemaPath: "", schemaText: "" },
-      { id: expect.any(String), kind: "jsonPath", statusOp: "eq", statusValue: "", path: "$.b", jsonOp: "exists", jsonValue: "", schemaPath: "", schemaText: "" },
-      { id: expect.any(String), kind: "schema", statusOp: "eq", statusValue: "", path: "", jsonOp: "eq", jsonValue: "", schemaPath: "$.c", schemaText: '{\n  "type": "object"\n}' },
-      { id: expect.any(String), kind: "status", statusOp: "eq", statusValue: "", path: "", jsonOp: "eq", jsonValue: "", schemaPath: "", schemaText: "" },
-      { id: expect.any(String), kind: "status", statusOp: "eq", statusValue: "", path: "", jsonOp: "eq", jsonValue: "", schemaPath: "", schemaText: "" },
+      {
+        id: expect.any(String),
+        kind: "status",
+        statusOp: "2xx",
+        statusValue: "",
+        path: "",
+        jsonOp: "eq",
+        jsonValue: "",
+        schemaPath: "",
+        schemaText: "",
+      },
+      {
+        id: expect.any(String),
+        kind: "status",
+        statusOp: "eq",
+        statusValue: "200",
+        path: "",
+        jsonOp: "eq",
+        jsonValue: "",
+        schemaPath: "",
+        schemaText: "",
+      },
+      {
+        id: expect.any(String),
+        kind: "jsonPath",
+        statusOp: "eq",
+        statusValue: "",
+        path: "$.a",
+        jsonOp: "contains",
+        jsonValue: "x",
+        schemaPath: "",
+        schemaText: "",
+      },
+      {
+        id: expect.any(String),
+        kind: "jsonPath",
+        statusOp: "eq",
+        statusValue: "",
+        path: "$.b",
+        jsonOp: "exists",
+        jsonValue: "",
+        schemaPath: "",
+        schemaText: "",
+      },
+      {
+        id: expect.any(String),
+        kind: "schema",
+        statusOp: "eq",
+        statusValue: "",
+        path: "",
+        jsonOp: "eq",
+        jsonValue: "",
+        schemaPath: "$.c",
+        schemaText: '{\n  "type": "object"\n}',
+      },
+      {
+        id: expect.any(String),
+        kind: "status",
+        statusOp: "eq",
+        statusValue: "",
+        path: "",
+        jsonOp: "eq",
+        jsonValue: "",
+        schemaPath: "",
+        schemaText: "",
+      },
+      {
+        id: expect.any(String),
+        kind: "status",
+        statusOp: "eq",
+        statusValue: "",
+        path: "",
+        jsonOp: "eq",
+        jsonValue: "",
+        schemaPath: "",
+        schemaText: "",
+      },
     ]);
     expect(assertionsToRows("garbage")).toEqual([]);
     expect(assertionsToRows(undefined)).toEqual([]);
@@ -75,18 +145,24 @@ describe("validateAssertionRows", () => {
   });
 
   it("JSONPath 行：路径语法预检、非 exists 需期望值、正则需可编译", () => {
-    expect(validateAssertionRows([row({ kind: "jsonPath", path: "$.a[", jsonOp: "exists" })])).toContain(
-      "JSONPath",
-    );
+    expect(
+      validateAssertionRows([row({ kind: "jsonPath", path: "$.a[", jsonOp: "exists" })]),
+    ).toContain("JSONPath");
     expect(validateAssertionRows([row({ kind: "jsonPath", path: "$.a", jsonOp: "eq" })])).toContain(
       "需填写期望值",
     );
-    expect(validateAssertionRows([row({ kind: "jsonPath", path: "$.a", jsonOp: "exists" })])).toBeNull();
     expect(
-      validateAssertionRows([row({ kind: "jsonPath", path: "$.a", jsonOp: "regex", jsonValue: "(" })]),
+      validateAssertionRows([row({ kind: "jsonPath", path: "$.a", jsonOp: "exists" })]),
+    ).toBeNull();
+    expect(
+      validateAssertionRows([
+        row({ kind: "jsonPath", path: "$.a", jsonOp: "regex", jsonValue: "(" }),
+      ]),
     ).toContain("正则表达式非法");
     expect(
-      validateAssertionRows([row({ kind: "jsonPath", path: "$.a", jsonOp: "regex", jsonValue: "^ok$" })]),
+      validateAssertionRows([
+        row({ kind: "jsonPath", path: "$.a", jsonOp: "regex", jsonValue: "^ok$" }),
+      ]),
     ).toBeNull();
   });
 
@@ -103,7 +179,9 @@ describe("validateAssertionRows", () => {
     expect(validateAssertionRows([row({ kind: "schema", schemaText: "[1]" })])).toContain(
       "需为 JSON 对象",
     );
-    expect(validateAssertionRows([row({ kind: "schema", schemaText: '{"type":"object"}' })])).toBeNull();
+    expect(
+      validateAssertionRows([row({ kind: "schema", schemaText: '{"type":"object"}' })]),
+    ).toBeNull();
   });
 });
 

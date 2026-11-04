@@ -43,6 +43,10 @@ const props = defineProps<{
 
 const emit = defineEmits<{ "update:modelValue": [shard: LoopConfigShard] }>();
 
+/** 数据源输入占位（JSON 数组字面量 / 模板两种形态的示例）。 */
+const ITEMS_PLACEHOLDER =
+  '// JSON 数组：["a","b"]\n// 或模板：{{ node.n1.json.ids }}（渲染后需可解析为 JSON 数组）';
+
 /* ------------------------------ 输入草稿状态 ------------------------------ */
 
 const itemsText = ref(loopItemsText(props.modelValue));
@@ -50,9 +54,7 @@ const maxIterationsText = ref(
   props.modelValue.maxIterations === undefined ? "" : String(props.modelValue.maxIterations),
 );
 const csvText = ref(typeof props.modelValue.csvText === "string" ? props.modelValue.csvText : "");
-const csvDelimiter = ref<LoopCsvDelimiter>(
-  parseLoopCsvDelimiter(props.modelValue.csvDelimiter),
-);
+const csvDelimiter = ref<LoopCsvDelimiter>(parseLoopCsvDelimiter(props.modelValue.csvDelimiter));
 const concurrencyText = ref(
   props.modelValue.concurrency === undefined ? "" : String(props.modelValue.concurrency),
 );
@@ -73,8 +75,7 @@ watch(
       config.maxIterations === undefined ? "" : String(config.maxIterations);
     csvText.value = typeof config.csvText === "string" ? config.csvText : "";
     csvDelimiter.value = parseLoopCsvDelimiter(config.csvDelimiter);
-    concurrencyText.value =
-      config.concurrency === undefined ? "" : String(config.concurrency);
+    concurrencyText.value = config.concurrency === undefined ? "" : String(config.concurrency);
     intervalText.value = config.intervalMs === undefined ? "" : String(config.intervalMs);
   },
 );
@@ -83,7 +84,9 @@ watch(
 
 /** 各字段的就地错误（null = 合法）。 */
 const itemsError = computed(() => parseLoopItemsText(itemsText.value).error ?? null);
-const maxIterationsError = computed(() => parseLoopMaxIterations(maxIterationsText.value).error ?? null);
+const maxIterationsError = computed(
+  () => parseLoopMaxIterations(maxIterationsText.value).error ?? null,
+);
 const concurrencyError = computed(() => parseLoopConcurrency(concurrencyText.value).error ?? null);
 const intervalError = computed(() => parseLoopIntervalMs(intervalText.value).error ?? null);
 
@@ -131,8 +134,7 @@ defineExpose({
         v-model="itemsText"
         class="input mono lp-items"
         rows="3"
-        :placeholder="'// JSON 数组：["a","b"]
-// 或模板：{{ node.n1.json.ids }}（渲染后需可解析为 JSON 数组）'"
+        :placeholder="ITEMS_PLACEHOLDER"
         spellcheck="false"
         :disabled="disabled"
       />

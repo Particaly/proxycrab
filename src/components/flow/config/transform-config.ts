@@ -4,7 +4,7 @@
  *
  * 语义对齐引擎（flow-engine/src/transform-nodes.ts）与归档抽屉（
  * `LogicNodeConfigDrawer.tsx @ 485fa00` 的提取规则编辑器，校验逻辑逐字移植）：
- *   - 引擎二态：jsonPath（语法子集，与运行期共用 parseJsonPath 预检）/ 
+ *   - 引擎二态：jsonPath（语法子集，与运行期共用 parseJsonPath 预检）/
  *     jmespath（jmespath.search 对语法错误抛错——预检用同一库对空对象试查）；
  *   - 规则名与表达式必填（多规则时规则名是输出对象的键，单条规则时忽略）；
  *   - 空规则列表合法（执行语义 = 原样透传 input）。

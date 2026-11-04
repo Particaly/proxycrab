@@ -45,7 +45,12 @@ describe("尺寸（resolveStickyNoteSize / parseStickySizeInput）", () => {
 
   it("输入解析：留空取缺省；非整数与越界报错；区间端点放行", () => {
     expect(
-      parseStickySizeInput("", STICKY_NOTE_MIN_SIZE.width, STICKY_NOTE_MAX_SIZE.width, STICKY_NOTE_DEFAULT_SIZE.width),
+      parseStickySizeInput(
+        "",
+        STICKY_NOTE_MIN_SIZE.width,
+        STICKY_NOTE_MAX_SIZE.width,
+        STICKY_NOTE_DEFAULT_SIZE.width,
+      ),
     ).toEqual({ value: STICKY_NOTE_DEFAULT_SIZE.width });
     expect(parseStickySizeInput("1", 140, 480, 200)?.error).toBeTruthy();
     expect(parseStickySizeInput("481", 140, 480, 200)?.error).toBeTruthy();
@@ -77,7 +82,12 @@ describe("buildStickyNoteShard 落库分片", () => {
     expect(
       buildStickyNoteShard({ text: "a", color: "rose", widthText: "1", heightText: "x" }),
     ).toEqual({ text: "a", color: "rose" });
-    const shard = buildStickyNoteShard({ text: "a", color: "rose", widthText: "200", heightText: "120" });
+    const shard = buildStickyNoteShard({
+      text: "a",
+      color: "rose",
+      widthText: "200",
+      heightText: "120",
+    });
     expect(Object.keys(shard).sort()).toEqual(["color", "size", "text"]);
   });
 });

@@ -34,7 +34,10 @@ let lastEmitted: DelayConfigShard | null = null;
 watch(
   () => props.modelValue,
   (config) => {
-    if (lastEmitted !== null && (config.durationMs ?? undefined) === (lastEmitted.durationMs ?? undefined)) {
+    if (
+      lastEmitted !== null &&
+      (config.durationMs ?? undefined) === (lastEmitted.durationMs ?? undefined)
+    ) {
       return;
     }
     durationText.value = config.durationMs === undefined ? "" : String(config.durationMs);
