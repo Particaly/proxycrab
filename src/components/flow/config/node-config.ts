@@ -563,3 +563,43 @@ export function generateRefId(exclude: ReadonlySet<string>): string {
   } while (exclude.has(candidate));
   return candidate;
 }
+
+/* ------------------------------------------------------------------ *
+ * 逻辑节点配置分片合并（计划 Task 16 薄片 B 挂载接线）
+ * ------------------------------------------------------------------ */
+
+/**
+ * 各逻辑节点类型的 config 分片键域（与 16A 表单组件的 modelValue 分片键
+ * 一一对应）。16A 表单的 build*Shard 采用「未设置的键不落分片」惯例——
+ * 清空 / 回退缺省的键不出现在分片里，挂载侧合并时按本键域补删，避免被
+ * 清空的旧值残留在节点 config 中。
+ */
+export const NODE_SHARD_KEYS: Readonly<Record<string, readonly string[]>> = {
+  condition: ["condition", "conditionRules", "expression"],
+  loop: ["items", "maxIterations", "csvText", "csvDelimiter", "concurrency", "intervalMs"],
+  delay: ["durationMs"],
+  setVariable: ["assignments"],
+  assert: ["assertions"],
+  transform: ["extractions"],
+  stickyNote: ["text", "color", "size"],
+};
+
+/**
+ * 把表单上抛的 config 分片浅合并进节点 config（纯函数）：键域内的键以分片
+ * 为准（分片缺席或显式 undefined 的键删除，其余覆盖），键域外的既有键
+ * （其它能力写入的字段）原样保留。不修改入参。
+ */
+export function mergeConfigShard(
+  config: WorkflowNodeConfig,
+  shard: object,
+  domainKeys: readonly string[],
+): WorkflowNodeConfig {
+  const next: WorkflowNodeConfig = { ...config };
+  const shardRecord = shard as Record<string, unknown>;
+  for (const key of domainKeys) {
+    const value = shardRecord[key];
+    if (value === undefined) delete next[key];
+    else next[key] = value;
+  }
+  return next;
+}
