@@ -415,5 +415,5 @@
 
 - [ ] **Step 1: 自动化**：Rust 集成测试跑通「建请求库条目 → 建流程（请求 + 条件 + 循环 + 断言）→ 运行 → 校验运行记录与图快照」；前端 vitest 覆盖纯函数与窗口启动契约。
 - [ ] **Step 2: 门禁**：`cargo check --workspace` / `cargo clippy --workspace --all-targets -- -D warnings` / `cargo test --workspace` / `pnpm build` / `pnpm test:unit` / `pnpm format` 全绿。
-- [ ] **Step 3: 手工场景清单**（`docs/flow-acceptance.md`）：真实流量入库并重放、头保真（Origin/Referer/UA 与 Cookie 快照）、条件真/假走向、循环并发与取消、脚本写回环境变量、运行中断与重启收敛、Agent 经 HTTP API 触发工作流（审批链）、**外部 AI 经 MCP 触发工作流（档位与审批链）**、导入导出往返。
+- [x] **Step 3: 手工场景清单**（`docs/flow-acceptance.md`）：真实流量入库并重放、头保真（Origin/Referer/UA 与 Cookie 快照）、条件真/假走向、循环并发与取消、脚本写回环境变量、运行中断与重启收敛、Agent 经 HTTP API 触发工作流（审批链）、**外部 AI 经 MCP 触发工作流（档位与审批链）**、导入导出往返。
 - [ ] **Step 4: 三面对账**：逐条比对 ReqFlow `ROADMAP.md` 的功能面（M0–M18）、**M19/MCP 功能面**（阶段 5 已逐条对账，此处复核）与 `明确不迁移` 清单，确认无遗漏项；把结论回写本计划（勾选状态）。
