@@ -106,7 +106,9 @@ export const REQUEST_EXPORT_FORMATS: readonly RequestExportFormat[] = [
  * ------------------------------------------------------------------ */
 
 /** 快照第一条 entry；log.entries 为空时返回 null（调用方按空产物处理）。 */
-function snapshotEntry(entry: RequestLibraryEntry): RequestLibraryEntry["har"]["log"]["entries"][0] | null {
+function snapshotEntry(
+  entry: RequestLibraryEntry,
+): RequestLibraryEntry["har"]["log"]["entries"][0] | null {
   return entry.har?.log?.entries?.[0] ?? null;
 }
 
@@ -341,11 +343,9 @@ function buildPostmanItem(
     };
   } else if (body.kind === "base64") {
     // Postman 无注释语法：以官方 description 字段披露二进制 body 未包含
-    postman.description =
-      `请求体为二进制内容（快照以 base64 记录，约 ${body.byteLength} 字节），未包含在导出中。`;
+    postman.description = `请求体为二进制内容（快照以 base64 记录，约 ${body.byteLength} 字节），未包含在导出中。`;
   } else if (body.kind === "external") {
-    postman.description =
-      `请求体未包含在导出中（约 ${body.byteLength} 字节，存于请求库 blob）。`;
+    postman.description = `请求体未包含在导出中（约 ${body.byteLength} 字节，存于请求库 blob）。`;
   }
   return { name, request: postman };
 }
@@ -620,7 +620,11 @@ const FILENAME_ILLEGAL_PATTERN = /[/\\:*?"<>|\u0000-\u001f]/g;
  * @param exportedAt 导出时间戳（Unix 毫秒）
  * @param extension 文件扩展名（如 'har' / 'postman_collection.json'）
  */
-export function buildRequestExportFileName(name: string, exportedAt: number, extension: string): string {
+export function buildRequestExportFileName(
+  name: string,
+  exportedAt: number,
+  extension: string,
+): string {
   const safeName = name
     // 先压缩空白（含制表符等控制类空白），再替换路径分隔符 / Windows 保留字符
     .replace(/\s+/g, " ")

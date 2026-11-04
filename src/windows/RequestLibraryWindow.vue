@@ -371,9 +371,7 @@ onBeforeUnmount(() => {
       >
         {{ exportFeedback }}
       </span>
-      <button class="btn" @click="openExportMenu">
-        <Io5Download :size="13" /> 导出为…
-      </button>
+      <button class="btn" @click="openExportMenu"><Io5Download :size="13" /> 导出为…</button>
     </div>
   </div>
 </template>
