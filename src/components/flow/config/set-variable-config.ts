@@ -18,6 +18,7 @@ import type {
   VariableAssignment,
   VariableAssignmentSource,
 } from "../../../../flow-engine/src/types";
+import { asNodeId } from "../../../../flow-engine/src/types";
 
 /** 赋值项来源的展示清单（下拉选项；value 为落库值） */
 export const ASSIGNMENT_SOURCES: ReadonlyArray<{ value: VariableAssignmentSource; label: string }> =
@@ -131,7 +132,7 @@ export function rowsToAssignments(rows: readonly AssignmentRow[]): VariableAssig
       name,
       from: row.from,
       ...(path !== "" ? { path } : {}),
-      ...(row.from === "node" && node !== "" ? { node } : {}),
+      ...(row.from === "node" && node !== "" ? { node: asNodeId(node) } : {}),
     });
   }
   return result;
