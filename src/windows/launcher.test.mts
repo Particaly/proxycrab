@@ -1,6 +1,6 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { windowsStore } from "../stores/windows";
-import { openReplay, openRequestLibrary } from "./launcher";
+import { openReplay, openRequestLibrary, openWorkflowTransfer } from "./launcher";
 
 const { backend } = vi.hoisted(() => ({ backend: { replay: vi.fn() as unknown } }));
 vi.mock("../api/runtime-backend", () => ({
@@ -13,7 +13,20 @@ afterEach(() => {
   windowsStore.windows = [];
   backend.replay = vi.fn();
   delete (backend as Record<string, unknown>).requestLibrary;
+  delete (backend as Record<string, unknown>).workflows;
   vi.unstubAllGlobals();
+});
+
+test("workflow transfer window opens once and requires the workflows capability", () => {
+  (backend as Record<string, unknown>).workflows = { listProjects: vi.fn() };
+  openWorkflowTransfer();
+  openWorkflowTransfer();
+  expect(windowsStore.windows).toHaveLength(1);
+  expect(windowsStore.windows[0]!.title).toBe("工作流导入导出");
+  windowsStore.windows = [];
+  (backend as Record<string, unknown>).workflows = undefined;
+  openWorkflowTransfer();
+  expect(windowsStore.windows).toHaveLength(0);
 });
 
 test("request library window opens once and requires the requestLibrary capability", () => {
