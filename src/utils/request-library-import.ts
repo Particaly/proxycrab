@@ -690,7 +690,8 @@ function buildEntry(input: EntryInput): RequestLibraryHarEntry {
   };
   if (input.startedDateTime !== undefined) entry.startedDateTime = input.startedDateTime;
   if (input.time !== undefined) entry.time = input.time;
-  if (input.status !== undefined && input.status >= 0) {
+  // status 0（部分导出器以 0 表示未收到响应）与负值同样视为无响应，不携带 response。
+  if (input.status !== undefined && input.status > 0) {
     entry.response = {
       status: input.status,
       statusText: input.statusText ?? "",
@@ -787,6 +788,23 @@ export function buildCurlItem(request: CurlParsedRequest): ImportRequestItem {
 /** 条目身份键：`METHOD URL`（方法大小写归一；URL 原样），用于跳过库内已有条目。 */
 export function importDedupKey(method: string, url: string): string {
   return `${method.trim().toUpperCase()} ${url}`;
+}
+
+/** 导入提交载荷（对话框 → 窗口回调；窗口负责去重执行与逐条入库）。 */
+export interface ImportSubmitPayload {
+  items: ImportRequestItem[];
+  /** 追加到每条入库条目的标签（可空）。 */
+  tags: string[];
+  /** true 时窗口按 importDedupKey 跳过库内已有条目。 */
+  skipDuplicates: boolean;
+}
+
+/** 导入执行结果（窗口回调 → 对话框展示）。 */
+export interface ImportSubmitOutcome {
+  imported: number;
+  failed: number;
+  /** 因重复被跳过的条数（仅 skipDuplicates 生效时）。 */
+  skipped: number;
 }
 
 /** 按既有键集合分流：kept 为待导入，duplicates 为与库内重复的条目（纯函数）。 */
