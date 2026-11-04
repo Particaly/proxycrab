@@ -1,4 +1,4 @@
-//! MCP 策展工具注册表与调用机制（plan Task 24 Step 3）。
+//! MCP 策展工具注册表与调用机制（plan Task 24 Step 3/4）。
 //!
 //! 每个策展工具声明其等价的管理 API 路由；`tools/call` 逐次鉴权：MCP
 //! 端点本身的档位已由 `authorize_request` 中间件按 "POST /mcp" 检查过，
@@ -8,11 +8,20 @@
 //! 超时以 `PermissionDenied` 返回并映射为 MCP `isError` 结果，不静默
 //! 降级、不挂死。策展工具清单的扩充由 Task 25 负责，本模块交付机制与
 //! 首个端到端验证载体。
+//!
+//! 边界（Step 4）：在途调用并发上限（超限快速失败不排队）、单次执行
+//! 超时（超时即丢弃执行 future，底层工作随之取消）、断连取消（工具
+//! 执行内联 await 于 HTTP 处理器，客户端断开时 axum/hyper 丢弃处理器
+//! future 即取消底层工作）、错误文案统一映射（不含文件路径与凭据）。
 
-use std::sync::Arc;
+use std::{
+    sync::{Arc, LazyLock},
+    time::Duration,
+};
 
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
+use tokio::sync::Semaphore;
 
 use crate::{
     dto::{ErrorCode, FlowRunListQuery, ManagerError},
@@ -24,6 +33,21 @@ use crate::{
 };
 
 use super::protocol::{self, RpcRequest};
+
+/// 单次工具调用（授权之后的执行段）超时上限；与既有审批窗 30s 同量级。
+pub const TOOL_CALL_TIMEOUT: Duration = Duration::from_secs(30);
+/// 同时在途的工具调用上限；超出直接拒绝（快速失败，不排队）。
+pub const MAX_IN_FLIGHT_TOOL_CALLS: usize = 4;
+
+/// 进程级在途工具调用闸：每次 `tools/call` 先取许可，断连/超时丢弃
+/// future 时随 Drop 释放。
+static TOOL_CALL_PERMITS: LazyLock<Arc<Semaphore>> =
+    LazyLock::new(|| Arc::new(Semaphore::new(MAX_IN_FLIGHT_TOOL_CALLS)));
+
+/// HTTP 端点使用的进程级在途许可闸。
+pub fn tool_call_permits() -> Arc<Semaphore> {
+    TOOL_CALL_PERMITS.clone()
+}
 
 /// 单个策展工具的静态描述：名称、说明、映射路由与入参契约。
 pub struct ToolDescriptor {
@@ -86,21 +110,33 @@ pub fn input_schema(tool: &ToolDescriptor) -> Value {
 
 /// 按名查找工具描述；未登记工具返回 `None`（`tools/call` 报未知工具）。
 pub fn lookup(name: &str) -> Option<&'static ToolDescriptor> {
-    REGISTRY.iter().find(|tool| tool.name == name)
+    if let Some(tool) = REGISTRY.iter().find(|tool| tool.name == name) {
+        return Some(tool);
+    }
+    #[cfg(test)]
+    {
+        // 测试专用长任务桩：不进入 tools/list 与生产注册表。
+        if name == "test_slow_tool" {
+            return Some(&TEST_SLOW_TOOL);
+        }
+    }
+    None
 }
 
-/// 一次 `tools/call` 的执行环境：管理状态、权限服务与调用者身份
-/// （身份已由 `authorize_request` 依据既有体系解析完成）。
-pub struct ToolCallContext<'a> {
-    pub manager: &'a Arc<dyn ProxyCrabManager>,
-    pub permissions: &'a Arc<dyn PermissionManager>,
+/// 一次 `tools/call` 的执行环境：管理状态、权限服务、调用者身份
+/// （身份已由 `authorize_request` 依据既有体系解析完成）与在途许可闸。
+#[derive(Clone)]
+pub struct ToolCallContext {
+    pub manager: Arc<dyn ProxyCrabManager>,
+    pub permissions: Arc<dyn PermissionManager>,
     pub credential: ManagementCredential,
+    pub permits: Arc<Semaphore>,
 }
 
-/// `tools/call` 全流程：名称校验 → 注册表查找 → 映射路由逐次鉴权
-/// （审批档复用既有审批窗）→ 执行 → 统一错误映射。缺名/空名维持
-/// 协议层 -32602（信封问题），其余失败一律 MCP `isError` 结果。
-pub async fn call(request: &RpcRequest, context: &ToolCallContext<'_>) -> Value {
+/// `tools/call` 全流程：名称校验 → 注册表查找 → 在途并发闸 → 映射路由
+/// 逐次鉴权（审批档复用既有审批窗）→ 带超时执行 → 统一错误映射。
+/// 缺名/空名维持协议层 -32602（信封问题），其余失败一律 MCP `isError`。
+pub async fn call(request: &RpcRequest, context: &ToolCallContext, timeout: Duration) -> Value {
     let Some(name) = request
         .params
         .get("name")
@@ -124,6 +160,15 @@ pub async fn call(request: &RpcRequest, context: &ToolCallContext<'_>) -> Value 
     if !arguments.is_object() {
         return tool_error(&request.id, name, "arguments must be an object");
     }
+    // 在途并发上限：快速失败，不排队；许可在调用结束（含断连/超时丢弃
+    // future）时随 Drop 释放。
+    let Ok(_permit) = context.permits.clone().try_acquire_owned() else {
+        return tool_error(
+            &request.id,
+            name,
+            "too many concurrent tool calls; retry later",
+        );
+    };
     // 逐次鉴权：按映射路由的 action 档位检查；审批档在此等待既有桌面
     // 审批窗（队列自带超时），拒绝/超时得到 PermissionDenied。
     let Some(action) = find_api_action(tool.route.0, tool.route.1) else {
@@ -151,12 +196,19 @@ pub async fn call(request: &RpcRequest, context: &ToolCallContext<'_>) -> Value 
     if let Some(denied) = denied {
         return tool_error(&request.id, name, &denial_reason(&denied));
     }
-    match execute(tool.name, &arguments, context.manager).await {
-        Ok(value) => protocol::success(
+    // 执行段带超时；超时即丢弃执行 future（底层工作随之取消）。整个
+    // 调用内联 await 于 HTTP 处理器，客户端断开同样以丢弃取消底层。
+    match tokio::time::timeout(timeout, execute(tool.name, &arguments, &context.manager)).await {
+        Ok(Ok(value)) => protocol::success(
             &request.id,
             json!({ "content": [{ "type": "text", "text": value.to_string() }] }),
         ),
-        Err(error) => tool_error(&request.id, name, &manager_error_reason(&error)),
+        Ok(Err(error)) => tool_error(&request.id, name, &manager_error_reason(&error)),
+        Err(_) => tool_error(
+            &request.id,
+            name,
+            &format!("execution timed out after {}s", timeout.as_secs()),
+        ),
     }
 }
 
@@ -208,6 +260,8 @@ async fn execute(
             serde_json::to_value(page)
                 .map_err(|_| ManagerError::internal("workflow run page serialization failed"))
         }
+        #[cfg(test)]
+        "test_slow_tool" => Ok(slow_tool_stub::run().await),
         // lookup 已把执行器与注册表对齐；此分支不可达。
         _ => Err(ManagerError::internal("tool has no executor")),
     }
@@ -217,6 +271,59 @@ async fn execute(
 fn parse_arguments<T: DeserializeOwned>(arguments: &Value) -> Result<T, ManagerError> {
     serde_json::from_value(arguments.clone())
         .map_err(|error| ManagerError::bad_request(format!("arguments do not match the tool schema: {error}")))
+}
+
+/// 测试专用长任务桩：验证超时与断连取消的可观察信号（STARTED 置位后
+/// 长眠，被取消时经 Drop guard 置位 CANCELLED）。
+#[cfg(test)]
+const TEST_SLOW_TOOL: ToolDescriptor = ToolDescriptor {
+    name: "test_slow_tool",
+    description: "test-only long task stub",
+    route: ("GET", "/api/flow/runs"),
+    params: &[],
+};
+
+#[cfg(test)]
+pub(crate) mod slow_tool_stub {
+    use std::{
+        sync::atomic::{AtomicBool, Ordering},
+        time::Duration,
+    };
+
+    use serde_json::{Value, json};
+
+    /// 桩已开始执行（测试等待该信号后再断开连接）。
+    pub static STARTED: AtomicBool = AtomicBool::new(false);
+    /// 桩被取消：执行 future 被丢弃（断连或超时）的可观察信号。
+    pub static CANCELLED: AtomicBool = AtomicBool::new(false);
+
+    pub fn reset() {
+        STARTED.store(false, Ordering::SeqCst);
+        CANCELLED.store(false, Ordering::SeqCst);
+    }
+
+    pub fn started() -> bool {
+        STARTED.load(Ordering::SeqCst)
+    }
+
+    pub fn cancelled() -> bool {
+        CANCELLED.load(Ordering::SeqCst)
+    }
+
+    struct CancelGuard;
+
+    impl Drop for CancelGuard {
+        fn drop(&mut self) {
+            CANCELLED.store(true, Ordering::SeqCst);
+        }
+    }
+
+    pub async fn run() -> Value {
+        STARTED.store(true, Ordering::SeqCst);
+        let _guard = CancelGuard;
+        tokio::time::sleep(Duration::from_secs(120)).await;
+        json!({ "slept": true })
+    }
 }
 
 #[cfg(test)]
@@ -234,6 +341,23 @@ mod tests {
     impl PermissionManager for AllowTools {
         async fn check_permission(&self, _: PermissionAction) -> Option<PermissionDenied> {
             None
+        }
+    }
+
+    fn test_context(manager: Arc<dyn ProxyCrabManager>, permits: Arc<Semaphore>) -> ToolCallContext {
+        ToolCallContext {
+            manager,
+            permissions: Arc::new(AllowTools),
+            credential: ManagementCredential::LocalLoopback,
+            permits,
+        }
+    }
+
+    fn slow_tool_request(id: usize) -> RpcRequest {
+        RpcRequest {
+            id: json!(id),
+            method: "tools/call".into(),
+            params: json!({ "name": "test_slow_tool", "arguments": {} }),
         }
     }
 
@@ -284,13 +408,10 @@ mod tests {
     async fn call_rejects_unknown_tools_and_unusable_arguments() {
         let app_data = tempdir().unwrap();
         let runtime = ProxyCrab::open(app_data.path(), Arc::new(LogBuffer::default())).unwrap();
-        let manager: Arc<dyn ProxyCrabManager> = MitmManager::new(runtime);
-        let permissions: Arc<dyn PermissionManager> = Arc::new(AllowTools);
-        let context = ToolCallContext {
-            manager: &manager,
-            permissions: &permissions,
-            credential: ManagementCredential::LocalLoopback,
-        };
+        let context = test_context(
+            MitmManager::new(runtime),
+            Arc::new(Semaphore::new(MAX_IN_FLIGHT_TOOL_CALLS)),
+        );
         // 缺名/空名维持协议层 -32602。
         for params in [json!({}), json!({ "name": "" })] {
             let request = RpcRequest {
@@ -299,7 +420,7 @@ mod tests {
                 params,
             };
             assert_eq!(
-                call(&request, &context).await["error"]["code"],
+                call(&request, &context, TOOL_CALL_TIMEOUT).await["error"]["code"],
                 protocol::INVALID_PARAMS
             );
         }
@@ -320,7 +441,7 @@ mod tests {
                 method: "tools/call".into(),
                 params,
             };
-            let response = call(&request, &context).await;
+            let response = call(&request, &context, TOOL_CALL_TIMEOUT).await;
             assert_eq!(response["result"]["isError"], true, "{reason}");
             assert!(response.get("error").is_none());
             assert!(
@@ -330,5 +451,84 @@ mod tests {
                     .contains(reason)
             );
         }
+    }
+
+    #[tokio::test]
+    async fn tool_execution_times_out_and_cancels_the_underlying_work() {
+        let app_data = tempdir().unwrap();
+        let runtime = ProxyCrab::open(app_data.path(), Arc::new(LogBuffer::default())).unwrap();
+        let context = test_context(
+            MitmManager::new(runtime),
+            Arc::new(Semaphore::new(MAX_IN_FLIGHT_TOOL_CALLS)),
+        );
+        slow_tool_stub::reset();
+        let response = call(
+            &slow_tool_request(3),
+            &context,
+            Duration::from_millis(50),
+        )
+        .await;
+
+        assert!(slow_tool_stub::started(), "stub must have started running");
+        assert_eq!(response["result"]["isError"], true);
+        assert!(
+            response["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("timed out")
+        );
+        // 超时丢弃执行 future：桩的 Drop guard 落地即底层被取消。
+        assert!(slow_tool_stub::cancelled());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn in_flight_tool_calls_beyond_the_limit_fail_fast() {
+        let app_data = tempdir().unwrap();
+        let runtime = ProxyCrab::open(app_data.path(), Arc::new(LogBuffer::default())).unwrap();
+        let context = test_context(
+            MitmManager::new(runtime),
+            Arc::new(Semaphore::new(MAX_IN_FLIGHT_TOOL_CALLS)),
+        );
+        slow_tool_stub::reset();
+        let tasks = (0..MAX_IN_FLIGHT_TOOL_CALLS)
+            .map(|id| {
+                let context = context.clone();
+                tokio::spawn(async move { call(&slow_tool_request(id), &context, TOOL_CALL_TIMEOUT).await })
+            })
+            .collect::<Vec<_>>();
+        for _ in 0..500 {
+            if context.permits.available_permits() == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            context.permits.available_permits(),
+            0,
+            "in-flight calls must hold every permit"
+        );
+        // 超限的调用立刻被拒（快速失败，不排队）。
+        let overflow = call(&slow_tool_request(99), &context, TOOL_CALL_TIMEOUT).await;
+        assert_eq!(overflow["result"]["isError"], true);
+        assert!(
+            overflow["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("too many concurrent tool calls")
+        );
+        for task in tasks {
+            task.abort();
+        }
+        for _ in 0..500 {
+            if context.permits.available_permits() == MAX_IN_FLIGHT_TOOL_CALLS {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            context.permits.available_permits(),
+            MAX_IN_FLIGHT_TOOL_CALLS,
+            "permits must be released once in-flight calls end"
+        );
     }
 }

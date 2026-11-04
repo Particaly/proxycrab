@@ -2267,9 +2267,10 @@ async fn mcp_endpoint(
         }
     };
     let context = mcp::tools::ToolCallContext {
-        manager: &manager,
-        permissions: &permissions,
+        manager,
+        permissions,
         credential,
+        permits: mcp::tools::tool_call_permits(),
     };
     let body = match axum::body::to_bytes(request.into_body(), mcp::MAX_MESSAGE_BYTES).await {
         Ok(bytes) => bytes,
@@ -2285,7 +2286,7 @@ async fn mcp_endpoint(
                 .into_response();
         }
     };
-    match mcp::respond(&body, &context).await {
+    match mcp::respond(&body, &context, mcp::tools::TOOL_CALL_TIMEOUT).await {
         Some(envelope) => (StatusCode::OK, Json(envelope)).into_response(),
         None => StatusCode::ACCEPTED.into_response(),
     }
@@ -2447,6 +2448,7 @@ mod tests {
         http::{
             ApiError, body_response, change_for_request, router, router_with_changes,
             secured_router, spawn_flow_run_change_bridge, spawn_proxy_status_change_bridge,
+            start_http_server,
         },
         manager::{MitmManager, ProxyCrabManager},
         permission::{ManagementCredential, PermissionAction, PermissionDenied, PermissionManager},
@@ -5954,6 +5956,55 @@ mod tests {
         assert_eq!(payload["result"]["isError"], true);
         let text = payload["result"]["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("permission denied"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mcp_tools_call_cancels_the_underlying_tool_on_client_disconnect() {
+        let app_data = tempdir().unwrap();
+        let runtime = ProxyCrab::open(app_data.path(), Arc::new(LogBuffer::default())).unwrap();
+        let mut config = runtime.config();
+        config.api_port = unused_port();
+        runtime.replace_config(config).await.unwrap();
+        let handle = start_http_server(MitmManager::new(runtime), allow_all())
+            .await
+            .unwrap();
+        crate::mcp::tools::slow_tool_stub::reset();
+        let body =
+            br#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"test_slow_tool","arguments":{}}}"#;
+        let mut stream =
+            std::net::TcpStream::connect(("127.0.0.1", handle.port)).unwrap();
+        write!(
+            stream,
+            "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+            handle.port,
+            body.len()
+        )
+        .unwrap();
+        stream.write_all(body).unwrap();
+        stream.flush().unwrap();
+        // 等长任务桩真正开始执行，再断开连接。
+        for _ in 0..500 {
+            if crate::mcp::tools::slow_tool_stub::started() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            crate::mcp::tools::slow_tool_stub::started(),
+            "stub tool must start before the disconnect"
+        );
+        drop(stream);
+        for _ in 0..500 {
+            if crate::mcp::tools::slow_tool_stub::cancelled() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            crate::mcp::tools::slow_tool_stub::cancelled(),
+            "tool execution must be cancelled once the client disconnects"
+        );
+        handle.shutdown().await;
     }
 
     #[tokio::test]
