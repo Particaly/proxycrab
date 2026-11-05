@@ -54,8 +54,8 @@
 
 - [x] **Step 1: 4 命令**：`list_flow_runs(query: FlowRunListQuery)` → `workflow_runs`；`get_flow_run_detail(runId)` → `workflow_run_detail`（返回 `FlowRunDetailPayload`，含逐节点 checkpoint）；`trigger_flow_run(request: FlowRunTriggerRequest)` → `trigger_workflow_run`；`cancel_flow_run(runId)` → `cancel_workflow_run`。
 - [x] **Step 2: 错误码保真**：`RunTriggerError` 的映射已在 manager 内完成（`409 proxy_not_running` / `404 not_found` / `409 conflict` / `422 workflow_graph_invalid` /「工作流运行记录库不可用」），命令层原样透传 `ManagerError`，前端已有对应文案。
-- [ ] **Step 3: 进度事件验证（预期零代码）**：桌面触发一次运行，确认运行记录列表 / 打开中的运行详情 / 画布运行锁定随 `FlowRuns` 变更事件刷新（链路：`FlowRunManager` 广播 → 管理层桥接 `HttpApiChange` → 既有 http→Tauri 桥）。
-- [ ] **Step 4: 降级登记（决策 2）**：管理 HTTP 服务启动失败时桌面桥不存在，进度不实时、列表手动刷新兜底——写入 `docs/runtime-notes.md`（Task 6 汇总落盘，此处先验证行为）。
+- [ ] **Step 3: 进度事件验证（预期零代码）**：桌面触发一次运行，确认运行记录列表 / 打开中的运行详情 / 画布运行锁定随 `FlowRuns` 变更事件刷新（链路：`FlowRunManager` 广播 → 管理层桥接 `HttpApiChange` → 既有 http→Tauri 桥）。（blocked：链路已代码级核对存在——`src-tauri/src/lib.rs` 事件桥 `http.subscribe_changes()` → `proxycrab://http-api-change` ↔ 前端 `subscribeChanges`；实时刷新/画布锁定需真人 GUI 触发真实运行，无法自动化，归入 Task 7 Step 2 手工清单）
+- [x] **Step 4: 降级登记（决策 2）**：管理 HTTP 服务启动失败时桌面桥不存在，进度不实时、列表手动刷新兜底——写入 `docs/runtime-notes.md`（Task 6 汇总落盘，此处先验证行为）。（已登记 + 代码级行为核对：22 个 flow 命令直调 manager 不经 HTTP，事件桥仅在 HTTP 服务启动成功时建立；活体降级演练归入 Task 7 Step 2 手工清单）
 
 ### Task 3: 脚本试跑命令
 
@@ -63,7 +63,7 @@
 - Modify: `src-tauri/src/lib.rs`
 
 - [x] **Step 1: `flow_script_dry_run(request: FlowScriptDryRunRequest)`** → trait `flow_script_dry_run`，返回 `ScriptDryRunOutput`（`{ok,value,warnings}` / `{ok:false,error:{kind,message}}`，kind `syntax|blocked|runtime|timeout|invalid-return`）。编辑器「试跑」入口随能力位 `flowScriptDryRun` 自动出现。
-- [ ] **Step 2: 验证**：编辑器内对一个前置/后置脚本试跑成功与超时两类路径。
+- [ ] **Step 2: 验证**：编辑器内对一个前置/后置脚本试跑成功与超时两类路径。（blocked：需真人 GUI 操作编辑器试跑入口走两路径；命令映射与错误分类形状已代码级核对并经单测锁定，归入 Task 7 Step 2 手工清单）
 
 ---
 
@@ -88,7 +88,7 @@
 - [x] **Step 1: mgr 工具计数**：复用/提取 `POST /mcp` `tools/list` 的档位过滤逻辑，新增 trait 方法 `mcp_tool_count() -> ManagerResult<usize>`（当前档位下 `tools/list` 会出现的工具数；唯一实现方 `MitmManager`，加方法无下游破裂面）。
 - [x] **Step 2: 桌面命令**：`get_mcp_tiers` / `replace_mcp_tiers(tiers: McpTiers)` / `list_mcp_audit(limit)` → trait `mcp_tiers` / `replace_mcp_tiers` / `mcp_audit`（Rust 返回 `Vec<McpAuditEntry>`，前端映射层包成 `{entries}` 对齐 `McpAuditPage`）；`get_mcp_tool_count` → `mcp_tool_count`。
 - [x] **Step 3: 前端映射**：`tauri-backend.ts` 挂 `mcpTiers`（`get` / `save` / `toolCount`）与 `mcpAudit`（`list`）；注意 CLI 的 `toolCount` 走裸 JSON-RPC fetch，桌面改为直调命令。
-- [ ] **Step 4: 验证**：设置窗口出现「MCP 暴露」（档位读写、工具数随档位变化）与「MCP 调用审计」分区；关闭执行档后工具数下降。
+- [ ] **Step 4: 验证**：设置窗口出现「MCP 暴露」（档位读写、工具数随档位变化）与「MCP 调用审计」分区；关闭执行档后工具数下降。（blocked：设置窗口两分区需真人 GUI 交互验证；档位/审计/工具数命令映射已代码级核对并经单测锁定，归入 Task 7 Step 2 手工清单）
 - [x] **Step 5: 门禁**：Rust + 前端门禁同 Task 1 / Task 4。
 
 ---
@@ -100,19 +100,19 @@
 **Files:**
 - Modify: `docs/backend-api.md`、`docs/runtime-notes.md`、`docs/flow-acceptance.md`、`README.md`
 
-- [ ] **Step 1: `backend-api.md`**：更新「Workflow projects and definitions」末尾 "they do not yet publish UI change events" 过期备注（编辑器窗口已落地；CRUD 两端均不发变更事件，决策 5）；「Shared management contract」补充 flow 域桌面命令的信任面说明（对齐既有 "Direct Tauri calls are trusted" 叙述）。
-- [ ] **Step 2: `runtime-notes.md`**：登记决策 2 的进度事件降级（HTTP 服务未启动 → 桌面无实时进度，手动刷新兜底）。
-- [ ] **Step 3: `flow-acceptance.md`**：更新「通用说明」中「运行记录/运行画布窗口属 Task 22（未完成）」的过期表述；补桌面端操作路径（编辑器「运行」按钮 / 运行记录窗口），A-01 等场景标注桌面入口可用。
-- [ ] **Step 4: `README.md`**：「请求工作流（ReqFlow 复刻）」段落收口（桌面入口可用；删除/调整「详细文档后续补充」占位）；核对「桌面操作与远程浏览器管理」能力差异表。
-- [ ] **Step 5: Skill 面核对（硬约定检查项）**：确认 `skills/proxycrab/` 文档/脚本/评测无过期引用（桌面接线不改 HTTP/Skill 契约，预期零改动）。
+- [x] **Step 1: `backend-api.md`**：更新「Workflow projects and definitions」末尾 "they do not yet publish UI change events" 过期备注（编辑器窗口已落地；CRUD 两端均不发变更事件，决策 5）；「Shared management contract」补充 flow 域桌面命令的信任面说明（对齐既有 "Direct Tauri calls are trusted" 叙述）。
+- [x] **Step 2: `runtime-notes.md`**：登记决策 2 的进度事件降级（HTTP 服务未启动 → 桌面无实时进度，手动刷新兜底）。
+- [x] **Step 3: `flow-acceptance.md`**：更新「通用说明」中「运行记录/运行画布窗口属 Task 22（未完成）」的过期表述；补桌面端操作路径（编辑器「运行」按钮 / 运行记录窗口），A-01 等场景标注桌面入口可用。
+- [x] **Step 4: `README.md`**：「请求工作流（ReqFlow 复刻）」段落收口（桌面入口可用；删除/调整「详细文档后续补充」占位）；核对「桌面操作与远程浏览器管理」能力差异表。
+- [x] **Step 5: Skill 面核对（硬约定检查项）**：确认 `skills/proxycrab/` 文档/脚本/评测无过期引用（桌面接线不改 HTTP/Skill 契约，预期零改动）。
 
 ### Task 7: 门禁与桌面端验收
 
 **Files:**
 - Create: `docs/flow-acceptance.md` 内增补桌面场景（并入 Task 6 Step 3 亦可）
 
-- [ ] **Step 1: 全量门禁**：`cargo check --workspace` / `cargo clippy --workspace --all-targets -- -D warnings` / `cargo test --workspace` / `pnpm test:unit` / `pnpm build` / `pnpm format` 全绿。
-- [ ] **Step 2: 桌面手工场景**（`pnpm tauri dev`，代理运行中 + 活动 Session 有目标流量）：
+- [x] **Step 1: 全量门禁**：`cargo check --workspace` / `cargo clippy --workspace --all-targets -- -D warnings` / `cargo test --workspace` / `pnpm test:unit` / `pnpm build` / `pnpm format` 全绿。
+- [ ] **Step 2: 桌面手工场景**（`pnpm tauri dev`，代理运行中 + 活动 Session 有目标流量）：（blocked：6 组场景需真人桌面 GUI + 真实代理流量/原生文件对话框，agent 无法驱动原生 WebView 窗口。已完成的代码级替代核对：22 个 flow 命令全部注册 `invoke_handler` 且签名与前端映射逐一核对一致、事件桥链路存在、降级路径符合决策 2、全部自动化门禁绿。6 组场景明细见收口 agent 报告，需人工在桌面执行）
   - 新建项目 → 新建流程 → 抓包「存入请求库」→ 画布拖入请求节点选条目 → 连线 保存 → 「校验」通过；
   - 编辑器「运行」→ Session 新增 `ProxyCrabRequest` capture → 运行记录 / 运行详情（运行画布）核对逐节点状态与耗时；运行中画布锁定、取消按钮生效；
   - 脚本试跑成功与错误分类文案正确；
