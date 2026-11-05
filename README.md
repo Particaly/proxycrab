@@ -136,7 +136,7 @@ return data and data.code or nil
 | 桌面应用 | macOS ARM64（DMG）、Linux x64（AppImage）、Windows x64（EXE / MSI） |
 | CLI | Linux x64 / ARM64、macOS ARM64、Windows x64 |
 
-部分宿主能力有所区别：桌面端提供人工审批和 Skill 路径管理；CLI 提供允许/拒绝权限配置，并通过本地命令安装 Skill。
+部分宿主能力有所区别：桌面端提供人工审批、Skill 路径管理，以及 Windows 专属的系统代理自动接管与 CA 一键安装；CLI 提供允许/拒绝权限配置，并通过本地命令安装 Skill。
 
 ### 请求工作流（ReqFlow 复刻）
 
@@ -170,12 +170,14 @@ return data and data.code or nil
 ### 桌面应用
 
 1. 启动 ProxyCrab，创建一个 Session 并将其设为活跃。
-2. 打开“连接”中的“证书配置”，下载 CA；需要抓取 HTTPS 时，在被调试设备上安装并信任它。
-3. 将设备或应用的 HTTP/HTTPS 代理指向 ProxyCrab 所在机器，默认代理端口为 `8089`。
+2. 打开“连接”中的“证书配置”，下载 CA；需要抓取 HTTPS 时，在被调试设备上安装并信任它。Windows 桌面端支持一键安装到本机受信任的根证书存储。
+3. 将设备或应用的 HTTP/HTTPS 代理指向 ProxyCrab 所在机器，默认代理端口为 `8089`。Windows 桌面端启动代理时会自动接管系统代理，并临时清空“请勿对以下列开头的地址使用代理服务器”旁路列表（内网 IP 请求不再被浏览器绕过），停止或退出时一并恢复原设置。
 4. 在 ProxyCrab 中启动代理。
 5. 发起请求，在 Session 中查看捕获结果。
 
-使用 Clash 接入时，可以在“代理连接”页面选择本机 IP，开启并导入订阅。
+需要抓包流量继续走已有的 Clash 时，在“连接”中的“上游代理”填入 Clash 的 mixed 端口（如 `127.0.0.1:7890`），全部出站流量会先经抓包再交给 Clash 按原有规则分流，Clash 侧零配置。
+
+使用 Clash 接入被调试设备时，可以在“代理连接”页面选择本机 IP，开启并导入订阅。
 
 桌面应用启动时代理默认停止。没有活跃 Session 时，流量直接转发；选择分流脚本后，由脚本决定是否捕获。
 
@@ -203,6 +205,8 @@ proxycrab-cli run \
   --api-port 18089
 ```
 
+`--upstream-proxy host:port`（或环境变量 `PROXYCRAB_UPSTREAM_PROXY`）可让全部出站流量经指定 HTTP 代理转发；传空值强制直连。
+
 远程访问可使用 SSH 端口转发，或通过配置了认证和 TLS 的反向代理访问。默认 HTTP 连接不加密，应在可信网络中使用。
 
 ### 配置 Agent Skill
@@ -222,6 +226,8 @@ proxycrab-cli install-skill --parent ~/.agents/skills
 ## 使用说明
 
 - HTTPS 解密需要被调试客户端信任 ProxyCrab CA；使用证书固定的客户端可能无法直接捕获。
+- Windows 桌面端的系统代理接管与一键装证书仅在 Windows 上生效；应用异常退出后，下次启动会自动恢复被接管的系统代理设置。
+- 上游代理作用于 ProxyCrab 的全部出站流量（含未捕获直转发与请求重放），需要目标代理服务可用，否则出站请求会失败。
 - 读取时脱敏需要配置脚本，仅作用于支持的数据读取范围；原始抓包与转发内容保持不变。
 - HTTP Body 默认流式处理；Lua 调用 Body 读取方法时，需要等待完整内容，不适合直接读取无限流。
 - HAR 导出保留 HTTP 记录，不包含 WebSocket 消息历史。

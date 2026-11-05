@@ -60,7 +60,7 @@ use body::{
     BoxError, BypassTransfer, DeferredBody, PacedBody, ProxyBody, PumpOutcome, PumpResult,
     TrackedBody, boxed_full, pump_body,
 };
-pub(crate) use upstream::UpstreamClient;
+pub(crate) use upstream::{UpstreamClient, connect_target};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const UPSTREAM_TIMEOUT: Duration = Duration::from_secs(60);

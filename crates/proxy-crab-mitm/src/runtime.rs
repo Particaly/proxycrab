@@ -86,6 +86,7 @@ impl ProxyCrab {
         assets.file_mutation = workspace.file_mutation.clone();
         let authority = Arc::new(CertificateAuthority::load_or_generate(workspace.root())?);
         let bypass = BypassStore::open(workspace.root())?;
+        let upstream_proxy = workspace.config().upstream_proxy.clone();
         Ok(Arc::new(Self {
             workspace,
             assets,
@@ -96,7 +97,7 @@ impl ProxyCrab {
             view_updates: Mutex::new(()),
             log_buffer,
             breakpoints: Arc::new(BreakpointRegistry::default()),
-            upstream: RwLock::new(UpstreamClient::new()),
+            upstream: RwLock::new(UpstreamClient::new(upstream_proxy)),
             proxy: ProxyController::new(),
         }))
     }
@@ -137,11 +138,16 @@ impl ProxyCrab {
         if let Some(name) = &config.routing_script_name {
             self.workspace.get_script(ScriptKind::Routing, name)?;
         }
+        if let Some(server) = &config.upstream_proxy {
+            crate::model::parse_upstream_proxy(server)
+                .map_err(crate::error::Error::InvalidArgument)?;
+        }
         self.proxy
             .mutate_configuration(self, || {
                 let current = self.config();
                 let changed = current.active_session_id != config.active_session_id
-                    || current.routing_script_name != config.routing_script_name;
+                    || current.routing_script_name != config.routing_script_name
+                    || current.upstream_proxy != config.upstream_proxy;
                 Ok((self.workspace.replace_config(config)?, changed))
             })
             .await
@@ -1034,7 +1040,13 @@ impl ProxyCrab {
         *self
             .upstream
             .write()
-            .expect("upstream client lock poisoned") = UpstreamClient::new();
+            .expect("upstream client lock poisoned") =
+            UpstreamClient::new(self.workspace.config().upstream_proxy.clone());
+    }
+
+    /// 按当前工作区配置重建上游客户端；CLI 启动参数覆盖配置后调用。
+    pub fn refresh_upstream_client(&self) {
+        self.reset_upstream_client();
     }
 
     pub async fn start_proxy(self: &Arc<Self>) -> Result<ProxyStatus> {

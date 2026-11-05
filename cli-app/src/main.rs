@@ -65,6 +65,11 @@ struct RunArgs {
     #[arg(long, env = "PROXYCRAB_API_PORT")]
     api_port: Option<u16>,
 
+    /// Route all outbound traffic through this HTTP proxy (host:port) for this
+    /// run only; pass an empty value to force direct connections.
+    #[arg(long, value_name = "HOST:PORT", env = "PROXYCRAB_UPSTREAM_PROXY")]
+    upstream_proxy: Option<String>,
+
     /// Use this UI access key instead of generating a random token for this run.
     #[arg(long, value_name = "KEY", value_parser = parse_ui_key)]
     ui_key: Option<String>,
@@ -123,10 +128,22 @@ async fn run(args: RunArgs) -> Result<()> {
     let runtime = ProxyCrab::open(&workspace, log_buffer)
         .with_context(|| format!("open workspace {}", workspace.display()))?;
 
+    let upstream_proxy = args
+        .upstream_proxy
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if let Some(server) = upstream_proxy {
+        proxy_crab_mitm::model::parse_upstream_proxy(server)
+            .map_err(|message| anyhow::anyhow!("{message}"))?;
+    }
+
     // Command-line flags and environment variables override the workspace
     // config in memory only; the config file on disk is left untouched.
-    let has_overrides =
-        args.proxy_host.is_some() || args.proxy_port.is_some() || args.api_port.is_some();
+    let has_overrides = args.proxy_host.is_some()
+        || args.proxy_port.is_some()
+        || args.api_port.is_some()
+        || upstream_proxy.is_some();
     if has_overrides {
         runtime.workspace().override_config_in_memory(|config| {
             if let Some(host) = &args.proxy_host {
@@ -138,7 +155,10 @@ async fn run(args: RunArgs) -> Result<()> {
             if let Some(port) = args.api_port {
                 config.api_port = port;
             }
+            config.upstream_proxy = upstream_proxy.map(str::to_owned);
         });
+        // 上游客户端在打开工作区时创建，启动参数覆盖后需按新配置重建。
+        runtime.refresh_upstream_client();
     }
 
     let manager = MitmManager::new(runtime);

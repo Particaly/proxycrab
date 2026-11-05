@@ -8,6 +8,14 @@ Use a dedicated active Session when possible. Record the Session ID in notes and
 active-Session changes cannot silently redirect reads. Remember that direct HTTP routing runs per
 request, while a CONNECT result pins one Session for the whole tunnel.
 
+When capture traffic must keep using an existing Clash (proxy chains, airport rules), suggest the
+user set the workspace upstream proxy to the local Clash mixed port (for example
+`127.0.0.1:7890`) in the desktop 连接 → 3.上游代理 tab, or restart the CLI with
+`--upstream-proxy 127.0.0.1:7890`. All outbound traffic (captured, bypassed, and replays) then
+exits through Clash with no Clash-side rules, while captures stay unchanged. If outbound requests
+start failing, check that the upstream proxy service is actually listening before touching other
+configuration.
+
 Start with the narrowest stable discriminator available:
 
 1. an exact or distinctive URI substring;

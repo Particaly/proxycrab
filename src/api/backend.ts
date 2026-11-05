@@ -10,6 +10,7 @@ import type {
   BreakpointSummary,
   BypassPage,
   BypassQuery,
+  CertificateInstallState,
   CertificateResponse,
   ClashConfig,
   ClashSubscriptionState,
@@ -85,6 +86,7 @@ import type {
   SessionViewPayload,
   SystemLogEntry,
   SystemLogsQuery,
+  SystemProxyStatus,
   SkillManagerState,
   SkillSaveResult,
   UpdateScriptRequest,
@@ -115,6 +117,21 @@ export interface HostOperations {
   openDevtools?(): Promise<void>;
   replaceConfig(config: AppConfig): Promise<AppConfig>;
   regenerateCertificate(): Promise<CertificateResponse>;
+  /**
+   * Windows 桌面端系统代理接管：代理启停时自动设置/恢复系统代理。
+   * 未实现（CLI）或平台不支持时 UI 不展示对应状态。
+   */
+  readonly systemProxy?: {
+    status(): Promise<SystemProxyStatus>;
+  };
+  /**
+   * Windows 桌面端 CA 一键安装到当前用户受信任的根证书存储。
+   * 未实现（CLI）时 UI 不展示安装入口。
+   */
+  readonly certificateInstall?: {
+    status(): Promise<CertificateInstallState>;
+    install(): Promise<void>;
+  };
 }
 
 /**

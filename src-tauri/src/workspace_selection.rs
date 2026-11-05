@@ -53,6 +53,11 @@ impl WorkspaceSelection {
         &self.current_path
     }
 
+    /// 应用数据目录，宿主级状态（如系统代理备份）存放位置。
+    pub fn app_data_dir(&self) -> &Path {
+        &self.app_data_dir
+    }
+
     pub fn paths(&self) -> Result<WorkspacePaths, ManagerError> {
         Ok(WorkspacePaths {
             current_path: self.current_path.to_string_lossy().into_owned(),

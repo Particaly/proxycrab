@@ -21,6 +21,9 @@ pub struct AppConfig {
     pub routing_script_name: Option<String>,
     #[serde(default)]
     pub active_session_id: Option<u64>,
+    /// 出站上游代理（`host:port`，HTTP CONNECT），None 表示直连。
+    #[serde(default)]
+    pub upstream_proxy: Option<String>,
 }
 
 impl Default for AppConfig {
@@ -31,6 +34,7 @@ impl Default for AppConfig {
             api_port: default_api_port(),
             routing_script_name: None,
             active_session_id: None,
+            upstream_proxy: None,
         }
     }
 }
@@ -45,6 +49,38 @@ const fn default_proxy_port() -> u16 {
 
 const fn default_api_port() -> u16 {
     18089
+}
+
+/// 解析 `host:port` 或 `[ipv6]:port` 形式的上游代理地址，返回拆分后的主机与端口。
+/// 返回 `Err` 时携带可直接展示的错误说明。
+pub fn parse_upstream_proxy(raw: &str) -> Result<(String, u16), String> {
+    let raw = raw.trim();
+    let (host, port_text) = if let Some(rest) = raw.strip_prefix('[') {
+        match rest.split_once(']') {
+            Some((inner, tail)) => {
+                if !tail.starts_with(':') {
+                    return Err("上游代理地址缺少端口：应为 [ipv6]:port".into());
+                }
+                (inner, &tail[1..])
+            }
+            None => return Err("上游代理地址格式无效：IPv6 需写成 [ipv6]:port".into()),
+        }
+    } else {
+        match raw.rsplit_once(':') {
+            Some((host, port)) => (host, port),
+            None => return Err("上游代理地址缺少端口：应为 host:port".into()),
+        }
+    };
+    if host.is_empty() {
+        return Err("上游代理地址缺少主机".into());
+    }
+    let port: u16 = port_text
+        .parse()
+        .map_err(|_| format!("上游代理端口无效：{port_text}"))?;
+    if port == 0 {
+        return Err("上游代理端口不能为 0".into());
+    }
+    Ok((host.to_owned(), port))
 }
 
 pub fn default_columns() -> Vec<Column> {
@@ -548,6 +584,55 @@ pub struct SystemLogEntry {
 
 #[cfg(test)]
 mod tests {
+    use super::parse_upstream_proxy;
+
+    #[test]
+    fn parse_upstream_proxy_accepts_host_port_forms() {
+        assert_eq!(
+            parse_upstream_proxy("127.0.0.1:7890"),
+            Ok(("127.0.0.1".into(), 7890))
+        );
+        assert_eq!(
+            parse_upstream_proxy(" [::1]:7890 "),
+            Ok(("::1".into(), 7890))
+        );
+        assert_eq!(
+            parse_upstream_proxy("proxy.internal:8080"),
+            Ok(("proxy.internal".into(), 8080))
+        );
+    }
+
+    #[test]
+    fn parse_upstream_proxy_rejects_invalid_values() {
+        assert!(parse_upstream_proxy("").is_err());
+        assert!(parse_upstream_proxy("127.0.0.1").is_err());
+        assert!(parse_upstream_proxy("127.0.0.1:").is_err());
+        assert!(parse_upstream_proxy("127.0.0.1:not-a-port").is_err());
+        assert!(parse_upstream_proxy("127.0.0.1:0").is_err());
+        assert!(parse_upstream_proxy(":7890").is_err());
+        assert!(parse_upstream_proxy("[::1]7890").is_err());
+    }
+
+    #[test]
+    fn app_config_roundtrips_upstream_proxy() {
+        let mut config = AppConfig::default();
+        assert_eq!(config.upstream_proxy, None);
+        let json = serde_json::to_string(&config).unwrap();
+        let restored: AppConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.upstream_proxy, None);
+
+        config.upstream_proxy = Some("127.0.0.1:7890".into());
+        let json = serde_json::to_string(&config).unwrap();
+        let restored: AppConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.upstream_proxy.as_deref(), Some("127.0.0.1:7890"));
+
+        // 旧配置文件不含该字段时反序列化为 None。
+        let legacy: AppConfig =
+            serde_json::from_str(r#"{"proxy_host":"0.0.0.0","proxy_port":8089,"api_port":18089}"#)
+                .unwrap();
+        assert_eq!(legacy.upstream_proxy, None);
+    }
+
     #[test]
     fn display_name_only_reads_the_leading_single_line_comment_header() {
         for (source, expected) in [

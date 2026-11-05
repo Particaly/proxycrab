@@ -105,6 +105,13 @@ export function createTauriBackend(): Backend {
       openDevtools: () => call("open_devtools"),
       replaceConfig: (config: AppConfig) => call("replace_config", { config }),
       regenerateCertificate: () => call("regenerate_certificate"),
+      systemProxy: {
+        status: () => call("get_system_proxy_status"),
+      },
+      certificateInstall: {
+        status: () => call("get_certificate_install_status"),
+        install: () => call("install_certificate"),
+      },
     },
     fetchBody: async (target, side, maxSize = DEFAULT_BODY_MAX_SIZE) => {
       if (!Number.isSafeInteger(maxSize) || maxSize <= 0 || maxSize > UI_BODY_MAX_SIZE) {

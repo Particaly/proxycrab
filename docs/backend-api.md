@@ -1050,6 +1050,12 @@ workspace version.
 An active ID that references a missing Session is cleared and persisted when the workspace opens.
 
 Each workspace has an independent generated CA. Missing or corrupt CA files are regenerated with a warning, the per-host certificate cache is bounded, and the CA private key is restricted to owner-only permissions on macOS/Unix. Regeneration is serialized with proxy start/stop and rejected while the proxy is running.
+Workspace configuration also carries `upstream_proxy` (an optional `host:port` HTTP proxy that all
+outbound traffic is tunneled through). It is host-level configuration, like the proxy port: the
+desktop edits it through the trusted `replace_config` command and the CLI through
+`--upstream-proxy`; there is no management HTTP route for changing it. The Windows desktop
+additionally takes over the OS system proxy while the capture proxy runs and offers one-click CA
+installation via `certutil`; neither is exposed over HTTP.
 `GET /ca.crt` on the management HTTP service returns the current public CA certificate as raw PEM,
 with `Content-Type: application/x-x509-ca-cert`, download filename `proxycrab-ca.crt`, and
 `Cache-Control: no-store`. It requires no Bearer key, token, running proxy, or active Session, and

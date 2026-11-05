@@ -43,3 +43,8 @@ tempfile.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
+
+[target."cfg(windows)".dependencies]
+sha1 = "0.11.0"
+windows = { version = "0.62", features = ["Win32_Networking_WinInet", "Win32_Foundation"] }
+winreg = "0.56.0"

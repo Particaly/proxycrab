@@ -1,8 +1,10 @@
 mod body_download;
+mod cert_install;
 mod file_writer;
 mod http_permissions;
 mod share_ui;
 mod skill_manager;
+mod system_proxy;
 mod workspace_selection;
 
 use std::sync::{Arc, Mutex, RwLock};
@@ -284,12 +286,43 @@ fn list_local_ips() -> Vec<String> {
 
 #[tauri::command]
 async fn start_proxy(state: State<'_, BackendState>) -> Result<ProxyStatus, ManagerError> {
-    state.manager().start_proxy().await
+    let status = state.manager().start_proxy().await?;
+    if let ProxyStatus::Running { port, .. } = &status
+        && let Err(error) = system_proxy::enable(state.workspace.app_data_dir(), *port)
+    {
+        tracing::warn!("failed to take over the system proxy: {error}");
+    }
+    Ok(status)
 }
 
 #[tauri::command]
 async fn stop_proxy(state: State<'_, BackendState>) -> Result<ProxyStatus, ManagerError> {
-    state.manager().stop_proxy().await
+    let status = state.manager().stop_proxy().await?;
+    if let Err(error) = system_proxy::restore(state.workspace.app_data_dir()) {
+        tracing::warn!("failed to restore the system proxy: {error}");
+    }
+    Ok(status)
+}
+
+/// 当前系统代理接管状态；非 Windows 平台 `supported` 为 false。
+#[tauri::command]
+fn get_system_proxy_status(state: State<'_, BackendState>) -> system_proxy::SystemProxyStatus {
+    system_proxy::status(state.workspace.app_data_dir())
+}
+
+/// CA 在当前系统证书存储中的安装状态。
+#[tauri::command]
+async fn get_certificate_install_status(
+    state: State<'_, BackendState>,
+) -> Result<cert_install::CertificateInstallState, ManagerError> {
+    let certificate = state.manager().certificate().await?;
+    Ok(cert_install::install_status(&certificate.pem))
+}
+
+/// 一键安装 CA 到当前用户受信任的根证书存储；系统会弹出一次确认框。
+#[tauri::command]
+fn install_certificate(state: State<'_, BackendState>) -> Result<(), String> {
+    cert_install::install(&state.workspace.current_path().join("proxy-crab-ca.crt"))
 }
 
 #[tauri::command]
@@ -1158,6 +1191,8 @@ pub fn run() {
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir()?;
             let workspace = WorkspaceSelection::open(app_data_dir.clone())?;
+            // 上次进程异常退出可能留下系统代理接管备份，启动时静默恢复。
+            system_proxy::recover_if_needed(&app_data_dir);
             let log_buffer = Arc::new(LogBuffer::default());
             let _ = tracing_subscriber::registry()
                 .with(
@@ -1363,6 +1398,9 @@ pub fn run() {
             save_clash_config,
             reset_clash_config,
             regenerate_certificate,
+            get_system_proxy_status,
+            get_certificate_install_status,
+            install_certificate,
             file_writer::save_file_open,
             file_writer::save_file_append,
             file_writer::save_file_finish,
@@ -1408,12 +1446,16 @@ pub fn run() {
                 .lock()
                 .expect("HTTP service lock poisoned")
                 .take();
+            let app_data_dir = state.workspace.app_data_dir().to_path_buf();
             tauri::async_runtime::block_on(async move {
                 let _ = manager.stop_proxy().await;
                 if let Some(http) = http {
                     http.shutdown().await;
                 }
             });
+            if let Err(error) = system_proxy::restore(&app_data_dir) {
+                tracing::warn!("failed to restore the system proxy on exit: {error}");
+            }
         }
     });
 }

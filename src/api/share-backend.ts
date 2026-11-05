@@ -91,6 +91,7 @@ export function createShareBackend(
     api_port: bootstrap.api_port,
     routing_script_name: null,
     active_session_id: bootstrap.session.id,
+    upstream_proxy: null,
   };
   // 分享后端只实现 /share-api 暴露的只读方法：未实现的方法（replay、Session 写入、
   // 审批等）保持 undefined，UI 直接以方法是否存在决定入口是否展示。

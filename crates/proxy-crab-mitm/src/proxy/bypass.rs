@@ -52,29 +52,22 @@ pub(super) fn handle_bypass_connect(
                 return;
             }
         };
-        let mut upstream =
-            match timeout(CONNECT_TIMEOUT, TcpStream::connect(authority.as_str())).await {
-                Ok(Ok(upstream)) => upstream,
-                Ok(Err(error)) => {
-                    if let Some((id, _)) = &entry {
-                        let _ = runtime
-                            .bypass_store()
-                            .fail(*id, &error.to_string(), None, None);
-                    }
-                    return;
+        let mut upstream = match connect_target(
+            runtime.upstream_client().upstream_proxy().as_deref(),
+            authority.as_str(),
+        )
+        .await
+        {
+            Ok(upstream) => upstream,
+            Err(error) => {
+                if let Some((id, _)) = &entry {
+                    let _ = runtime
+                        .bypass_store()
+                        .fail(*id, &error.to_string(), None, None);
                 }
-                Err(_) => {
-                    if let Some((id, _)) = &entry {
-                        let _ = runtime.bypass_store().fail(
-                            *id,
-                            "upstream connection timed out",
-                            None,
-                            None,
-                        );
-                    }
-                    return;
-                }
-            };
+                return;
+            }
+        };
         tokio::select! {
             result = tokio::io::copy_bidirectional(&mut client, &mut upstream) => {
                 match result {

@@ -1,4 +1,4 @@
-use super::upstream::UpstreamHttpVersion;
+use super::upstream::{ConnectTargetError, UpstreamHttpVersion, connect_target};
 use super::*;
 
 enum PreparedBodyReplacement {
@@ -102,7 +102,14 @@ pub(super) async fn process_connect<C>(
     };
 
     if payload.first().copied() != Some(0x16) {
-        tunnel_connect(client, &authority, &mut capture, cancellation).await;
+        tunnel_connect(
+            client,
+            &authority,
+            &mut capture,
+            cancellation,
+            runtime.upstream_client().upstream_proxy(),
+        )
+        .await;
         return;
     }
 
@@ -1258,29 +1265,29 @@ async fn tunnel_connect<C>(
     authority: &hyper::http::uri::Authority,
     capture: &mut ConnectCapture,
     cancellation: CancellationToken,
+    upstream: Option<String>,
 ) where
     C: AsyncRead + AsyncWrite + Unpin,
 {
-    let mut upstream = match timeout(CONNECT_TIMEOUT, TcpStream::connect(authority.as_str())).await
-    {
-        Ok(Ok(upstream)) => upstream,
-        Ok(Err(error)) => {
+    let mut upstream = match connect_target(upstream.as_deref(), authority.as_str()).await {
+        Ok(upstream) => upstream,
+        Err(ConnectTargetError::Timeout(error)) => {
+            fail_capture(
+                &capture.store,
+                capture.id,
+                ErrorStage::Connect,
+                "upstream_connect_timeout",
+                &error.to_string(),
+            );
+            return;
+        }
+        Err(ConnectTargetError::Failed(error)) => {
             fail_capture(
                 &capture.store,
                 capture.id,
                 ErrorStage::Connect,
                 "upstream_connect_failed",
                 &error.to_string(),
-            );
-            return;
-        }
-        Err(_) => {
-            fail_capture(
-                &capture.store,
-                capture.id,
-                ErrorStage::Connect,
-                "upstream_connect_timeout",
-                "upstream connection timed out",
             );
             return;
         }

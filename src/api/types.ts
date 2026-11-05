@@ -46,6 +46,21 @@ export interface AppConfig {
   api_port: number;
   routing_script_name: string | null;
   active_session_id: number | null;
+  /** 出站上游代理 host:port；null 表示直连。 */
+  upstream_proxy: string | null;
+}
+
+/** 桌面端系统代理接管状态（Windows）：enabled 表示当前由 ProxyCrab 接管。 */
+export interface SystemProxyStatus {
+  supported: boolean;
+  enabled: boolean;
+  server: string | null;
+}
+
+/** CA 在系统证书存储中的安装状态（Windows 一键安装）。 */
+export interface CertificateInstallState {
+  supported: boolean;
+  installed: boolean;
 }
 
 export interface SessionMetadata {

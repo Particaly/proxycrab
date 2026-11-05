@@ -4,7 +4,13 @@ import QRCode from "qrcode";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { Io5Copy, Io5Download, Io5Refresh, Io5Warning } from "vue-icons-plus/io5";
 import { useBackend } from "../api";
-import type { ClashSubscriptionState, HttpApiChange, HttpServiceStatus } from "../api/types";
+import type {
+  CertificateInstallState,
+  ClashSubscriptionState,
+  HttpApiChange,
+  HttpServiceStatus,
+  SystemProxyStatus,
+} from "../api/types";
 import { appStore, reportError } from "../stores/app";
 import { confirmDialog } from "../stores/dialog";
 import { HTTP_API_CHANGE_EVENT } from "../stores/http-api-sync";
@@ -36,11 +42,17 @@ const clashUrl = computed(() => {
     return "";
   return clashSubscriptionUrl(clashState.value.server, service.value!.port);
 });
-const activeTab = ref<"certificate" | "connection">("certificate");
+const activeTab = ref<"certificate" | "connection" | "upstream">("certificate");
 
 const pem = ref("");
 const loading = ref(false);
 const qrCodeDataUrl = ref("");
+
+const upstreamProxy = ref("");
+const upstreamSaving = ref(false);
+const systemProxy = ref<SystemProxyStatus | null>(null);
+const certInstall = ref<CertificateInstallState | null>(null);
+const certInstalling = ref(false);
 
 async function refreshConnection(): Promise<void> {
   if (connectionLoading.value || connectionMutating.value) return;
@@ -109,12 +121,77 @@ async function refresh(): Promise<void> {
   }
 }
 
+async function refreshUpstream(): Promise<void> {
+  try {
+    const config = await backend.getConfig();
+    upstreamProxy.value = config.upstream_proxy ?? "";
+  } catch (error) {
+    reportError(error, "读取上游代理配置失败");
+  }
+}
+
+async function saveUpstream(): Promise<void> {
+  if (!backend.host || upstreamSaving.value) return;
+  upstreamSaving.value = true;
+  try {
+    const config = await backend.getConfig();
+    const server = upstreamProxy.value.trim();
+    const updated = await backend.host.replaceConfig({
+      ...config,
+      upstream_proxy: server || null,
+    });
+    upstreamProxy.value = updated.upstream_proxy ?? "";
+    appStore.toast(server ? "上游代理已保存" : "已切换为直连", "success");
+  } catch (error) {
+    reportError(error, "保存上游代理配置失败");
+  } finally {
+    upstreamSaving.value = false;
+  }
+}
+
+async function refreshSystemProxy(): Promise<void> {
+  if (!backend.host?.systemProxy) return;
+  try {
+    systemProxy.value = await backend.host.systemProxy.status();
+  } catch {
+    systemProxy.value = null;
+  }
+}
+
+async function refreshCertInstall(): Promise<void> {
+  if (!backend.host?.certificateInstall) return;
+  try {
+    certInstall.value = await backend.host.certificateInstall.status();
+  } catch {
+    certInstall.value = null;
+  }
+}
+
+async function installCertificate(): Promise<void> {
+  if (!backend.host?.certificateInstall || certInstalling.value) return;
+  certInstalling.value = true;
+  try {
+    await backend.host.certificateInstall.install();
+    appStore.toast("证书已安装到受信任的根证书存储", "success");
+  } catch (error) {
+    reportError(error, "安装证书失败");
+  } finally {
+    certInstalling.value = false;
+  }
+  await refreshCertInstall();
+}
+
 function onHttpApiChange(event: Event): void {
   const { resources } = (event as CustomEvent<HttpApiChange>).detail;
   if (resources.some((resource) => ["all", "config", "clash_subscription"].includes(resource)))
     void refreshConnection();
   if (resources.includes("all") || resources.includes("certificate")) {
     void refresh();
+    void refreshCertInstall();
+  }
+  if (resources.some((resource) => ["all", "config", "proxy"].includes(resource))) {
+    void refreshUpstream();
+    void refreshSystemProxy();
   }
 }
 
@@ -176,6 +253,7 @@ async function regenerate(): Promise<void> {
   } finally {
     loading.value = false;
   }
+  await refreshCertInstall();
 }
 
 watch(certificateUrl, async (url, _previous, onCleanup) => {
@@ -196,6 +274,9 @@ watch(certificateUrl, async (url, _previous, onCleanup) => {
 onMounted(() => {
   void refresh();
   void refreshConnection();
+  void refreshUpstream();
+  void refreshSystemProxy();
+  void refreshCertInstall();
   window.addEventListener(HTTP_API_CHANGE_EVENT, onHttpApiChange);
 });
 
@@ -229,6 +310,18 @@ onBeforeUnmount(() => {
         @click="activeTab = 'connection'"
       >
         2. 代理连接
+      </button>
+      <button
+        v-if="backend.host"
+        id="upstream-tab"
+        class="cert-tab"
+        :class="{ active: activeTab === 'upstream' }"
+        role="tab"
+        :aria-selected="activeTab === 'upstream'"
+        aria-controls="upstream-panel"
+        @click="activeTab = 'upstream'"
+      >
+        3.上游代理
       </button>
     </div>
     <div class="connection-ip-row">
@@ -267,6 +360,10 @@ onBeforeUnmount(() => {
     </p>
     <p v-else-if="selectedIp && !addresses.includes(selectedIp)" class="connection-warning">
       <Io5Warning :size="14" />原 IP 已不可用，请重新选择 IP 并更新 Clash 中的订阅地址。
+    </p>
+    <p v-if="systemProxy?.enabled" class="connection-info">
+      系统代理已指向 {{ systemProxy.server }}，旁路列表已临时清空（内网 IP
+      请求也会被捕获），停止代理或退出应用后自动恢复原设置。
     </p>
     <div
       v-show="activeTab === 'certificate'"
@@ -309,6 +406,21 @@ onBeforeUnmount(() => {
         <span>代理正在运行，需先停止代理才能重新生成证书。</span>
       </div>
 
+      <div v-if="backend.host?.certificateInstall" class="cert-install-row">
+        <button class="btn" :disabled="certInstalling || !pem" @click="installCertificate">
+          <Io5Download :size="14" /> 一键安装到本机
+        </button>
+        <span class="text-secondary cert-install-state">
+          {{
+            certInstall === null
+              ? "检测安装状态…"
+              : certInstall.installed
+                ? "已安装到本机受信任的根证书存储"
+                : "本机尚未信任此 CA；安装后本机应用可直接解密 HTTPS"
+          }}
+        </span>
+      </div>
+
       <div class="cert-actions">
         <button class="btn" :disabled="!pem" @click="copyPem">
           <Io5Copy :size="14" /> 复制 PEM
@@ -327,6 +439,38 @@ onBeforeUnmount(() => {
           <Io5Refresh :size="14" /> 重新生成证书
         </button>
       </div>
+    </div>
+    <div
+      v-if="backend.host"
+      v-show="activeTab === 'upstream'"
+      id="upstream-panel"
+      class="cert-root"
+      role="tabpanel"
+      aria-labelledby="upstream-tab"
+    >
+      <p class="cert-desc text-secondary">
+        配置出站上游代理后，ProxyCrab 的所有出站流量都会先经它转发再到达目标， 例如填本机 Clash 的
+        mixed 端口即可让抓包流量继续走已有分流和机场；抓包内容不变，仅出口变化。留空表示直连。
+      </p>
+      <div class="upstream-row">
+        <label for="upstream-server">代理地址</label>
+        <input
+          id="upstream-server"
+          v-model="upstreamProxy"
+          class="input mono"
+          :disabled="upstreamSaving"
+          placeholder="127.0.0.1:7890"
+          @keydown.enter="saveUpstream"
+        />
+        <button class="btn" :disabled="upstreamSaving" @click="saveUpstream">
+          <Io5Refresh :size="14" /> 保存
+        </button>
+      </div>
+      <p class="cert-desc text-secondary">
+        保存立即生效并持久化到工作区配置；代理运行中修改会重建在途连接。 CLI 可用
+        <span class="mono">--upstream-proxy 127.0.0.1:7890</span> 达到同样效果。
+        需要目标代理服务可用，否则出站请求会失败。
+      </p>
     </div>
     <ClashConnectionPanel
       v-if="backend.clashSubscription"
@@ -401,6 +545,39 @@ onBeforeUnmount(() => {
 .connection-warning svg {
   flex: none;
   margin-top: 2px;
+}
+
+.connection-info {
+  color: var(--accent);
+  font-size: 12px;
+  margin: var(--space-2) var(--space-3) 0;
+}
+
+.upstream-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: none;
+}
+.upstream-row label {
+  flex: none;
+  font-size: 12px;
+}
+.upstream-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.cert-install-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: none;
+}
+
+.cert-install-state {
+  font-size: 12px;
+  min-width: 0;
 }
 
 .cert-root {

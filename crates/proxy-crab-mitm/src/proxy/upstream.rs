@@ -1,4 +1,4 @@
-use std::{collections::HashMap, str::FromStr, sync::Arc};
+use std::{collections::HashMap, fmt, str::FromStr, sync::Arc};
 
 use anyhow::{Context, Result, anyhow, bail};
 use hyper::{
@@ -18,7 +18,7 @@ use rustls::{
     pki_types::{CertificateDer, ServerName, UnixTime},
 };
 use tokio::{
-    io::{AsyncRead, AsyncWrite},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::TcpStream,
     sync::Mutex,
     time::timeout,
@@ -30,6 +30,124 @@ use super::{CONNECT_TIMEOUT, ProxyBody};
 
 type PooledHttp1Client = Client<HttpsConnector<HttpConnector>, ProxyBody>;
 type H2Sender = hyper::client::conn::http2::SendRequest<ProxyBody>;
+
+/// 连接目标失败类别：区分超时与直接失败，供调用方选择记录口径。
+#[derive(Debug)]
+pub(crate) enum ConnectTargetError {
+    Timeout(anyhow::Error),
+    Failed(anyhow::Error),
+}
+
+impl fmt::Display for ConnectTargetError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Timeout(error) | Self::Failed(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for ConnectTargetError {}
+
+/// 计算 `host:port` 连接目标，IPv6 主机补方括号。
+fn authority_of(host: &str, port: u16) -> String {
+    if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }
+}
+
+/// 连接目标 authority：未配置上游代理时直连；配置了则先与代理建立 CONNECT 隧道。
+pub(crate) async fn connect_target(
+    upstream: Option<&str>,
+    authority: &str,
+) -> std::result::Result<TcpStream, ConnectTargetError> {
+    match upstream {
+        None => match timeout(CONNECT_TIMEOUT, TcpStream::connect(authority)).await {
+            Ok(Ok(stream)) => Ok(stream),
+            Ok(Err(error)) => Err(ConnectTargetError::Failed(anyhow!(
+                "upstream connect failed: {error}"
+            ))),
+            Err(_) => Err(ConnectTargetError::Timeout(anyhow!(
+                "upstream connection timed out"
+            ))),
+        },
+        Some(proxy) => {
+            let mut stream = match timeout(CONNECT_TIMEOUT, TcpStream::connect(proxy)).await {
+                Ok(Ok(stream)) => stream,
+                Ok(Err(error)) => {
+                    return Err(ConnectTargetError::Failed(anyhow!(
+                        "upstream proxy {proxy} connect failed: {error}"
+                    )));
+                }
+                Err(_) => {
+                    return Err(ConnectTargetError::Timeout(anyhow!(
+                        "upstream proxy {proxy} connection timed out"
+                    )));
+                }
+            };
+            establish_proxy_tunnel(&mut stream, proxy, authority).await?;
+            Ok(stream)
+        }
+    }
+}
+
+/// 向上游代理发送 CONNECT 并等待 2xx，把连接变为到目标 authority 的隧道。
+async fn establish_proxy_tunnel(
+    stream: &mut TcpStream,
+    proxy: &str,
+    authority: &str,
+) -> std::result::Result<(), ConnectTargetError> {
+    let request = format!("CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n\r\n");
+    if let Err(error) = stream.write_all(request.as_bytes()).await {
+        return Err(ConnectTargetError::Failed(anyhow!(
+            "upstream proxy {proxy} write failed: {error}"
+        )));
+    }
+    let mut response = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        match timeout(CONNECT_TIMEOUT, stream.read(&mut byte)).await {
+            Ok(Ok(0)) => {
+                return Err(ConnectTargetError::Failed(anyhow!(
+                    "upstream proxy {proxy} closed the connection during CONNECT"
+                )));
+            }
+            Ok(Ok(_)) => {
+                response.push(byte[0]);
+                if response.ends_with(b"\r\n\r\n") {
+                    break;
+                }
+                if response.len() > 8192 {
+                    return Err(ConnectTargetError::Failed(anyhow!(
+                        "upstream proxy {proxy} CONNECT response header is too large"
+                    )));
+                }
+            }
+            Ok(Err(error)) => {
+                return Err(ConnectTargetError::Failed(anyhow!(
+                    "upstream proxy {proxy} read failed: {error}"
+                )));
+            }
+            Err(_) => {
+                return Err(ConnectTargetError::Timeout(anyhow!(
+                    "upstream proxy {proxy} CONNECT response timed out"
+                )));
+            }
+        }
+    }
+    let head = String::from_utf8_lossy(&response);
+    let status = head.split_whitespace().nth(1).unwrap_or("");
+    match status.parse::<u16>() {
+        Ok(code) if (200..300).contains(&code) => Ok(()),
+        Ok(code) => Err(ConnectTargetError::Failed(anyhow!(
+            "upstream proxy {proxy} rejected CONNECT to {authority}: {code}"
+        ))),
+        Err(_) => Err(ConnectTargetError::Failed(anyhow!(
+            "upstream proxy {proxy} returned an invalid CONNECT response"
+        ))),
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum UpstreamHttpVersion {
@@ -92,18 +210,26 @@ impl H2Pool {
 
 #[derive(Clone)]
 pub(crate) struct UpstreamClient {
+    /// 出站上游代理（`host:port`），None 表示直连。
+    upstream: Option<String>,
     verified: PooledHttp1Client,
     insecure: PooledHttp1Client,
     h2: Arc<H2Pool>,
 }
 
 impl UpstreamClient {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(upstream: Option<String>) -> Self {
         Self {
+            upstream,
             verified: pooled_http1_client(client_config(false)),
             insecure: pooled_http1_client(client_config(true)),
             h2: Arc::new(H2Pool::default()),
         }
+    }
+
+    /// 当前的上游代理配置，供 CONNECT 隧道等旁路拨号点复用。
+    pub(crate) fn upstream_proxy(&self) -> Option<String> {
+        self.upstream.clone()
     }
 
     pub(crate) async fn send(
@@ -119,8 +245,20 @@ impl UpstreamClient {
             None => {}
         }
         let tls_insecure = tls_insecure && request.uri().scheme_str() == Some("https");
+        // 走上游代理时统一使用专用路径：CONNECT 隧道 + 显式 origin-form，
+        // 不依赖池化客户端的转发语义；未配置时保持原有池化路径。
+        if let Some(upstream) = self.upstream.clone() {
+            return send_dedicated(
+                request,
+                tls_insecure,
+                http_version,
+                cancellation,
+                Some(upstream.as_str()),
+            )
+            .await;
+        }
         if request.headers().contains_key(UPGRADE) {
-            return send_dedicated(request, tls_insecure, http_version, cancellation).await;
+            return send_dedicated(request, tls_insecure, http_version, cancellation, None).await;
         }
         match http_version {
             Some(UpstreamHttpVersion::Http1) => {
@@ -307,6 +445,7 @@ async fn send_dedicated(
     tls_insecure: bool,
     http_version: Option<UpstreamHttpVersion>,
     cancellation: CancellationToken,
+    upstream: Option<&str>,
 ) -> Result<Response<Incoming>> {
     let uri = request.uri().clone();
     let host = uri
@@ -314,9 +453,7 @@ async fn send_dedicated(
         .ok_or_else(|| anyhow!("upstream URI has no host"))?;
     let https = uri.scheme_str() == Some("https");
     let port = uri.port_u16().unwrap_or(if https { 443 } else { 80 });
-    let stream = timeout(CONNECT_TIMEOUT, TcpStream::connect((host, port)))
-        .await
-        .context("upstream connect timeout")??;
+    let stream = connect_target(upstream, &authority_of(host, port)).await?;
     if https {
         let mut config = client_config(tls_insecure);
         config.alpn_protocols = match http_version {
@@ -448,6 +585,7 @@ where
 mod tests {
     use std::{
         convert::Infallible,
+        net::SocketAddr,
         sync::{
             Arc, Mutex as StdMutex,
             atomic::{AtomicUsize, Ordering},
@@ -471,14 +609,14 @@ mod tests {
     };
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
-        net::TcpListener,
+        net::{TcpListener, TcpStream},
         sync::{mpsc, oneshot},
         time::timeout,
     };
     use tokio_rustls::TlsAcceptor;
     use tokio_util::sync::CancellationToken;
 
-    use super::{H2PoolKey, H2PoolState, UpstreamClient, UpstreamHttpVersion};
+    use super::{H2PoolKey, H2PoolState, UpstreamClient, UpstreamHttpVersion, connect_target};
     use crate::proxy::boxed_full;
 
     #[tokio::test]
@@ -508,7 +646,7 @@ mod tests {
             }
         });
 
-        let client = UpstreamClient::new();
+        let client = UpstreamClient::new(None);
         for _ in 0..2 {
             let request = Request::builder()
                 .uri(format!("http://{address}/"))
@@ -553,7 +691,7 @@ mod tests {
             .body(boxed_full(Bytes::new()))
             .unwrap();
 
-        let response = UpstreamClient::new()
+        let response = UpstreamClient::new(None)
             .send(
                 request,
                 false,
@@ -589,7 +727,7 @@ mod tests {
             .body(boxed_full(Bytes::new()))
             .unwrap();
 
-        let response = UpstreamClient::new()
+        let response = UpstreamClient::new(None)
             .send(
                 request,
                 false,
@@ -641,7 +779,7 @@ mod tests {
             .header(UPGRADE, "websocket")
             .body(boxed_full(Bytes::new()))
             .unwrap();
-        let response = UpstreamClient::new()
+        let response = UpstreamClient::new(None)
             .send(
                 request,
                 true,
@@ -737,7 +875,7 @@ mod tests {
             }
         });
 
-        let client = UpstreamClient::new();
+        let client = UpstreamClient::new(None);
         let send = |client: UpstreamClient| async move {
             let request = Request::builder()
                 .uri(format!("https://{address}/strict-h2"))
@@ -847,7 +985,7 @@ mod tests {
             }
         });
 
-        let client = UpstreamClient::new();
+        let client = UpstreamClient::new(None);
         for _ in 0..3 {
             let request = Request::builder()
                 .uri(format!("https://{address}/h1-fallback"))
@@ -887,6 +1025,100 @@ mod tests {
 
         drop(client);
         let _ = stop_tx.send(());
+        server.await.unwrap();
+    }
+
+    /// 起一个假 HTTP 代理：收到 CONNECT 后校验请求行，回复 `response`；
+    /// 若回复为 2xx，则继续把连接转接到请求行里的 authority 并双向拷贝。
+    async fn spawn_fake_proxy(response: &'static [u8]) -> (SocketAddr, oneshot::Receiver<Vec<u8>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (request_tx, request_rx) = oneshot::channel();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut byte = [0u8; 1];
+            while !request.ends_with(b"\r\n\r\n") {
+                stream.read_exact(&mut byte).await.unwrap();
+                request.push(byte[0]);
+            }
+            let authority = String::from_utf8_lossy(&request)
+                .lines()
+                .next()
+                .and_then(|line| line.split_whitespace().nth(1))
+                .unwrap_or_default()
+                .to_owned();
+            let _ = request_tx.send(request);
+            stream.write_all(response).await.unwrap();
+            if response.starts_with(b"HTTP/1.1 200") && !authority.is_empty() {
+                let mut target = TcpStream::connect(authority).await.unwrap();
+                let _ = tokio::io::copy_bidirectional(&mut stream, &mut target).await;
+            }
+        });
+        (address, request_rx)
+    }
+
+    #[tokio::test]
+    async fn connect_target_builds_proxy_tunnel_and_forwards_traffic() {
+        // 目标 HTTP 服务。
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target_address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let service = service_fn(|_| async {
+                Ok::<_, Infallible>(Response::new(Full::new(Bytes::from_static(b"via-proxy"))))
+            });
+            let _ = http1::Builder::new()
+                .serve_connection(TokioIo::new(listener.accept().await.unwrap().0), service)
+                .await;
+        });
+
+        let (proxy_address, request_rx) =
+            spawn_fake_proxy(b"HTTP/1.1 200 Connection Established\r\n\r\n").await;
+        let client = UpstreamClient::new(Some(proxy_address.to_string()));
+        let request = Request::builder()
+            .uri(format!("http://{target_address}/"))
+            .body(boxed_full(Bytes::new()))
+            .unwrap();
+        let response = client
+            .send(request, false, None, CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            response.into_body().collect().await.unwrap().to_bytes(),
+            Bytes::from_static(b"via-proxy")
+        );
+
+        let request = request_rx.await.unwrap();
+        let head = String::from_utf8(request).unwrap();
+        let request_line = head.lines().next().unwrap();
+        assert_eq!(
+            request_line,
+            format!("CONNECT {target_address} HTTP/1.1"),
+            "代理必须收到 CONNECT authority 请求行"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn connect_target_reports_rejected_tunnel() {
+        let (proxy_address, _request_rx) =
+            spawn_fake_proxy(b"HTTP/1.1 403 Forbidden\r\n\r\n").await;
+        let error = connect_target(Some(&proxy_address.to_string()), "example.com:443")
+            .await
+            .expect_err("非 2xx 隧道响应必须报错");
+        assert!(error.to_string().contains("403"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn connect_target_dials_directly_without_upstream() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let _connection = listener.accept().await.unwrap();
+        });
+        connect_target(None, &address.to_string())
+            .await
+            .expect("直连目标应当成功");
         server.await.unwrap();
     }
 }
