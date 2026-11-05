@@ -396,6 +396,9 @@ pub trait ProxyCrabManager: Send + Sync {
     async fn append_mcp_audit(&self, entry: McpAuditEntry) -> ManagerResult<()>;
     /// 查询 MCP 工具调用审计条目（seq 倒序，最新在前）。
     async fn mcp_audit(&self, limit: usize) -> ManagerResult<Vec<McpAuditEntry>>;
+    /// 当前 MCP 暴露档位下 `tools/list` 会出现的工具数（桌面
+    /// `get_mcp_tool_count`；与 `POST /mcp` `tools/list` 同源过滤）。
+    async fn mcp_tool_count(&self) -> ManagerResult<usize>;
 }
 
 #[derive(Clone)]
@@ -3004,6 +3007,17 @@ impl ProxyCrabManager for MitmManager {
             FlowStore::open(&root)
                 .and_then(|store| store.mcp_audit_entries(limit))
                 .map_err(map_error)
+        })
+        .await
+    }
+
+    async fn mcp_tool_count(&self) -> ManagerResult<usize> {
+        let root = self.runtime.workspace().root().to_path_buf();
+        self.run_blocking("count mcp tools", move || {
+            let tiers = FlowStore::open(&root)
+                .and_then(|store| store.mcp_tiers())
+                .map_err(map_error)?;
+            Ok(crate::mcp::tools::tier_tool_count(&tiers))
         })
         .await
     }

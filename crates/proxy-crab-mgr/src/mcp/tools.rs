@@ -349,13 +349,17 @@ pub fn list() -> &'static [ToolDescriptor] {
     REGISTRY
 }
 
+/// 档位放行的策展工具迭代器：`tools/list` 清单与工具计数共用同一过滤源
+/// （plan Task 25 Step 2；桌面 `get_mcp_tool_count` 复用）。
+fn tier_enabled_tools(tiers: &McpTiers) -> impl Iterator<Item = &'static ToolDescriptor> {
+    REGISTRY.iter().filter(move |tool| tool.tier.enabled(tiers))
+}
+
 /// `tools/list` 应答的策展工具清单（含各工具的 inputSchema），按 MCP 暴露
 /// 档位过滤：档位关闭的工具不出现在清单里（plan Task 25 Step 2）。
 pub fn list_envelope(tiers: &McpTiers) -> Value {
     json!({
-        "tools": REGISTRY
-            .iter()
-            .filter(|tool| tool.tier.enabled(tiers))
+        "tools": tier_enabled_tools(tiers)
             .map(|tool| json!({
                 "name": tool.name,
                 "description": tool.description,
@@ -363,6 +367,12 @@ pub fn list_envelope(tiers: &McpTiers) -> Value {
             }))
             .collect::<Vec<_>>()
     })
+}
+
+/// 当前档位下 `tools/list` 会出现的工具数（桌面 `get_mcp_tool_count` 与
+/// `tools/list` 同源过滤）。
+pub fn tier_tool_count(tiers: &McpTiers) -> usize {
+    tier_enabled_tools(tiers).count()
 }
 
 /// 工具入参的 JSON Schema（对象 + 注册表声明的属性）。
