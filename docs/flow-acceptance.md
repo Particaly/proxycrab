@@ -18,7 +18,7 @@ ReqFlow 复刻（计划 `docs/superpowers/plans/2026-11-03-request-workflow-repr
 | A-10 | 请求库导入三格式入库核对 | cURL/HAR/Postman 导入 | 8 | 可执行 |
 | A-11 | 环境变量集激活切换与 secret 脱敏显示 | 激活切换、掩码读写、运行期冻结 | 17 | 可执行 |
 
-通用说明：运行记录/运行画布窗口属 Task 22（未完成），当前所有运行态核对均走 `GET /api/flow/runs` / `GET /api/flow/runs/{id}`（本机回环默认 `LocalLoopback` 身份可读）；运行触发入口以 API 为主。`POST /api/flow/runs` 默认档位 `approval`，本机回环需先在 设置 > 管理接口 将该 action 调为 `allow`（或届时点审批）。
+通用说明：运行记录/运行画布窗口已可用（主计划 Task 1–28 已完成，桌面 Tauri 接线已合入）。运行态核对优先走桌面入口：工作流编辑器（资产 > 「工作流」）内点「运行」直接触发并进入运行画布，资产 > 「运行记录」窗口可查看列表、运行详情与取消；HTTP 路径（`GET /api/flow/runs` / `GET /api/flow/runs/{id}`，本机回环默认 `LocalLoopback` 身份可读）仍是可用的核对手段。经 HTTP 触发时 `POST /api/flow/runs` 默认档位 `approval`，本机回环需先在 设置 > 管理接口 将该 action 调为 `allow`（或届时点审批）；桌面「运行」按钮走信任面 Tauri 命令，不经审批链。注意：管理 HTTP 服务未启动时桌面无实时运行进度，运行记录窗口手动刷新兜底。
 
 ## A-01 真实流量入库并重放
 
@@ -29,9 +29,10 @@ ReqFlow 复刻（计划 `docs/superpowers/plans/2026-11-03-request-workflow-repr
   1. 日志表选中一条目标请求，右键「存入请求库」（或详情页入库入口）。
   2. 打开「请求库」窗口核对新条目：命名 `METHOD host+path`、来源徽标「抓包入库」、Headers/Query/Body/Response 四 tab 与原请求一致。
   3. 打开「工作流编辑器」新建流程，拖入一个「请求」节点并从请求库选中该条目，连接 开始 → 请求 → 结束，显式保存。
-  4. 触发运行：`curl -X POST http://127.0.0.1:18089/api/flow/runs -H 'Content-Type: application/json' -d '{"workflowId":"<id>"}'`。
+  4. 触发运行（桌面入口可用：编辑器内直接点「运行」；或 `curl -X POST http://127.0.0.1:18089/api/flow/runs -H 'Content-Type: application/json' -d '{"workflowId":"<id>"}'`）。
 - 预期结果：
   - 返回立即给出 run id；`GET /api/flow/runs/{id}` 终态 `success`，`nodeRuns` 中请求节点有入参/返回值快照与耗时。
+  - 桌面端「运行记录」窗口出现该 run，运行详情（运行画布）的逐节点状态与耗时和 `nodeRuns` 一致，可与 API 核对互相印证。
   - 活动 Session 新增一条 source=`ProxyCrabRequest` 的 capture，method/url 与入库条目一致。
   - 运行期间画布拦截结构性编辑（删除/连线/粘贴）并给单例提示，结束后解锁。
 - 失败排查：`409 proxy_not_running` → 代理未启动，先启动代理再触发；`404` → workflowId 不存在或目标 Session 已归档，核对 ID 与 Session 状态。

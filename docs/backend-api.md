@@ -25,6 +25,9 @@ HTTP failures use:
 
 Tauri commands return the data DTO directly or reject with the same `{code,message}` error.
 Direct Tauri calls are trusted desktop operations and do not pass through HTTP authentication.
+The flow-domain desktop commands (workflow projects, definitions, import/export, runs, script
+dry-run, MCP tiers, and MCP audit) follow the same pattern: thin trusted wrappers over the same
+manager operations, without HTTP permissions, approval holds, or MCP tier gating.
 `ProxyCrabManager` remains unaware of credentials; the HTTP Router accepts a separate mandatory
 permission-manager implementation.
 
@@ -1107,8 +1110,9 @@ Writes persist documents at the current `schemaVersion`; lower-version documents
 Shape violations (empty name, empty `projectId`, unsupported schema version, missing node ids,
 non-finite positions) return `400 bad_request`; the structural graph validator intentionally does
 not gate saves — only runs use it. These endpoints are not registered on the read-only
-`/share-api/*` surface, and they do not yet publish UI change events (the workflow editor windows
-land in a later task and will pick those up).
+`/share-api/*` surface. By design they do not publish UI change events, and neither do their
+desktop Tauri command counterparts — both ports stay consistent, and the workflow editor windows
+(available on desktop and in the CLI browser) refresh on open and manual reload.
 
 ## Workflow runs
 
