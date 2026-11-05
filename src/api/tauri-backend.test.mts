@@ -187,3 +187,211 @@ test("desktop bundle import passes file bytes and explicit intent IDs through IP
     undefined,
   );
 });
+
+test("desktop exposes the workflow, run, dry-run and MCP capability groups", () => {
+  const backend = createTauriBackend();
+  expect(Object.keys(backend.workflows!).sort()).toEqual([
+    "createProject",
+    "createWorkflow",
+    "deleteProject",
+    "deleteWorkflow",
+    "exportWorkflows",
+    "getWorkflow",
+    "importWorkflows",
+    "listProjects",
+    "listWorkflows",
+    "saveWorkflowGraph",
+    "validateWorkflow",
+  ]);
+  expect(Object.keys(backend.flowRuns!).sort()).toEqual(["cancel", "get", "list", "trigger"]);
+  expect(typeof backend.flowScriptDryRun).toBe("function");
+  expect(Object.keys(backend.mcpTiers!).sort()).toEqual(["get", "save", "toolCount"]);
+  expect(Object.keys(backend.mcpAudit!).sort()).toEqual(["list"]);
+});
+
+test("desktop workflow CRUD calls snake_case commands with camelCase argument keys", async () => {
+  const workflows = createTauriBackend().workflows!;
+  const graph = { nodes: [], edges: [] };
+  const cases: {
+    run: () => Promise<unknown>;
+    command: string;
+    args?: Record<string, unknown>;
+    result?: unknown;
+  }[] = [
+    {
+      run: () => workflows.listProjects(),
+      command: "list_flow_projects",
+      args: { query: {} },
+      result: { projects: [], total: 0 },
+    },
+    {
+      run: () => workflows.createProject({ name: "演示项目" }),
+      command: "create_flow_project",
+      args: { request: { name: "演示项目" } },
+      result: { id: "proj-1", name: "演示项目" },
+    },
+    {
+      run: () => workflows.deleteProject("proj-1"),
+      command: "delete_flow_project",
+      args: { id: "proj-1" },
+    },
+    {
+      run: () => workflows.listWorkflows("proj-1"),
+      command: "list_workflows",
+      args: { query: { projectId: "proj-1" } },
+      result: { workflows: [], total: 0 },
+    },
+    {
+      run: () => workflows.getWorkflow("wf-1"),
+      command: "get_workflow",
+      args: { id: "wf-1" },
+      result: { id: "wf-1", projectId: "proj-1" },
+    },
+    {
+      run: () => workflows.createWorkflow({ projectId: "proj-1", name: "流程" }),
+      command: "create_workflow",
+      args: { request: { projectId: "proj-1", name: "流程" } },
+      result: { id: "wf-1", projectId: "proj-1" },
+    },
+    {
+      run: () => workflows.saveWorkflowGraph("wf-1", graph),
+      command: "save_workflow_graph",
+      args: { id: "wf-1", request: graph },
+      result: { id: "wf-1", projectId: "proj-1" },
+    },
+    {
+      run: () => workflows.deleteWorkflow("wf-1"),
+      command: "delete_workflow",
+      args: { id: "wf-1" },
+    },
+  ];
+  for (const item of cases) {
+    vi.mocked(invoke).mockResolvedValueOnce(item.result ?? null);
+    expect(await item.run()).toEqual(item.result ?? null);
+    expect(invoke).toHaveBeenCalledExactlyOnceWith(item.command, item.args, undefined);
+    vi.mocked(invoke).mockClear();
+  }
+});
+
+test("desktop workflow validation wraps the raw issue array into the {issues} page", async () => {
+  const issues = [{ code: "missing-start", message: "缺少开始节点", nodeIds: [] }];
+  vi.mocked(invoke).mockResolvedValue(issues);
+  expect(await createTauriBackend().workflows!.validateWorkflow("wf-1")).toEqual({ issues });
+  expect(invoke).toHaveBeenCalledExactlyOnceWith("validate_workflow", { id: "wf-1" }, undefined);
+});
+
+test("desktop workflow export returns the raw envelope document through IPC", async () => {
+  const envelope = { format: "reqflow-workflow", version: 1, exportedAt: 1, workflows: [] };
+  vi.mocked(invoke).mockResolvedValue(envelope);
+  expect(await createTauriBackend().workflows!.exportWorkflows(["wf-1", "wf-2"])).toEqual(envelope);
+  expect(invoke).toHaveBeenCalledExactlyOnceWith(
+    "export_workflows",
+    { ids: ["wf-1", "wf-2"] },
+    undefined,
+  );
+});
+
+test("desktop workflow import passes the envelope request verbatim", async () => {
+  const result = {
+    imported: [{ index: 0, id: "wf-2", name: "流程（导入 1）" }],
+    skipped: [],
+    requests: { imported: 0, skipped: [] },
+    envSets: { imported: 1, skipped: [] },
+  };
+  const request = {
+    file: { format: "reqflow-workflow", version: 1, exportedAt: 1, workflows: [] },
+    projectId: "proj-1",
+    confirmScripts: true,
+    confirmedScripts: ["0:0:preProcess"],
+  };
+  vi.mocked(invoke).mockResolvedValue(result);
+  expect(await createTauriBackend().workflows!.importWorkflows(request)).toEqual(result);
+  expect(invoke).toHaveBeenCalledExactlyOnceWith("import_workflows", { request }, undefined);
+});
+
+test("desktop run history lists, reads and triggers through dedicated commands", async () => {
+  const flowRuns = createTauriBackend().flowRuns!;
+  vi.mocked(invoke).mockResolvedValueOnce({ runs: [], total: 0 });
+  expect(
+    await flowRuns.list({ workflowId: "wf-1", status: "failed", limit: 50, offset: 0 }),
+  ).toEqual({ runs: [], total: 0 });
+  expect(invoke).toHaveBeenCalledExactlyOnceWith(
+    "list_flow_runs",
+    { query: { workflowId: "wf-1", status: "failed", limit: 50, offset: 0 } },
+    undefined,
+  );
+  vi.mocked(invoke).mockClear();
+  vi.mocked(invoke).mockResolvedValueOnce({ id: "run-1", status: "running", nodeRuns: [] });
+  expect(await flowRuns.get("run-1")).toEqual({ id: "run-1", status: "running", nodeRuns: [] });
+  expect(invoke).toHaveBeenCalledExactlyOnceWith(
+    "get_flow_run_detail",
+    { runId: "run-1" },
+    undefined,
+  );
+  vi.mocked(invoke).mockClear();
+  const record = { id: "run-2", status: "running" };
+  vi.mocked(invoke).mockResolvedValueOnce(record);
+  expect(await flowRuns.trigger({ workflowId: "wf-1", sessionId: 3 })).toEqual(record);
+  expect(invoke).toHaveBeenCalledExactlyOnceWith(
+    "trigger_flow_run",
+    { request: { workflowId: "wf-1", sessionId: 3 } },
+    undefined,
+  );
+});
+
+test("desktop run cancel swallows the null success return", async () => {
+  vi.mocked(invoke).mockResolvedValue(null);
+  expect(await createTauriBackend().flowRuns!.cancel("run-1")).toBeUndefined();
+  expect(invoke).toHaveBeenCalledExactlyOnceWith("cancel_flow_run", { runId: "run-1" }, undefined);
+});
+
+test("desktop script dry-run posts the sample payload through IPC without HTTP", async () => {
+  const result = { ok: true, value: { url: "https://example.com" }, warnings: [] };
+  const request = {
+    side: "pre",
+    script: "return { url: input.url }",
+    sampleInput: { url: "https://example.com" },
+  } as const;
+  vi.mocked(invoke).mockResolvedValue(result);
+  expect(await createTauriBackend().flowScriptDryRun!(request)).toEqual(result);
+  expect(invoke).toHaveBeenCalledExactlyOnceWith("flow_script_dry_run", { request }, undefined);
+});
+
+test("desktop MCP tier switches round-trip through commands without raw JSON-RPC", async () => {
+  const backend = createTauriBackend();
+  const tiers = { read: true, write: false, execute: false };
+  vi.mocked(invoke).mockResolvedValueOnce(tiers);
+  expect(await backend.mcpTiers!.get()).toEqual(tiers);
+  expect(invoke).toHaveBeenCalledExactlyOnceWith("get_mcp_tiers", undefined, undefined);
+  vi.mocked(invoke).mockClear();
+  const enabled = { read: true, write: true, execute: false };
+  vi.mocked(invoke).mockResolvedValueOnce(enabled);
+  expect(await backend.mcpTiers!.save(enabled)).toEqual(enabled);
+  expect(invoke).toHaveBeenCalledExactlyOnceWith(
+    "replace_mcp_tiers",
+    { tiers: enabled },
+    undefined,
+  );
+  vi.mocked(invoke).mockClear();
+  vi.mocked(invoke).mockResolvedValueOnce(7);
+  expect(await backend.mcpTiers!.toolCount()).toBe(7);
+  expect(invoke).toHaveBeenCalledExactlyOnceWith("get_mcp_tool_count", undefined, undefined);
+});
+
+test("desktop MCP audit wraps the entry vector into the {entries} page shape", async () => {
+  const entry = {
+    seq: 2,
+    timestampMs: 1_700_000_000_000,
+    tool: "workflow_runs_list",
+    identity: "local",
+    argumentsSummary: "{}",
+    outcome: "ok",
+    decision: "allowed",
+  };
+  vi.mocked(invoke).mockResolvedValue([entry]);
+  const backend = createTauriBackend();
+  expect(await backend.mcpAudit!.list(50)).toEqual({ entries: [entry] });
+  expect(invoke).toHaveBeenCalledExactlyOnceWith("list_mcp_audit", { limit: 50 }, undefined);
+  await backend.mcpAudit!.list();
+  expect(invoke).toHaveBeenLastCalledWith("list_mcp_audit", { limit: undefined }, undefined);
+});
