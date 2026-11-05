@@ -365,7 +365,8 @@ export function createTauriBackend(): Backend {
         call<McpAuditEntry[]>("list_mcp_audit", { limit }).then((entries) => ({ entries })),
     },
     workflows: {
-      listProjects: () => call<FlowProjectsPage>("list_flow_projects"),
+      // query 键必传（与 list_workflows / list_flow_runs 同族签名）；空对象即分页全缺省。
+      listProjects: () => call<FlowProjectsPage>("list_flow_projects", { query: {} }),
       createProject: (request: CreateFlowProjectRequest) =>
         call<FlowProject>("create_flow_project", { request }),
       deleteProject: (id: string) => call<void>("delete_flow_project", { id }),

@@ -221,6 +221,7 @@ test("desktop workflow CRUD calls snake_case commands with camelCase argument ke
     {
       run: () => workflows.listProjects(),
       command: "list_flow_projects",
+      args: { query: {} },
       result: { projects: [], total: 0 },
     },
     {
