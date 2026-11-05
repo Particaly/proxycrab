@@ -22,9 +22,20 @@ import type {
   EnvGlobalVariables,
   EnvSetsPayload,
   EnvVariableSet,
+  CreateFlowProjectRequest,
+  CreateWorkflowRequest,
   EnvWriteBackRequest,
   EnvWriteBackResult,
   ExecuteTemporaryScriptRequest,
+  FlowProject,
+  FlowProjectsPage,
+  FlowRunDetail,
+  FlowRunListQuery,
+  FlowRunPage,
+  FlowRunRecord,
+  FlowRunTriggerRequest,
+  FlowScriptDryRunRequest,
+  FlowScriptDryRunResult,
   ExtendBreakpointRequest,
   CreateRequestLibraryRequest,
   IngestCaptureRequest,
@@ -63,6 +74,13 @@ import type {
   UpdateScriptRequest,
   UpdateAgentsPresetRequest,
   UpdateSessionRequest,
+  SaveWorkflowGraphRequest,
+  WorkflowsPage,
+  Workflow,
+  WorkflowExportEnvelope,
+  WorkflowImportRequest,
+  WorkflowImportResult,
+  WorkflowValidationIssue,
 } from "./types";
 
 function isManagerError(value: unknown): value is ManagerError {
@@ -333,6 +351,39 @@ export function createTauriBackend(): Backend {
         call<EnvGlobalVariables>("replace_env_globals", { request }),
       writeBack: (request: EnvWriteBackRequest) =>
         call<EnvWriteBackResult>("env_write_back", { request }),
+    },
+    workflows: {
+      listProjects: () => call<FlowProjectsPage>("list_flow_projects"),
+      createProject: (request: CreateFlowProjectRequest) =>
+        call<FlowProject>("create_flow_project", { request }),
+      deleteProject: (id: string) => call<void>("delete_flow_project", { id }),
+      listWorkflows: (projectId: string) =>
+        call<WorkflowsPage>("list_workflows", { query: { projectId } }),
+      getWorkflow: (id: string) => call<Workflow>("get_workflow", { id }),
+      createWorkflow: (request: CreateWorkflowRequest) =>
+        call<Workflow>("create_workflow", { request }),
+      saveWorkflowGraph: (id: string, request: SaveWorkflowGraphRequest) =>
+        call<Workflow>("save_workflow_graph", { id, request }),
+      deleteWorkflow: (id: string) => call<void>("delete_workflow", { id }),
+      // 校验在 Rust 侧返回 issues 数组本体，这里包成 {issues} 对齐契约。
+      validateWorkflow: (id: string) =>
+        call<WorkflowValidationIssue[]>("validate_workflow", { id }).then((issues) => ({ issues })),
+      // 导出直返信封文档本体（桌面无 HTTP 下载头），secret 剥离语义在命令层内。
+      exportWorkflows: (ids: string[]) => call<WorkflowExportEnvelope>("export_workflows", { ids }),
+      importWorkflows: (request: WorkflowImportRequest) =>
+        call<WorkflowImportResult>("import_workflows", { request }),
+    },
+    flowScriptDryRun: (request: FlowScriptDryRunRequest) =>
+      call<FlowScriptDryRunResult>("flow_script_dry_run", { request }),
+    flowRuns: {
+      list: (query: FlowRunListQuery) => call<FlowRunPage>("list_flow_runs", { query }),
+      get: (id: string) => call<FlowRunDetail>("get_flow_run_detail", { runId: id }),
+      trigger: (request: FlowRunTriggerRequest) =>
+        call<FlowRunRecord>("trigger_flow_run", { request }),
+      // 成功空返回（Rust `()`）经 IPC 序列化为 null，这里吞掉以对齐 Promise<void>。
+      cancel: async (id: string) => {
+        await call<void>("cancel_flow_run", { runId: id });
+      },
     },
     requestLibrary: {
       page: (query: RequestLibraryQuery) =>
