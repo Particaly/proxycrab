@@ -19,15 +19,19 @@ use proxy_crab_mgr::{
         BypassQuery, CertificateResponse, CreateAgentsPresetRequest, CreateEnvSetRequest,
         CreateRequestLibraryRequest, CreateSessionRequest, DebugFilterScriptRequest, DeleteCount,
         EnvSetsPayload, EnvWriteBackRequest, EnvWriteBackResult, ExecuteTemporaryScriptRequest,
-        ExtendBreakpointRequest, HttpApiChange, HttpApiResource, HttpServiceStatus,
-        IngestCaptureRequest, InterceptorCreateRequest, InterceptorDetail, InterceptorLibraryList,
-        InterceptorUpdateRequest, LogDetail, LogIdsPayload, LogIdsRequest, LogViewsPayload,
-        LogViewsRequest, ManagerError, ReplaceActiveEnvSetRequest, ReplaceEnvGlobalsRequest,
-        ReplaceSessionInterceptorsRequest, ReplaceSessionViewRequest, ReplayRequestPayload,
-        ReplayResult, RequestLibraryPage, RequestLibraryQuery, RoutingSelection, SaveEnvSetRequest,
-        ScriptRequest, SessionInterceptorsPayload, SessionViewPayload, SessionsPayload,
-        SystemLogsQuery, UpdateAgentsPresetRequest, UpdateRequestLibraryRequest,
-        UpdateScriptRequest, UpdateSessionRequest,
+        ExtendBreakpointRequest, FlowListQuery, FlowProjectCreateRequest, FlowProjectPage,
+        FlowProjectUpdateRequest, FlowRunDetailPayload, FlowRunListQuery, FlowRunPage,
+        FlowRunTriggerRequest, FlowScriptDryRunRequest, HttpApiChange, HttpApiResource,
+        HttpServiceStatus, IngestCaptureRequest, InterceptorCreateRequest, InterceptorDetail,
+        InterceptorLibraryList, InterceptorUpdateRequest, LogDetail, LogIdsPayload, LogIdsRequest,
+        LogViewsPayload, LogViewsRequest, ManagerError, ReplaceActiveEnvSetRequest,
+        ReplaceEnvGlobalsRequest, ReplaceSessionInterceptorsRequest, ReplaceSessionViewRequest,
+        ReplayRequestPayload, ReplayResult, RequestLibraryPage, RequestLibraryQuery,
+        RoutingSelection, SaveEnvSetRequest, ScriptRequest, SessionInterceptorsPayload,
+        SessionViewPayload, SessionsPayload, SystemLogsQuery, UpdateAgentsPresetRequest,
+        UpdateRequestLibraryRequest, UpdateScriptRequest, UpdateSessionRequest,
+        WorkflowCreateRequest, WorkflowImportRequest, WorkflowImportResult, WorkflowListQuery,
+        WorkflowPage, WorkflowUpdateRequest, WorkflowValidationIssue,
     },
     http::{HttpServerHandle, start_http_server_with_routes},
     session_share::{
@@ -38,8 +42,12 @@ use proxy_crab_mgr::{
 use proxy_crab_mitm::{
     ProxyCrab,
     flow::{
+        dry_run::ScriptDryRunOutput,
         env_sets::EnvGlobalVariables,
+        model::{Project, Workflow},
+        run_store::FlowRunRecord,
         store::{EnvVariableSet, RequestLibraryEntry},
+        transfer,
     },
     log_buffer::{BufferLayer, LogBuffer},
     model::{
@@ -837,6 +845,181 @@ async fn ingest_request_from_capture(
     state.manager().ingest_request_from_capture(request).await
 }
 
+/* ---- 请求工作流域（flow projects / workflows / 导入导出）----
+ * 桌面信任面薄包装：直调管理 trait，与 HTTP 管理面同类型、同 camelCase
+ * 线格式；命令层不加业务逻辑、不加工错误。 */
+
+/// 分页列出 flow 项目；`query` 的 limit/offset 缺省时返回全量。
+#[tauri::command]
+async fn list_flow_projects(
+    state: State<'_, BackendState>,
+    query: FlowListQuery,
+) -> Result<FlowProjectPage, ManagerError> {
+    state.manager().flow_projects(query).await
+}
+
+/// 新建 flow 项目（id 与时间戳由服务端生成）。
+#[tauri::command]
+async fn create_flow_project(
+    state: State<'_, BackendState>,
+    request: FlowProjectCreateRequest,
+) -> Result<Project, ManagerError> {
+    state.manager().create_flow_project(request).await
+}
+
+/// 读取单个 flow 项目；不存在返回 404 not_found。
+#[tauri::command]
+async fn get_flow_project(
+    state: State<'_, BackendState>,
+    id: String,
+) -> Result<Project, ManagerError> {
+    state.manager().flow_project(id).await
+}
+
+/// 局部更新 flow 项目：仅替换请求中出现的字段。
+#[tauri::command]
+async fn update_flow_project(
+    state: State<'_, BackendState>,
+    id: String,
+    request: FlowProjectUpdateRequest,
+) -> Result<Project, ManagerError> {
+    state.manager().update_flow_project(id, request).await
+}
+
+/// 删除 flow 项目；其中流程的去留语义与 HTTP 层一致（由 manager 决定）。
+#[tauri::command]
+async fn delete_flow_project(
+    state: State<'_, BackendState>,
+    id: String,
+) -> Result<(), ManagerError> {
+    state.manager().delete_flow_project(id).await
+}
+
+/// 列出流程定义；`query.project_id` 过滤所属项目后再分页。
+#[tauri::command]
+async fn list_workflows(
+    state: State<'_, BackendState>,
+    query: WorkflowListQuery,
+) -> Result<WorkflowPage, ManagerError> {
+    state.manager().workflows(query).await
+}
+
+/// 新建流程定义（id 与时间戳由服务端生成）。
+#[tauri::command]
+async fn create_workflow(
+    state: State<'_, BackendState>,
+    request: WorkflowCreateRequest,
+) -> Result<Workflow, ManagerError> {
+    state.manager().create_workflow(request).await
+}
+
+/// 读取单个流程定义；不存在返回 404 not_found。
+#[tauri::command]
+async fn get_workflow(
+    state: State<'_, BackendState>,
+    id: String,
+) -> Result<Workflow, ManagerError> {
+    state.manager().workflow(id).await
+}
+
+/// 保存流程画布图：`nodes`+`edges` 作为整体图单元必须成对出现，
+/// 其他出现的字段逐项替换（语义在 manager 内实现）。
+#[tauri::command]
+async fn save_workflow_graph(
+    state: State<'_, BackendState>,
+    id: String,
+    request: WorkflowUpdateRequest,
+) -> Result<Workflow, ManagerError> {
+    state.manager().update_workflow(id, request).await
+}
+
+/// 删除流程定义。
+#[tauri::command]
+async fn delete_workflow(state: State<'_, BackendState>, id: String) -> Result<(), ManagerError> {
+    state.manager().delete_workflow(id).await
+}
+
+/// 校验流程图，返回阻塞运行的 issue 列表（不阻塞保存）。
+#[tauri::command]
+async fn validate_workflow(
+    state: State<'_, BackendState>,
+    id: String,
+) -> Result<Vec<WorkflowValidationIssue>, ManagerError> {
+    state.manager().validate_workflow(id).await
+}
+
+/// 导出流程信封文档本体（secret 置空、携带引用的请求库条目；桌面由前端
+/// 映射层经 saveFile 落盘，非 HTTP 下载）。未知 id 返回 404。
+#[tauri::command]
+async fn export_workflows(
+    state: State<'_, BackendState>,
+    ids: Vec<String>,
+) -> Result<transfer::WorkflowExportFile, ManagerError> {
+    state.manager().export_workflows(ids).await
+}
+
+/// 导入一份流程导出信封：形状校验、确认脚本语义、名称去重与 id 重映射
+/// 均发生在写入前（语义在 manager 内实现）。
+#[tauri::command]
+async fn import_workflows(
+    state: State<'_, BackendState>,
+    request: WorkflowImportRequest,
+) -> Result<WorkflowImportResult, ManagerError> {
+    state.manager().import_workflows(request).await
+}
+
+/* ---- 运行域（workflow runs）：错误码由 manager 映射后在命令层原样透传 ---- */
+
+/// 分页列出运行记录（最新在前）；先按 workflow/status 过滤再分页。
+#[tauri::command]
+async fn list_flow_runs(
+    state: State<'_, BackendState>,
+    query: FlowRunListQuery,
+) -> Result<FlowRunPage, ManagerError> {
+    state.manager().workflow_runs(query).await
+}
+
+/// 读取运行详情（含逐节点 checkpoint `nodeRuns`）；图快照随记录走，
+/// 流程定义变更后仍可渲染。
+#[tauri::command]
+async fn get_flow_run_detail(
+    state: State<'_, BackendState>,
+    run_id: String,
+) -> Result<FlowRunDetailPayload, ManagerError> {
+    state.manager().workflow_run_detail(run_id).await
+}
+
+/// 触发一次运行：立即返回运行记录（编排任务异步执行）。前置条件失败
+/// 不落库，错误码（409 proxy_not_running / 404 not_found / 409 conflict /
+/// 422 workflow_graph_invalid / 运行记录库不可用）在 manager 内完成映射。
+#[tauri::command]
+async fn trigger_flow_run(
+    state: State<'_, BackendState>,
+    request: FlowRunTriggerRequest,
+) -> Result<FlowRunRecord, ManagerError> {
+    state.manager().trigger_workflow_run(request).await
+}
+
+/// 取消运行中的记录；取消已结束/未知记录返回 404（不做幂等承诺）。
+#[tauri::command]
+async fn cancel_flow_run(
+    state: State<'_, BackendState>,
+    run_id: String,
+) -> Result<(), ManagerError> {
+    state.manager().cancel_workflow_run(run_id).await
+}
+
+/// 试跑一个前置/后置脚本：一次性 VM 内执行，不落库、不广播。成功返回
+/// `{ok,value,warnings}`，失败返回 `{ok:false,error:{kind,message}}`
+/// （kind：syntax|blocked|runtime|timeout|invalid-return）。
+#[tauri::command]
+async fn flow_script_dry_run(
+    state: State<'_, BackendState>,
+    request: FlowScriptDryRunRequest,
+) -> Result<ScriptDryRunOutput, ManagerError> {
+    state.manager().flow_script_dry_run(request).await
+}
+
 #[tauri::command]
 async fn list_interceptors(
     state: State<'_, BackendState>,
@@ -1382,6 +1565,24 @@ pub fn run() {
             update_request_library_entry,
             delete_request_library_entry,
             ingest_request_from_capture,
+            list_flow_projects,
+            create_flow_project,
+            get_flow_project,
+            update_flow_project,
+            delete_flow_project,
+            list_workflows,
+            create_workflow,
+            get_workflow,
+            save_workflow_graph,
+            delete_workflow,
+            validate_workflow,
+            export_workflows,
+            import_workflows,
+            list_flow_runs,
+            get_flow_run_detail,
+            trigger_flow_run,
+            cancel_flow_run,
+            flow_script_dry_run,
             body_download::fetch_request_library_body,
             list_interceptors,
             create_interceptor,
