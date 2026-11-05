@@ -54,6 +54,8 @@ import type {
   LogIdsRequest,
   LogViewsRequest,
   ManagerError,
+  McpAuditEntry,
+  McpTiers,
   PendingApproval,
   PermissionEntry,
   PermissionIdentitySummary,
@@ -351,6 +353,16 @@ export function createTauriBackend(): Backend {
         call<EnvGlobalVariables>("replace_env_globals", { request }),
       writeBack: (request: EnvWriteBackRequest) =>
         call<EnvWriteBackResult>("env_write_back", { request }),
+    },
+    mcpTiers: {
+      get: () => call<McpTiers>("get_mcp_tiers"),
+      save: (tiers: McpTiers) => call<McpTiers>("replace_mcp_tiers", { tiers }),
+      toolCount: () => call<number>("get_mcp_tool_count"),
+    },
+    mcpAudit: {
+      // Rust 侧返回 Vec<McpAuditEntry>，这里包成 {entries} 对齐 McpAuditPage。
+      list: (limit?: number) =>
+        call<McpAuditEntry[]>("list_mcp_audit", { limit }).then((entries) => ({ entries })),
     },
     workflows: {
       listProjects: () => call<FlowProjectsPage>("list_flow_projects"),

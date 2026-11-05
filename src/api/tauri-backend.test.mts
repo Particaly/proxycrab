@@ -188,7 +188,7 @@ test("desktop bundle import passes file bytes and explicit intent IDs through IP
   );
 });
 
-test("desktop exposes the workflow, run and dry-run capability groups", () => {
+test("desktop exposes the workflow, run, dry-run and MCP capability groups", () => {
   const backend = createTauriBackend();
   expect(Object.keys(backend.workflows!).sort()).toEqual([
     "createProject",
@@ -205,6 +205,8 @@ test("desktop exposes the workflow, run and dry-run capability groups", () => {
   ]);
   expect(Object.keys(backend.flowRuns!).sort()).toEqual(["cancel", "get", "list", "trigger"]);
   expect(typeof backend.flowScriptDryRun).toBe("function");
+  expect(Object.keys(backend.mcpTiers!).sort()).toEqual(["get", "save", "toolCount"]);
+  expect(Object.keys(backend.mcpAudit!).sort()).toEqual(["list"]);
 });
 
 test("desktop workflow CRUD calls snake_case commands with camelCase argument keys", async () => {
@@ -352,4 +354,43 @@ test("desktop script dry-run posts the sample payload through IPC without HTTP",
   vi.mocked(invoke).mockResolvedValue(result);
   expect(await createTauriBackend().flowScriptDryRun!(request)).toEqual(result);
   expect(invoke).toHaveBeenCalledExactlyOnceWith("flow_script_dry_run", { request }, undefined);
+});
+
+test("desktop MCP tier switches round-trip through commands without raw JSON-RPC", async () => {
+  const backend = createTauriBackend();
+  const tiers = { read: true, write: false, execute: false };
+  vi.mocked(invoke).mockResolvedValueOnce(tiers);
+  expect(await backend.mcpTiers!.get()).toEqual(tiers);
+  expect(invoke).toHaveBeenCalledExactlyOnceWith("get_mcp_tiers", undefined, undefined);
+  vi.mocked(invoke).mockClear();
+  const enabled = { read: true, write: true, execute: false };
+  vi.mocked(invoke).mockResolvedValueOnce(enabled);
+  expect(await backend.mcpTiers!.save(enabled)).toEqual(enabled);
+  expect(invoke).toHaveBeenCalledExactlyOnceWith(
+    "replace_mcp_tiers",
+    { tiers: enabled },
+    undefined,
+  );
+  vi.mocked(invoke).mockClear();
+  vi.mocked(invoke).mockResolvedValueOnce(7);
+  expect(await backend.mcpTiers!.toolCount()).toBe(7);
+  expect(invoke).toHaveBeenCalledExactlyOnceWith("get_mcp_tool_count", undefined, undefined);
+});
+
+test("desktop MCP audit wraps the entry vector into the {entries} page shape", async () => {
+  const entry = {
+    seq: 2,
+    timestampMs: 1_700_000_000_000,
+    tool: "workflow_runs_list",
+    identity: "local",
+    argumentsSummary: "{}",
+    outcome: "ok",
+    decision: "allowed",
+  };
+  vi.mocked(invoke).mockResolvedValue([entry]);
+  const backend = createTauriBackend();
+  expect(await backend.mcpAudit!.list(50)).toEqual({ entries: [entry] });
+  expect(invoke).toHaveBeenCalledExactlyOnceWith("list_mcp_audit", { limit: 50 }, undefined);
+  await backend.mcpAudit!.list();
+  expect(invoke).toHaveBeenLastCalledWith("list_mcp_audit", { limit: undefined }, undefined);
 });
