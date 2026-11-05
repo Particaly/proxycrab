@@ -44,6 +44,8 @@ use proxy_crab_mitm::{
     flow::{
         dry_run::ScriptDryRunOutput,
         env_sets::EnvGlobalVariables,
+        mcp_audit::McpAuditEntry,
+        mcp_tiers::McpTiers,
         model::{Project, Workflow},
         run_store::FlowRunRecord,
         store::{EnvVariableSet, RequestLibraryEntry},
@@ -1020,6 +1022,39 @@ async fn flow_script_dry_run(
     state.manager().flow_script_dry_run(request).await
 }
 
+/* ---- MCP 暴露档位 / 调用审计（设置窗口两分区）---- */
+
+/// 读取 MCP 暴露三档开关（读/写/执行；缺省读开、写/执行关）。
+#[tauri::command]
+async fn get_mcp_tiers(state: State<'_, BackendState>) -> Result<McpTiers, ManagerError> {
+    state.manager().mcp_tiers().await
+}
+
+/// 整体替换 MCP 暴露三档开关并返回保存后的值。
+#[tauri::command]
+async fn replace_mcp_tiers(
+    state: State<'_, BackendState>,
+    tiers: McpTiers,
+) -> Result<McpTiers, ManagerError> {
+    state.manager().replace_mcp_tiers(tiers).await
+}
+
+/// 查询 MCP 工具调用审计（seq 倒序，最新在前）；`limit` 缺省 100，
+/// 上限由存储层收敛（500），与 `GET /api/mcp-audit` 同语义。
+#[tauri::command]
+async fn list_mcp_audit(
+    state: State<'_, BackendState>,
+    limit: Option<usize>,
+) -> Result<Vec<McpAuditEntry>, ManagerError> {
+    state.manager().mcp_audit(limit.unwrap_or(100)).await
+}
+
+/// 当前档位下 `POST /mcp` `tools/list` 会出现的工具数。
+#[tauri::command]
+async fn get_mcp_tool_count(state: State<'_, BackendState>) -> Result<usize, ManagerError> {
+    state.manager().mcp_tool_count().await
+}
+
 #[tauri::command]
 async fn list_interceptors(
     state: State<'_, BackendState>,
@@ -1583,6 +1618,10 @@ pub fn run() {
             trigger_flow_run,
             cancel_flow_run,
             flow_script_dry_run,
+            get_mcp_tiers,
+            replace_mcp_tiers,
+            list_mcp_audit,
+            get_mcp_tool_count,
             body_download::fetch_request_library_body,
             list_interceptors,
             create_interceptor,
