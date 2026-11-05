@@ -146,7 +146,8 @@ return data and data.code or nil
 - **画布编排**：开始 / 请求重放 / 条件 / 循环 / 延时 / 设置变量 / 断言 / 转换 / 便签 9 类节点，连线即执行路径。
 - **DAG 执行**：内嵌 JS 引擎按图调度节点，条件与循环控制走向，脚本可写回环境变量，secret 值全程脱敏。
 - **运行记录与运行画布**：每次运行保存图快照与逐节点状态、耗时和错误，可在运行画布中查看执行过程。
-- **Agent 面脚本**：`request-library-ingest/query`、`workflow-list/get/save/validate`、`run-trigger/wait/cancel/query` 十个脚本，让 Agent 经管理 API 编排与触发运行；运行类工具同时经 MCP 暴露，与 HTTP API 共用同一权限体系与审批链（详细文档后续补充）。
+- **桌面入口**：「资产」菜单提供「工作流」「工作流导入导出」「运行记录」入口，编辑器内可直接「运行」并试跑脚本；设置窗口提供「MCP 暴露」与「MCP 调用审计」分区。
+- **Agent 面脚本**：`request-library-ingest/query`、`workflow-list/get/save/validate`、`run-trigger/wait/cancel/query` 十个脚本，让 Agent 经管理 API 编排与触发运行；运行类工具同时经 MCP 暴露，与 HTTP API 共用同一权限体系与审批链，详见 [管理 API](docs/backend-api.md) 与 [MCP 接入](docs/mcp.md)。
 
 <!-- 截图占位：请求工作流画布与运行记录（截图后补） -->
 

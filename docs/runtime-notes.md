@@ -182,6 +182,12 @@ appends its node checkpoints (`nodeRuns`).
   run-level and node-level events share one resource domain, so the frontend
   re-pulls the run list/detail instead of modeling per-event payloads. A lagged
   broadcast subscriber still emits the change; lag never breaks the bridge.
+  Desktop degradation (agreed decision): the Tauri bridge subscribes to this
+  stream through the management HTTP service (`http.subscribe_changes()` →
+  `proxycrab://http-api-change`). When that service cannot start, desktop run
+  progress is not live — triggering, cancelling, listing, and reading runs keep
+  working through trusted Tauri commands that call the manager directly, and
+  the run-history window's manual refresh is the fallback.
 - VM limits and inputs: workflow execution reuses `FlowLimits::default()` —
   64 MiB QuickJS heap, 100,000 interrupt-handler ticks, and a 30-second
   accumulated active wall clock (time spent awaiting host calls does not
