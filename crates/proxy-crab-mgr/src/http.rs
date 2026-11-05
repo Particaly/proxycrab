@@ -7060,8 +7060,9 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         let invalid_workflow_id = payload["data"]["id"].as_str().unwrap().to_owned();
 
-        // 代理未运行：未知工作流 404（输入读取先于代理检查）；无效图 409
-        // proxy_not_running（代理检查先于图校验）。都不建单。
+        // 代理未运行（流程运行不要求代理）：未知工作流 404（输入读取先于
+        // 会话检查）；无活动 Session → 409 conflict（会话检查先于图校验）。
+        // 都不建单。
         let (status, payload) = flow_request(
             app.clone(),
             Method::POST,
@@ -7079,7 +7080,7 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::CONFLICT);
-        assert_eq!(payload["error"]["code"], "proxy_not_running");
+        assert_eq!(payload["error"]["code"], "conflict");
         let (status, payload) =
             flow_request(app.clone(), Method::GET, "/api/flow/runs", None).await;
         assert_eq!(status, StatusCode::OK);
@@ -7087,22 +7088,6 @@ mod tests {
             payload["data"]["total"], 0,
             "no run row is created on guards"
         );
-
-        // 代理运行后：无活动 Session → 409 conflict（会话检查先于图校验）。
-        let mut config = runtime.config();
-        config.proxy_host = "127.0.0.1".into();
-        config.proxy_port = unused_port();
-        runtime.replace_config(config).await.unwrap();
-        runtime.start_proxy().await.unwrap();
-        let (status, payload) = flow_request(
-            app.clone(),
-            Method::POST,
-            "/api/flow/runs",
-            Some(&format!(r#"{{"workflowId":"{invalid_workflow_id}"}}"#)),
-        )
-        .await;
-        assert_eq!(status, StatusCode::CONFLICT);
-        assert_eq!(payload["error"]["code"], "conflict");
 
         // 有 Session 后：无效图 422；指定不存在的 Session 404。
         let session = runtime.create_session(NewSession::default()).unwrap();

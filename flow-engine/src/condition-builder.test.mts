@@ -397,7 +397,7 @@ describe("保存前校验（validateConditionTree）", () => {
     ).toBeNull();
   });
 
-  it("node / env 引用阻断（条件沙箱仅 input / var）；未知引用阻断", () => {
+  it("node / env / fake 引用阻断（条件沙箱仅 input / var）；未知引用阻断", () => {
     expect(
       validateConditionTree(single("{{ node.n1.output.token }}", "eq", "a")),
     ).toMatchInlineSnapshot(
@@ -407,6 +407,9 @@ describe("保存前校验（validateConditionTree）", () => {
       validateConditionTree(single("{{ input.token }}", "eq", "{{ env.KEY }}")),
     ).toMatchInlineSnapshot(
       `"第 1 条条件：右值的 {{ env.KEY }} 引用在条件表达式中不可用（条件沙箱仅支持 input / var 引用）"`,
+    );
+    expect(validateConditionTree(single("{{ fake.phone }}", "eq", "a"))).toMatchInlineSnapshot(
+      `"第 1 条条件：左值的 {{ fake.phone }} 引用在条件表达式中不可用（条件沙箱仅支持 input / var 引用）"`,
     );
     expect(validateConditionTree(single("{{ }}", "eq", "a"))).toBe(
       "第 1 条条件：左值存在无法识别的模板引用（{{  }}）",

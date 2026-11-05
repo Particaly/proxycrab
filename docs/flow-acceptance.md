@@ -17,25 +17,26 @@ ReqFlow 复刻（计划 `docs/superpowers/plans/2026-11-03-request-workflow-repr
 | A-09 | 导入导出往返 | 工作流导出/导入、refId 迁移、脚本审查 | 23 | 可执行 |
 | A-10 | 请求库导入三格式入库核对 | cURL/HAR/Postman 导入 | 8 | 可执行 |
 | A-11 | 环境变量集激活切换与 secret 脱敏显示 | 激活切换、掩码读写、运行期冻结 | 17 | 可执行 |
+| A-12 | 内置假数据模板变量（{{ fake.* }}） | fake 命名空间渲染、同执行一致性与重随机、独立重放窗口渲染 | 20 | 可执行 |
 
-通用说明：运行记录/运行画布窗口已可用（主计划 Task 1–28 已完成，桌面 Tauri 接线已合入）。运行态核对优先走桌面入口：工作流编辑器（资产 > 「工作流」）内点「运行」直接触发并进入运行画布，资产 > 「运行记录」窗口可查看列表、运行详情与取消；HTTP 路径（`GET /api/flow/runs` / `GET /api/flow/runs/{id}`，本机回环默认 `LocalLoopback` 身份可读）仍是可用的核对手段。经 HTTP 触发时 `POST /api/flow/runs` 默认档位 `approval`，本机回环需先在 设置 > 管理接口 将该 action 调为 `allow`（或届时点审批）；桌面「运行」按钮走信任面 Tauri 命令，不经审批链。注意：管理 HTTP 服务未启动时桌面无实时运行进度，运行记录窗口手动刷新兜底。
+通用说明：运行记录/运行画布已可用（主计划 Task 1–28 已完成，桌面 Tauri 接线已合入）。运行态核对优先走桌面入口：工作流编辑器已内嵌主界面（左侧边栏手风琴「工作流」区块，资产菜单同名项也切到该区块），区块内点「运行」直接触发并进入运行画布，左侧手风琴「运行记录」区块可查看列表、运行详情与取消（侧栏为筛选 + 分页运行列表，点行在主区打开运行详情画布；资产菜单「运行记录」同名项也切到该区块）；HTTP 路径（`GET /api/flow/runs` / `GET /api/flow/runs/{id}`，本机回环默认 `LocalLoopback` 身份可读）仍是可用的核对手段。经 HTTP 触发时 `POST /api/flow/runs` 默认档位 `approval`，本机回环需先在 设置 > 管理接口 将该 action 调为 `allow`（或届时点审批）；桌面「运行」按钮走信任面 Tauri 命令，不经审批链。注意：管理 HTTP 服务未启动时桌面无实时运行进度，运行记录区块的手动刷新兜底。
 
 ## A-01 真实流量入库并重放
 
 对回上游 ROADMAP：请求重放（M1/M5）＋请求中心（M2）＋运行记录（M6/M17）主线。
 
-- 前置条件：代理运行中、存在已抓到目标站点流量的活动 Session；工作区正常打开。
+- 前置条件：存在已抓到目标站点流量的活动 Session（流程运行不要求代理运行中）；工作区正常打开。
 - 操作步骤：
   1. 日志表选中一条目标请求，右键「存入请求库」（或详情页入库入口）。
-  2. 打开「请求库」窗口核对新条目：命名 `METHOD host+path`、来源徽标「抓包入库」、Headers/Query/Body/Response 四 tab 与原请求一致。
-  3. 打开「工作流编辑器」新建流程，拖入一个「请求」节点并从请求库选中该条目，连接 开始 → 请求 → 结束，显式保存。
+  2. 切到左侧边栏手风琴「请求库」区块核对新条目：命名 `METHOD host+path`、来源徽标「抓包入库」、Headers/Query/Body/Response 四 tab 与原请求一致。
+  3. 切到手风琴「工作流」区块新建流程，拖入一个「请求」节点并从请求库选中该条目，连接 开始 → 请求 → 结束（画布自动保存，约 1 秒后工具条圆点转灰）。
   4. 触发运行（桌面入口可用：编辑器内直接点「运行」；或 `curl -X POST http://127.0.0.1:18089/api/flow/runs -H 'Content-Type: application/json' -d '{"workflowId":"<id>"}'`）。
 - 预期结果：
   - 返回立即给出 run id；`GET /api/flow/runs/{id}` 终态 `success`，`nodeRuns` 中请求节点有入参/返回值快照与耗时。
-  - 桌面端「运行记录」窗口出现该 run，运行详情（运行画布）的逐节点状态与耗时和 `nodeRuns` 一致，可与 API 核对互相印证。
+  - 桌面端左侧手风琴「运行记录」区块出现该 run，运行详情（运行画布）的逐节点状态与耗时和 `nodeRuns` 一致，可与 API 核对互相印证。
   - 活动 Session 新增一条 source=`ProxyCrabRequest` 的 capture，method/url 与入库条目一致。
   - 运行期间画布拦截结构性编辑（删除/连线/粘贴）并给单例提示，结束后解锁。
-- 失败排查：`409 proxy_not_running` → 代理未启动，先启动代理再触发；`404` → workflowId 不存在或目标 Session 已归档，核对 ID 与 Session 状态。
+- 失败排查：`404` → workflowId 不存在或目标 Session 已归档，核对 ID 与 Session 状态；`409 conflict` → 无活动 Session，先选中活动 Session。
 
 ## A-02 头保真（Origin/Referer/UA 与 Cookie 快照）
 
@@ -43,15 +44,15 @@ ReqFlow 复刻（计划 `docs/superpowers/plans/2026-11-03-request-workflow-repr
 
 - 前置条件：A-01 条目已在库中且原请求携带 Origin/Referer/User-Agent/Cookie；代理运行中。
 - 操作步骤：
-  1. 编辑器选中该请求节点，配置抽屉展开「保真与 Cookie」：Origin/Referer/User-Agent 三项保持「捕获值」，Cookie 模式保持「快照」，保存。
+  1. 编辑器选中该请求节点，配置抽屉「③ 请求头」：Origin/Referer/User-Agent/Cookie 四行值全部留空（留空 = 回放快照捕获值，捕获值经占位提示就地展示）。
   2. 触发运行（同 A-01 第 4 步）。
   3. Session 日志筛出新 capture，详情 Headers 与原请求逐项对比。
-  4. 将 User-Agent 切为「自定义」填入 `flow-acceptance-agent`，再触发一次，核对新 capture。
+  4. 在 User-Agent 行填入 `flow-acceptance-agent`（填写即自定义覆盖），再触发一次，核对新 capture。
 - 预期结果：
-  - 「捕获值」运行：Origin/Referer/User-Agent/Cookie 与捕获时逐字节一致（Rust 直发，无 forbidden header 删改）。
-  - 「自定义」运行：新 capture 的 UA 为自定义值，其余两项仍为捕获值。
+  - 全留空运行：Origin/Referer/User-Agent/Cookie 与捕获时逐字节一致（Rust 直发，无 forbidden header 删改）。
+  - 覆盖运行：新 capture 的 UA 为自定义值，其余三项仍为捕获值。
   - 节点返回值快照 status 与上游一致；4xx/5xx 不判节点失败（按 ReqFlow 语义交由断言/条件判定）。
-- 失败排查：头被改写 → 检查节点「覆盖项」是否残留同名自定义头行（覆盖优先于保真）；Cookie 缺失 → 该条目入库时无 Cookie（抓包未解密成功）或 cookieMode 被切到自定义且值为空。
+- 失败排查：头被改写 → 检查节点「覆盖项」是否残留同名自定义头行（覆盖优先于保真）；Cookie 缺失 → 该条目入库时无 Cookie（抓包未解密成功）或 Cookie 行被填入过自定义值。
 
 ## A-03 条件真/假走向
 
@@ -87,7 +88,7 @@ ReqFlow 复刻（计划 `docs/superpowers/plans/2026-11-03-request-workflow-repr
 
 对回上游 ROADMAP：脚本注入 env 形参（M14-T2）＋脚本写回环境变量（M14-T3）。
 
-- 前置条件：环境变量窗口已建集合 `dev` 并激活；代理运行中；请求库有一条返回 JSON（含 token 类字段）的条目。
+- 前置条件：手风琴「环境变量」区块已建集合 `dev` 并激活；代理运行中；请求库有一条返回 JSON（含 token 类字段）的条目。
 - 操作步骤：
   1. 请求节点后置脚本写 `env.token = response.json.token`，保存；可先在脚本编辑器试跑（`POST /api/flow/script/dry-run`，默认 `approval`，脚本内容不进审批预览与日志）。
   2. 触发运行并等终态。
@@ -180,7 +181,7 @@ ReqFlow 复刻（计划 `docs/superpowers/plans/2026-11-03-request-workflow-repr
 
 对回上游 ROADMAP：环境变量集（M10-T4）＋secret 变量全链路脱敏（M9-T5）。
 
-- 前置条件：环境变量窗口可用（Backend 提供 `envSets` 能力位）；请求库有一条目标条目。
+- 前置条件：手风琴「环境变量」区块可用（Backend 提供 `envSets` 能力位）；请求库有一条目标条目。
 - 操作步骤：
   1. 建两个集合 `dev`/`prod`：各含普通变量 `baseUrl` 与 secret 变量 `apiToken`（值不同）。
   2. `GET /api/env-sets` 核对：`secretValues` 全部显示 `******`，普通值明文。
@@ -192,3 +193,21 @@ ReqFlow 复刻（计划 `docs/superpowers/plans/2026-11-03-request-workflow-repr
   - 掩码 `******` 回传不损坏 secret（读改写往返后 `GET` 仍掩码、重放仍用原值）；显式新值覆盖原值。
   - 删除激活集合自动清激活偏好；工作流导出信封不含 secret 表。
 - 失败排查：模板渲染为空 → 未激活集合或变量名大小写不符；secret 意外变更 → 上一步误用显式新值覆盖（预期行为），重新录入即可。
+
+## A-12 内置假数据模板变量（{{ fake.* }}）
+
+对回本仓功能：fake 命名空间（flow-engine/src/fake.ts 生成器 + template.ts 渲染 + 配置面板建议/插入）。
+
+- 前置条件：工作流编辑器可用；活动 Session 存在（流程运行不要求代理运行中）；有可回放的上游（本地测试上游或请求库条目均可）。
+- 操作步骤：
+  1. 建流程：请求节点 URL 写 `http://<上游>/api?phone={{ fake.phone }}&page={{ fake.number(1,100) }}`，请求头加 `x-uid: {{ fake.hex(8) }}`，文本 body 写 `{"phone":"{{ fake.phone }}","email":"{{ fake.email }}","name":"{{ fake.name }}"}`。
+  2. 在 URL 输入框输入 `{{ fake.` 核对建议浮层出现生成器候选；body 区点「插入假数据」按钮核对下拉菜单插入。
+  3. 触发运行到终态，从运行详情 / `GET /api/flow/runs/{id}` 读节点 input，并核对目标 Session 新 capture 的实际请求。
+  4. 同一流程再跑一次，对比两次 capture。
+  5. 打开「重放请求」窗口（日志表右键重放），URL 填 `http://<上游>/api?email={{ fake.email }}`、body 填含 `{{ fake.email }}` 的 JSON，发送后核对 capture。
+- 预期结果：
+  - 运行 success；capture 的 URL / 头 / body 中模板已替换为形态正确的假数据（11 位手机号、区间内整数、合法校验位身份证等）。
+  - 同一次运行内 URL 与 body 中的 `{{ fake.phone }}` 为同一号码（同节点执行一致）；两次运行之间号码不同（逐次重随机）；循环节点每迭代独立取值。
+  - 条件节点左右值写 `{{ fake.* }}` 时保存校验阻断（提示条件沙箱仅支持 input / var）；未知生成器（如 `{{ fake.nope }}`）渲染为空且节点 checkpoint 带告警，运行不失败。
+  - 独立重放窗口发送后 capture 同样呈现已替换值；URL 与 body 同表达式取同一值；非 fake 表达式（如 `{{ var.x }}`）保持原文不动。
+- 失败排查：模板原样未替换 → 流程节点未触发运行（仅保存不渲染），或独立重放窗口表达式写错（失败保留原文便于肉眼发现）；建议浮层无 fake. 根 → 输入框非表达式建议组件（body 原生 textarea 走「插入假数据」按钮）；值形态可疑 → 对照 fake.ts 元数据表的示例口径。

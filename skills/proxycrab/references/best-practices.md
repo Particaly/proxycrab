@@ -56,9 +56,16 @@ pipeline. Keep the loop explicit and observable:
    terminal node digest or `run-query.mjs`; report the digest as observed instead of inventing
    node input/output.
 
-A run requires the proxy to be running and an existing target Session (explicit `--session-id` or
-the active Session); a stopped proxy fails with `409 proxy_not_running` before any run row is
-written.
+A run requires an existing target Session (explicit `--session-id` or the active Session); the
+proxy does not need to be running — replays execute on a flow-dedicated connection generation.
+A missing Session fails with `404`/`409` before any run row is written.
+
+When endpoints require fresh per-run field values (unique phone / email / order numbers), prefer
+the built-in fake-data templates over hard-coded samples — write `{{ fake.phone }}`,
+`{{ fake.number(1,100) }}`, `{{ fake.uuid }}` into the replay node's `url` / `headers` / `body`
+config and every run (and every loop iteration) generates new values; the same expression within
+one node execution stays consistent across URL, headers, and body. See the
+[template table](http-api.md#workflow-runs) for the full generator list.
 
 Know the risks before triggering:
 

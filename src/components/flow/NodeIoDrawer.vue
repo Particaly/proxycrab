@@ -11,14 +11,15 @@ import {
 } from "./io-field-tree";
 
 /**
- * 节点入参 / 出参抽屉（ReqFlow 复刻计划 Task 15 薄片 B Step 3）。
+ * 节点入参 / 出参抽屉（ReqFlow 复刻计划 Task 15 薄片 B Step 3，形态随后续
+ * 薄片演进为入参 / 出参分 tab，与右侧配置抽屉的 tab 口径一致）。
  *
  * 形态自归档 `_archive/reqflow/src/app/pages/editor/NodeIoDrawer.tsx @ 485fa00`
  * 移植（React + Radix OverlayDrawer → 本仓 Vue 3 scoped 样式 + 固定定位抽屉
- * 壳；两分组平铺替代上游 tab 切换，可展开字段树替代上游扁平 chip 流 + JSON
- * 树查看器双轨）：入参 / 出参 JSON 样本经 collectJsonPaths 展开为字段树，
- * 字段行 chip 点击复制模板引用，起拖经自定义 MIME（见 template-dnd.ts）落
- * 入表达式输入框生成引用——落点接线由表达式输入侧消费
+ * 壳；入参 / 出参 tab 切换替代上游平铺双分组，可展开字段树替代上游扁平
+ * chip 流 + JSON 树查看器双轨）：入参 / 出参 JSON 样本经 collectJsonPaths
+ * 展开为字段树，字段行 chip 点击复制模板引用，起拖经自定义 MIME（见
+ * template-dnd.ts）落入表达式输入框生成引用——落点接线由表达式输入侧消费
  * `ExpressionInput.insertSnippet`（内部走 buildDropInsertPlan），插入路径
  * 单一出口。
  *
@@ -28,10 +29,13 @@ import {
  *   - 出参：带节点前缀 `{{ node.<refId>.<path> }}`（给下游节点用；多上游
  *     聚合时入参是 `{ 引用键: 输出 }` 对象，裸路径会有歧义）。
  *
- * 试跑结果标注：trialPaths 命中的字段行加「试跑」徽标（会话态由后续薄片
- * 注入，本组件不自带）。搜索框按路径段前缀 + 整路径子串过滤（同
- * io-field-tree 口径，与提示浮层「能补全的」一致）；长路径省略号截断、
- * title 展示完整引用。
+ * 样本标注：trialPaths 命中的字段行加「样本」徽标（脚本试跑与运行记录的
+ * checkpoint 都会并入样本桶，见 stores/flow-trial.ts）。搜索框按路径段前缀 +
+ * 整路径子串过滤（同 io-field-tree 口径，与提示浮层「能补全的」一致）；长
+ * 路径省略号截断、title 展示完整引用。
+ *
+ * tab 口径：切节点复位到「入参」；当前 tab 无样本而另一 tab 有数据时自动
+ * 切换（开始节点只有出参等场景），两侧都有数据后以手动选择优先。
  *
  * 全部数据由 props 注入（nodeRefId / inputSample / outputSample /
  * trialPaths），不自带会话态；open 受控（缺省 true——调用方亦可直接 v-if
@@ -39,20 +43,26 @@ import {
  * 薄片负责。
  */
 
-const props = defineProps<{
-  /** 节点引用 id（出参模板前缀 `node.<refId>` 段；同时是搜索 / 展开态的复位信号） */
-  nodeRefId: string;
-  /** 节点展示名（头部徽标；缺省回退 nodeRefId） */
-  nodeLabel?: string;
-  /** 是否打开（受控；false 不渲染。Esc / 关闭按钮 emit close，不改自身状态） */
-  open?: boolean;
-  /** 入参 JSON 样本（最近一次运行入参 / 上游输出聚合；缺省或 null = 暂无数据） */
-  inputSample?: unknown | null;
-  /** 出参 JSON 样本（最近一次运行输出 / 试跑输出；缺省或 null = 暂无数据） */
-  outputSample?: unknown | null;
-  /** 来自试跑结果的字段路径集合（与各组字段树节点 path 同一口径；命中加「试跑」徽标） */
-  trialPaths?: ReadonlyArray<string>;
-}>();
+const props = withDefaults(
+  defineProps<{
+    /** 节点引用 id（出参模板前缀 `node.<refId>` 段；同时是搜索 / 展开态的复位信号） */
+    nodeRefId: string;
+    /** 节点展示名（头部徽标；缺省回退 nodeRefId） */
+    nodeLabel?: string;
+    /** 是否打开（受控；false 不渲染。Esc / 关闭按钮 emit close，不改自身状态） */
+    open?: boolean;
+    /** 入参 JSON 样本（最近一次运行入参 / 上游输出聚合；缺省或 null = 暂无数据） */
+    inputSample?: unknown | null;
+    /** 出参 JSON 样本（最近一次运行输出 / 试跑输出；缺省或 null = 暂无数据） */
+    outputSample?: unknown | null;
+    /** 来自试跑结果的字段路径集合（与各组字段树节点 path 同一口径；命中加「试跑」徽标） */
+    trialPaths?: ReadonlyArray<string>;
+  }>(),
+  // 缺省必须显式给 true：Vue 对 Boolean prop 的转换是「调用方完全省略 →
+  // 填 false」（显式传 undefined 才保持 undefined），`open !== false` 的
+  // 写法拦不住省略场景，曾致入参 / 出参抽屉挂载后整体不渲染。
+  { open: true },
+);
 
 const emit = defineEmits<{ close: [] }>();
 
@@ -71,23 +81,15 @@ watch(
   () => {
     query.value = "";
     expandedPaths.value = new Set();
+    activeTab.value = "input";
   },
 );
 
 /** 试跑路径集（Set 查找；prop 变化时重建） */
 const trialSet = computed(() => new Set(props.trialPaths ?? []));
 
-/** 分组静态定义（树 / 过滤 / 行清单视图按组分别派生，见 groupDefs） */
-interface IoGroupDef {
-  key: "input" | "output";
-  title: string;
-  sample: unknown;
-}
-
-const GROUP_DEFS: ReadonlyArray<IoGroupDef> = [
-  { key: "input", title: "入参", sample: null },
-  { key: "output", title: "出参", sample: null },
-];
+/** 当前激活的样本 tab（切节点复位入参；无样本时自动切到有数据的一侧） */
+const activeTab = ref<"input" | "output">("input");
 
 /** 单组展开判定：搜索时全展开（命中的深层字段直接可见）；顶层默认展开；
  * 其余按用户手动展开集 */
@@ -114,17 +116,41 @@ function groupView(sample: unknown, keyword: string, expanded: Set<string>) {
   };
 }
 
-/** 两组完整视图（模板迭代渲染，避免入参 / 出参两份重复模板） */
-const groupDefs = computed(() =>
-  GROUP_DEFS.map((group) => ({
-    key: group.key,
-    title: group.title,
-    view: groupView(
-      group.key === "input" ? (props.inputSample ?? null) : (props.outputSample ?? null),
-      query.value,
-      expandedPaths.value,
-    ),
-  })),
+/** 两组完整视图（tab 头计数与激活 tab 的主体渲染共用） */
+const groupDefs = computed(() => {
+  const inputSample = props.inputSample ?? null;
+  const outputSample = props.outputSample ?? null;
+  return [
+    {
+      key: "input" as const,
+      title: "入参",
+      view: groupView(inputSample, query.value, expandedPaths.value),
+    },
+    {
+      key: "output" as const,
+      title: "出参",
+      view: groupView(outputSample, query.value, expandedPaths.value),
+    },
+  ];
+});
+
+/**
+ * tab 自动回退：当前 tab 无样本、另一 tab 有数据时切过去（开始节点只有
+ * 出参等场景；两侧都有数据后本规则不再触发，手动选择优先）。
+ */
+watch(
+  [activeTab, () => [props.inputSample ?? null, props.outputSample ?? null]],
+  ([tab, samples]) => {
+    const activeHasSample = samples[tab === "input" ? 0 : 1] !== null;
+    if (activeHasSample) return;
+    const other: "input" | "output" = tab === "input" ? "output" : "input";
+    if (samples[other === "input" ? 0 : 1] !== null) activeTab.value = other;
+  },
+);
+
+/** 当前激活组的视图（主体只渲染激活 tab；组头计数并入 tab 标签）。 */
+const activeGroup = computed(
+  () => groupDefs.value.find((item) => item.key === activeTab.value) ?? groupDefs.value[0],
 );
 
 /** 组内模板片段形态：入参裸路径简写；出参带节点前缀（详见模块头复制规则） */
@@ -230,6 +256,24 @@ onBeforeUnmount(() => {
         ✕
       </button>
     </header>
+    <div class="io-drawer-tabs" role="tablist" aria-label="节点样本分页">
+      <button
+        v-for="group in groupDefs"
+        :key="group.key"
+        type="button"
+        class="io-drawer-tab"
+        :class="{ active: activeTab === group.key }"
+        role="tab"
+        :aria-selected="activeTab === group.key"
+        :data-testid="`node-io-tab-${group.key}`"
+        @click="activeTab = group.key"
+      >
+        {{ group.title }}
+        <span class="io-drawer-tab-count mono">{{
+          group.view.total > 0 ? group.view.total : ""
+        }}</span>
+      </button>
+    </div>
     <div class="io-drawer-toolbar">
       <input
         v-model="query"
@@ -243,24 +287,14 @@ onBeforeUnmount(() => {
       <span class="io-drawer-hint">点击复制 · 拖入表达式输入框生成引用</span>
     </div>
     <div class="io-drawer-body">
-      <section v-for="group in groupDefs" :key="group.key" class="io-group">
-        <div class="io-group-head">
-          <span class="io-group-title">{{ group.title }}</span>
-          <span class="io-group-count">
-            {{
-              group.view.shown === group.view.total
-                ? `${group.view.total} 字段`
-                : `匹配 ${group.view.shown} / ${group.view.total} 字段`
-            }}
-          </span>
-        </div>
+      <section class="io-group">
         <div
-          v-if="group.view.rows.length > 0"
+          v-if="activeGroup.view.rows.length > 0"
           class="io-tree"
-          :data-testid="`node-io-${group.key}-tree`"
+          :data-testid="`node-io-${activeGroup.key}-tree`"
         >
           <div
-            v-for="row in group.view.rows"
+            v-for="row in activeGroup.view.rows"
             :key="row.path"
             class="io-field"
             :style="{ paddingLeft: `${row.depth * 14}px` }"
@@ -283,24 +317,36 @@ onBeforeUnmount(() => {
               :class="{ copied: copiedPath === row.path }"
               :draggable="true"
               :data-path="row.path"
-              :data-testid="group.key === 'input' ? 'node-io-input-path' : 'node-io-output-path'"
-              :title="snippetFor(group.key, row.path)"
-              @click="copyField(group.key, row.path)"
-              @dragstart="onChipDragStart($event, group.key, row.path)"
+              :data-testid="
+                activeGroup.key === 'input' ? 'node-io-input-path' : 'node-io-output-path'
+              "
+              :title="snippetFor(activeGroup.key, row.path)"
+              @click="copyField(activeGroup.key, row.path)"
+              @dragstart="onChipDragStart($event, activeGroup.key, row.path)"
             >
               <span class="io-field-name mono">{{ row.name }}</span>
-              <span v-if="trialSet.has(row.path)" class="io-field-trial" title="来自试跑结果">
-                试跑
+              <span
+                v-if="trialSet.has(row.path)"
+                class="io-field-trial"
+                title="来自试跑 / 运行样本"
+              >
+                样本
               </span>
               <span v-if="copiedPath === row.path" class="io-field-copied">已复制</span>
             </button>
           </div>
         </div>
-        <p v-else-if="group.view.hasSample" class="io-group-empty">
+        <p v-else-if="activeGroup.view.hasSample" class="io-group-empty">
           该值没有可下钻的字段（原始值 / 空）。
         </p>
         <p v-else class="io-group-empty">
           暂无样本数据：该节点运行 / 试跑后在此展示，可一键复制模板引用。
+        </p>
+        <p
+          v-if="activeGroup.view.shown !== activeGroup.view.total"
+          class="io-group-match text-faint"
+        >
+          匹配 {{ activeGroup.view.shown }} / {{ activeGroup.view.total }} 字段
         </p>
       </section>
     </div>
@@ -368,7 +414,46 @@ onBeforeUnmount(() => {
   margin-left: auto;
 }
 
-/* 工具行：搜索框（两组共用）+ 操作提示 */
+/* tab 行：入参 / 出参分页（口径同右侧配置抽屉的 wf-drawer-tab） */
+.io-drawer-tabs {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3) 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.io-drawer-tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px 4px;
+  border: none;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  background: none;
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.io-drawer-tab:hover {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+.io-drawer-tab.active {
+  background: var(--bg-active);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.io-drawer-tab-count {
+  color: var(--text-faint);
+  font-size: 10px;
+}
+
+/* 工具行：搜索框（激活 tab 内过滤）+ 操作提示 */
 .io-drawer-toolbar {
   display: flex;
   align-items: center;
@@ -394,7 +479,7 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 
-/* 主体：两组平铺（入参在上、出参在下），组间分隔线 */
+/* 主体：激活 tab 的字段树（搜索命中计数贴底提示） */
 .io-drawer-body {
   min-height: 0;
   flex: 1;
@@ -402,34 +487,22 @@ onBeforeUnmount(() => {
   padding: var(--space-1) 0 var(--space-2);
 }
 
-.io-group + .io-group {
-  border-top: 1px solid var(--border);
-}
-
-.io-group-head {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
-  padding: var(--space-1) var(--space-3);
-}
-
-.io-group-title {
-  color: var(--text-secondary);
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.io-group-count {
-  color: var(--text-faint);
-  font-size: 10px;
+.io-group {
+  min-width: 0;
 }
 
 .io-group-empty {
   margin: 0;
-  padding: 0 var(--space-3) var(--space-2);
+  padding: var(--space-2) var(--space-3) 0;
   color: var(--text-faint);
   font-size: 11px;
   line-height: 18px;
+}
+
+.io-group-match {
+  margin: 0;
+  padding: var(--space-2) var(--space-3) 0;
+  font-size: 10px;
 }
 
 /* 字段行：缩进表层级；箭头 / 叶子圆点 + chip 主体 */

@@ -25,7 +25,6 @@ import {
 import { WORKFLOW_NODE_META, WORKFLOW_NODE_TYPE_ORDER, getWorkflowNodeMeta } from "./node-meta";
 import NodeShell, { NODE_RENAME_KEY } from "./NodeShell.vue";
 import NodePanel, { NODE_TYPE_MIME } from "./NodePanel.vue";
-import CanvasToolbar from "./CanvasToolbar.vue";
 import { snapPosition, type AlignmentGuide } from "./alignment";
 import { autoLayout } from "./auto-layout";
 import {
@@ -36,6 +35,7 @@ import {
 } from "./node-clipboard";
 import type { NodeIssue } from "./node-issue-badge";
 import { groupIssuesByNode } from "./node-issue-badge";
+import { withEdgeRunClasses, type RunNodeStateMap } from "./run-view";
 import { readCanvasViewport, writeCanvasViewport } from "./canvas-viewport-store";
 import { notifyEditLocked } from "./canvas-edit-lock";
 
@@ -56,7 +56,9 @@ import { notifyEditLocked } from "./canvas-edit-lock";
  *
  * 运行期编辑锁定（locked，来源见窗口的 flow-run store 接缝）：拦截结构性
  * 编辑（删除 / 连线 / 拖入 / 粘贴 / 布局 / 重命名 / 撤销重做）并弹单例提示；
- * 节点拖动、视口、选中与复制保持可用。
+ * 节点拖动、视口、选中与复制保持可用。运行进行中窗口另经 runStates 注入
+ * 节点 checkpoint 运行态（着色 / ✓✗ 角标 / 运行中边流动，与 RunGraphView
+ * 同通道），画布动作经 defineExpose 暴露给窗口的悬浮工具条调用。
  */
 const props = defineProps<{
   nodes: WorkflowNode[];
@@ -69,6 +71,8 @@ const props = defineProps<{
   canRedo: boolean;
   /** 合并后的校验问题清单（窗口计算；画布按节点归属注入徽标）。 */
   issues: NodeIssue[];
+  /** 节点运行态 map（运行进行中由窗口轮询注入；null = 常态）。 */
+  runStates?: RunNodeStateMap | null;
 }>();
 
 const emit = defineEmits<{
@@ -85,6 +89,7 @@ const {
   zoomIn,
   zoomOut,
   fitView,
+  setCenter,
   screenToFlowCoordinate,
   connectionStartHandle,
   connectionEndHandle,
@@ -113,8 +118,17 @@ const root = ref<HTMLElement | null>(null);
 const savedViewport = readCanvasViewport(props.workflowId);
 
 const issuesByNode = computed(() => groupIssuesByNode(props.issues));
-const flowNodes = computed(() => toFlowNodes(props.nodes, issuesByNode.value));
-const flowEdges = computed(() => toFlowEdges(props.edges));
+/** 展示节点：领域图投影 + 问题徽标 + 运行态旁路注入（有运行态时）。 */
+const flowNodes = computed(() =>
+  toFlowNodes(props.nodes, issuesByNode.value).map((node) => {
+    const runState = props.runStates?.[node.id];
+    return runState === undefined ? node : { ...node, data: { ...node.data, runState } };
+  }),
+);
+/** 展示连线：运行态注入时按端点运行态附加流动动画类。 */
+const flowEdges = computed(() =>
+  withEdgeRunClasses(toFlowEdges(props.edges), props.runStates ?? null),
+);
 
 /* ------------------------------ 选中与复制 ------------------------------ */
 
@@ -530,6 +544,36 @@ function requestRedo(): void {
 
 onMounted(() => window.addEventListener("keydown", onKeydown));
 onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
+
+/* ----------------------- 窗口悬浮工具条的画布动作出口 ----------------------- */
+
+/**
+ * 平滑居中到指定节点（校验问题定位 / 「在编辑器打开」聚焦；节点不存在时
+ * 尽力而为静默跳过）。缩放取当前视口与 1 的较大者，避免深缩放下看不清。
+ */
+function revealNode(nodeId: string): void {
+  const node = props.nodes.find((candidate) => candidate.id === nodeId);
+  if (!node) return;
+  void setCenter(
+    node.position.x + FLOW_NODE_SIZE.width / 2,
+    node.position.y + FLOW_NODE_SIZE.height / 2,
+    { zoom: Math.max(viewport.value.zoom, 1), duration: 300 },
+  );
+}
+
+defineExpose({
+  zoomIn: () => zoomIn(),
+  zoomOut: () => zoomOut(),
+  fitAll: () => fitView({ padding: 0.25, maxZoom: 1 }),
+  requestUndo,
+  requestRedo,
+  autoLayout: onLayout,
+  copySelected: onCopy,
+  pasteClipboard: onPaste,
+  revealNode,
+  canCopy,
+  canPaste,
+});
 </script>
 
 <template>
@@ -619,20 +663,5 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
     </div>
 
     <NodePanel :locked="locked" />
-    <CanvasToolbar
-      :can-undo="canUndo"
-      :can-redo="canRedo"
-      :can-copy="canCopy"
-      :can-paste="canPaste"
-      :locked="locked"
-      @undo="requestUndo"
-      @redo="requestRedo"
-      @layout="onLayout"
-      @copy="onCopy"
-      @paste="onPaste"
-      @zoom-in="zoomIn()"
-      @zoom-out="zoomOut()"
-      @fit="fitView({ padding: 0.25, maxZoom: 1 })"
-    />
   </div>
 </template>

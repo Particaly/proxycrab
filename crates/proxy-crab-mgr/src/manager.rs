@@ -3082,9 +3082,10 @@ fn map_flow_error(error: anyhow::Error) -> ManagerError {
 }
 
 /// Map a run trigger failure to the HTTP error envelope (plan Task 19):
-/// unknown workflow / target session are 404, a stopped proxy and a missing
-/// active session are 409, an invalid graph is 422, and storage faults stay
-/// internal errors. The messages carry no internal paths.
+/// unknown workflow / target session are 404, a missing active session is 409,
+/// an invalid graph is 422, and storage faults stay internal errors. Replays
+/// run on the flow-dedicated connection generation, so a stopped proxy is not
+/// a trigger precondition. The messages carry no internal paths.
 fn map_trigger_error(error: RunTriggerError) -> ManagerError {
     let message = error.to_string();
     match error {
@@ -3092,7 +3093,6 @@ fn map_trigger_error(error: RunTriggerError) -> ManagerError {
             ManagerError::not_found(message)
         }
         RunTriggerError::NotValid(_) => ManagerError::new(ErrorCode::WorkflowGraphInvalid, message),
-        RunTriggerError::ProxyNotRunning => ManagerError::new(ErrorCode::ProxyNotRunning, message),
         RunTriggerError::NoSession => ManagerError::conflict(message),
         RunTriggerError::Storage(error) => map_error(error),
     }

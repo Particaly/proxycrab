@@ -4,6 +4,7 @@ import { proxyStore } from "../stores/proxy";
 import { appStore, type ThemeMode } from "../stores/app";
 import { approvalsStore } from "../stores/approvals";
 import { skillStore } from "../stores/skill";
+import { workspaceStore, type WorkspaceSection } from "../stores/workspace-view";
 import { useBackend } from "../api";
 import AppTooltip from "./AppTooltip.vue";
 import ProxyCrabMark from "./ProxyCrabMark.vue";
@@ -15,16 +16,12 @@ import {
   openApprovals,
   openCertManager,
   openColumnManager,
-  openEnvSets,
   openFilterManager,
   openRedactionManager,
   openJwt,
   openQrCode,
   openReplay,
-  openRequestLibrary,
-  openRunHistory,
   openTextDiff,
-  openWorkflowEditor,
   openWorkflowTransfer,
   openRequestInterceptorManager,
   openResponseInterceptorManager,
@@ -46,6 +43,7 @@ import {
   Io5Download,
   Io5GitNetwork,
   Io5InformationCircle,
+  Io5LibraryOutline,
   Io5List,
   Io5Moon,
   Io5Newspaper,
@@ -89,6 +87,11 @@ function toggleMenu(menu: ToolbarMenu): void {
 function runMenuAction(action: () => void): void {
   activeMenu.value = null;
   action();
+}
+
+/** 切换主界面手风琴区块（工作流 / 请求库 / 环境变量菜单入口共用）。 */
+function openSection(section: WorkspaceSection): void {
+  workspaceStore.open(section);
 }
 
 function setTheme(theme: ThemeMode): void {
@@ -292,14 +295,18 @@ onBeforeUnmount(() => {
             <Io5RadioButtonOn :size="14" />
             <span>分流规则</span>
           </button>
-          <button v-if="backend.envSets" class="tb-menu-item" @click="runMenuAction(openEnvSets)">
+          <button
+            v-if="backend.envSets"
+            class="tb-menu-item"
+            @click="runMenuAction(() => openSection('env'))"
+          >
             <Io5Options :size="14" />
             <span>环境变量</span>
           </button>
           <button
             v-if="backend.workflows"
             class="tb-menu-item"
-            @click="runMenuAction(openWorkflowEditor)"
+            @click="runMenuAction(() => openSection('workflow'))"
           >
             <Io5GitNetwork :size="14" />
             <span>工作流</span>
@@ -315,7 +322,7 @@ onBeforeUnmount(() => {
           <button
             v-if="backend.flowRuns"
             class="tb-menu-item"
-            @click="runMenuAction(openRunHistory)"
+            @click="runMenuAction(() => openSection('runs'))"
           >
             <Io5List :size="14" />
             <span>运行记录</span>
@@ -357,7 +364,7 @@ onBeforeUnmount(() => {
           <button
             v-if="backend.requestLibrary"
             class="tb-menu-item"
-            @click="runMenuAction(openRequestLibrary)"
+            @click="runMenuAction(() => openSection('library'))"
           >
             <Io5LibraryOutline :size="14" />
             <span>请求库</span>

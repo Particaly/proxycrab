@@ -32,6 +32,16 @@ describe("cloneGraphSnapshot", () => {
     expect(snapshot.nodes[0]?.position).toEqual({ x: 1, y: 0 });
     expect(snapshot.edges).toEqual([edge("e1", "n1", "n2")]);
   });
+
+  it("config 为 reactive Proxy 形态时不抛 DataCloneError（store 下发响应式对象）", () => {
+    // 复现：Vue reactive 的节点 config 是 Proxy，structuredClone 直接抛
+    // DataCloneError 中断结构提交；JSON 往返应照常克隆出等值纯数据。
+    const raw = { override: { url: "a" } };
+    const proxied = new Proxy(raw, {});
+    const snapshot = cloneGraphSnapshot([node("n1", 1, proxied)], []);
+    expect(snapshot.nodes[0]?.config).toEqual({ override: { url: "a" } });
+    expect(snapshot.nodes[0]?.config).not.toBe(raw);
+  });
 });
 
 describe("commitGraph", () => {

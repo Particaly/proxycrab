@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { nextTick, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import type { LogsStore } from "../stores/logs";
 import { sessionsStore } from "../stores/sessions";
 import { routingStore } from "../stores/routing";
@@ -8,7 +8,14 @@ import { proxyStore } from "../stores/proxy";
 import { confirmDialog, openContextMenu } from "../stores/dialog";
 import { formatActivityCount } from "../utils/format";
 import { appStore } from "../stores/app";
+import { workspaceStore } from "../stores/workspace-view";
+import { useRequestLibraryStore } from "../stores/request-library";
+import { useBackend } from "../api";
 import SessionListItem from "./SessionListItem.vue";
+import WorkflowNav from "./workspace/WorkflowNav.vue";
+import EnvSetsNav from "./workspace/EnvSetsNav.vue";
+import RunHistoryNav from "./workspace/RunHistoryNav.vue";
+import RequestLibraryList from "./request-library/RequestLibraryList.vue";
 import {
   openArchivedSessions,
   openBypass,
@@ -19,6 +26,7 @@ import type { SessionMetadata } from "../api/types";
 import {
   Io5Add,
   Io5Archive,
+  Io5ChevronForward,
   Io5Create,
   Io5Eye,
   Io5Link,
@@ -28,6 +36,23 @@ import { IoArrowForwardCircle } from "vue-icons-plus/io";
 
 const props = defineProps<{ logs: LogsStore }>();
 const logs = props.logs;
+const backend = useBackend();
+// 请求库列表（手风琴侧栏区）直接复用 RequestLibraryList 纯组件；reactive
+// 包裹让嵌套 ref 在模板 `library.xxx` 访问时自动解包（v-model 写回同理）。
+const library = reactive(useRequestLibraryStore());
+
+/**
+ * 手风琴导航：抓包 / 工作流 / 请求库 / 环境变量 / 运行记录五个互斥区块
+ * （能力位缺失的区块不渲染）。展开项与主内容区由 workspaceStore 共享；
+ * 点已展开区块头不收起（避免主区空屏）。
+ */
+const sections = [
+  { key: "capture", label: "抓包", available: () => true },
+  { key: "workflow", label: "工作流", available: () => Boolean(backend.workflows) },
+  { key: "library", label: "请求库", available: () => Boolean(backend.requestLibrary) },
+  { key: "env", label: "环境变量", available: () => Boolean(backend.envSets) },
+  { key: "runs", label: "运行记录", available: () => Boolean(backend.flowRuns) },
+] as const;
 
 const creating = ref(false);
 const editingId = ref<number | null>(null);
@@ -223,72 +248,127 @@ watch(sidebarWidth, updatePopupPos);
       @pointerup="endResize"
       @pointercancel="endResize"
     ></div>
-    <div class="sb-top">
-      <div class="sb-header">
-        <span class="sb-title">会话</span>
-        <div class="sb-header-actions">
-          <button
-            class="btn icon"
-            :title="
-              proxyStore.activeBypassCount > 0
-                ? `透明转发记录（${proxyStore.activeBypassCount} 条活跃）`
-                : '透明转发记录'
-            "
-            :aria-label="
-              proxyStore.activeBypassCount > 0
-                ? `透明转发记录，${proxyStore.activeBypassCount} 条活跃`
-                : '透明转发记录'
-            "
-            @click="openBypass"
-          >
-            <span v-if="proxyStore.activeBypassCount > 0" class="activity-badge">
-              {{ formatActivityCount(proxyStore.activeBypassCount) }}
-            </span>
-            <IoArrowForwardCircle v-else :size="15" />
-          </button>
-          <button class="btn icon" title="新建会话" :disabled="creating" @click="createSession">
-            <Io5Add :size="16" />
-          </button>
-        </div>
-      </div>
-      <button
-        class="sb-routing"
-        :class="{ empty: !routingStore.selectedName }"
-        title="打开分流规则管理器"
-        @click="openRoutingManager"
-      >
-        <Io5RadioButtonOn :size="13" />
-        <span
-          v-if="routingStore.selectedName"
-          class="sb-routing-name"
-          :title="routingStore.selectedName"
-        >
-          {{ scriptLabelFor(routingStore.scripts, routingStore.selectedName) }}
-        </span>
-        <span v-else>未设置分流规则</span>
-      </button>
-    </div>
 
-    <div class="sb-list" @scroll.passive="updatePopupPos">
-      <SessionListItem
-        v-for="session in sessionsStore.sessions"
-        :key="session.id"
-        :session="session"
-        :viewing="logs.sessionId === session.id"
-        :active="sessionsStore.activeSessionId === session.id"
-        :active-connections="proxyStore.activeNetlogCount(session.id)"
-        @click="logs.view(session.id)"
-        @contextmenu="sessionMenu($event, session)"
-        @dblclick="onItemDblclick($event, session)"
-      />
-      <div v-if="!sessionsStore.loading && sessionsStore.sessions.length === 0" class="empty-hint">
-        暂无会话，点击右上角 + 新建
+    <template v-for="section in sections" :key="section.key">
+      <button
+        v-if="section.available()"
+        class="sb-acc-head"
+        :class="{ open: workspaceStore.section === section.key }"
+        @click="workspaceStore.open(section.key)"
+      >
+        <Io5ChevronForward :size="12" class="sb-acc-chevron" />
+        <span>{{ section.label }}</span>
+      </button>
+      <div
+        v-if="section.available() && workspaceStore.section === section.key"
+        class="sb-acc-body"
+      >
+        <!-- 抓包：会话列表 + 分流入口（首页原有内容） -->
+        <template v-if="section.key === 'capture'">
+          <div class="sb-top">
+            <div class="sb-header">
+              <span class="sb-title">会话</span>
+              <div class="sb-header-actions">
+                <button
+                  class="btn icon"
+                  :title="
+                    proxyStore.activeBypassCount > 0
+                      ? `透明转发记录（${proxyStore.activeBypassCount} 条活跃）`
+                      : '透明转发记录'
+                  "
+                  :aria-label="
+                    proxyStore.activeBypassCount > 0
+                      ? `透明转发记录，${proxyStore.activeBypassCount} 条活跃`
+                      : '透明转发记录'
+                  "
+                  @click="openBypass"
+                >
+                  <span v-if="proxyStore.activeBypassCount > 0" class="activity-badge">
+                    {{ formatActivityCount(proxyStore.activeBypassCount) }}
+                  </span>
+                  <IoArrowForwardCircle v-else :size="15" />
+                </button>
+                <button class="btn icon" title="新建会话" :disabled="creating" @click="createSession">
+                  <Io5Add :size="16" />
+                </button>
+              </div>
+            </div>
+            <button
+              class="sb-routing"
+              :class="{ empty: !routingStore.selectedName }"
+              title="打开分流规则管理器"
+              @click="openRoutingManager"
+            >
+              <Io5RadioButtonOn :size="13" />
+              <span
+                v-if="routingStore.selectedName"
+                class="sb-routing-name"
+                :title="routingStore.selectedName"
+              >
+                {{ scriptLabelFor(routingStore.scripts, routingStore.selectedName) }}
+              </span>
+              <span v-else>未设置分流规则</span>
+            </button>
+          </div>
+
+          <div class="sb-list" @scroll.passive="updatePopupPos">
+            <SessionListItem
+              v-for="session in sessionsStore.sessions"
+              :key="session.id"
+              :session="session"
+              :viewing="logs.sessionId === session.id"
+              :active="sessionsStore.activeSessionId === session.id"
+              :active-connections="proxyStore.activeNetlogCount(session.id)"
+              @click="logs.view(session.id)"
+              @contextmenu="sessionMenu($event, session)"
+              @dblclick="onItemDblclick($event, session)"
+            />
+            <div
+              v-if="!sessionsStore.loading && sessionsStore.sessions.length === 0"
+              class="empty-hint"
+            >
+              暂无会话，点击右上角 + 新建
+            </div>
+          </div>
+          <button class="sb-archived" @click="openArchivedSessions">
+            <Io5Archive :size="14" />
+            <span>已归档 Session</span>
+          </button>
+        </template>
+
+        <!-- 工作流：项目 / 流程两级列表 -->
+        <WorkflowNav v-else-if="section.key === 'workflow'" />
+        <!-- 请求库：过滤 + 分组列表 -->
+        <RequestLibraryList
+          v-else-if="section.key === 'library'"
+          v-model:keyword="library.keyword"
+          v-model:group-by="library.groupBy"
+          v-model:sort-by="library.sortBy"
+          v-model:source="library.source"
+          :groups="library.groups"
+          :active-tags="library.activeTags"
+          :tag-options="library.tagOptions"
+          :loaded-count="library.entries.length"
+          :total="library.total"
+          :loading="library.loading"
+          :loaded="library.loaded"
+          :loading-more="library.loadingMore"
+          :selected-id="library.selectedId"
+          :checked-ids="library.checkedIds"
+          @toggle-tag="library.toggleTag"
+          @select="library.select"
+          @toggle-checked="library.toggleChecked"
+          @toggle-all="library.toggleAll"
+          @remove-checked="library.removeCheckedEntries"
+          @clear-checked="library.checkedIds = []"
+          @load-more="library.loadMore"
+        />
+        <!-- 环境变量：集合列表 + 全局变量 -->
+        <EnvSetsNav v-else-if="section.key === 'env'" />
+        <!-- 运行记录：筛选 + 分页运行列表 -->
+        <RunHistoryNav v-else-if="section.key === 'runs'" />
       </div>
-    </div>
-    <button class="sb-archived" @click="openArchivedSessions">
-      <Io5Archive :size="14" />
-      <span>已归档 Session</span>
-    </button>
+    </template>
 
     <Teleport to="body">
       <div
@@ -357,6 +437,46 @@ watch(sidebarWidth, updatePopupPos);
 .sb-resize:hover::after,
 .sb-resize.dragging::after {
   background: var(--accent);
+}
+.sb-acc-head {
+  flex: none;
+  width: 100%;
+  min-height: 32px;
+  padding: 0 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-panel);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+.sb-acc-head:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.sb-acc-chevron {
+  flex: none;
+  color: var(--text-faint);
+  transition: transform 0.15s;
+}
+.sb-acc-head.open .sb-acc-chevron {
+  transform: rotate(90deg);
+}
+.sb-acc-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* 展开体末尾子元素的 border-top 与下一区块头的 border-bottom 重叠为单线 */
+.sb-acc-body + .sb-acc-head {
+  margin-top: -1px;
 }
 .sb-top {
   border-bottom: 1px solid var(--border);

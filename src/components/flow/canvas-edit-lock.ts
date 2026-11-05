@@ -6,7 +6,7 @@ import { appStore } from "../../stores/app";
  * 运行进行中画布锁定一切「结构性编辑」入口（增删节点 / 连线、粘贴、拖入、
  * 自动布局、撤销 / 重做、重命名），避免运行态与实际执行结构脱节。锁定语义
  * 是「入口禁用 + 原因提示」而非静默吞掉——工具栏按钮 / 菜单项 / 面板卡用
- * disabled 态 + title 提示（见 CanvasToolbar / NodePanel），而绕过入口直达
+ * disabled 态 + title 提示（见 FlowTopBar / NodePanel），而绕过入口直达
  * 动作回调的路径（删除键、快捷键、锁定瞬间落下的拖拽 / 连线）由各守卫调用
  * notifyEditLocked 弹 toast 说明原因。
  *

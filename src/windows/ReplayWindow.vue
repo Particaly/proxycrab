@@ -2,6 +2,7 @@
 import { reportError } from "../stores/app";
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { Io5ChevronDown, Io5Warning } from "vue-icons-plus/io5";
+import { renderFakeOnly } from "../../flow-engine/src/template";
 import { useBackend } from "../api";
 import type { AssetMetadata } from "../api/types";
 import { proxyStore } from "../stores/proxy";
@@ -67,6 +68,13 @@ if (props.prefill) {
 }
 
 const methodOptions = REPLAY_METHODS.map((value) => ({ value, label: value }));
+/**
+ * 假数据变量提示文案（URL 区 / 请求头 / 请求体卡片的 tooltip）：本窗口发送前
+ * 会渲染 `{{ fake.* }}` 内置假数据引用，卡片标题悬浮即可见，弥补本窗口没有
+ * 表达式建议浮层（URL 为普通输入、body 为 Monaco）的发现成本。
+ */
+const FAKE_TEMPLATE_HINT =
+  "支持内置假数据变量：URL / 头值 / 文本 body 中写 {{ fake.phone }}、{{ fake.email }} 等（发送时随机生成；同一请求内同表达式取同一值）。清单见流程画布的「插入假数据」菜单。";
 const methodDisplay = computed(() =>
   methodChoice.value === CUSTOM_METHOD ? customMethod.value || "自定义…" : undefined,
 );
@@ -316,6 +324,30 @@ const sendTitle = computed(() =>
             : `发送到 ${selectedSession.value.name}`,
 );
 
+/**
+ * 组装实际发送的载荷：对 URL / 头值 / 文本 body 渲染 `{{ fake.* }}` 内置假数据
+ * 引用（renderFakeOnly 只替换 fake，其余 `{{ ... }}` 表达式保留字面量——本窗口
+ * 没有 var / env 上下文，不能把它们误渲染成空串）。一次发送共用同一 cache Map，
+ * 同表达式跨槽位取值一致（URL 与 body 里的 `{{ fake.phone }}` 是同一个号码）；
+ * 生成失败（未知生成器 / 参数不合法）保留表达式原文，肉眼可查。body_ref /
+ * asset 模式的 body 是引用 / 文件字节，不经模板渲染。
+ */
+function buildSentPayload(): {
+  url: string;
+  headers: [string, string][];
+  body: ReplayBodySpec | undefined;
+} {
+  const cache = new Map<string, string>();
+  const rawBody = buildBody();
+  const body =
+    rawBody?.type === "text" ? { ...rawBody, text: renderFakeOnly(rawBody.text, cache) } : rawBody;
+  return {
+    url: renderFakeOnly(url.value, cache),
+    headers: tuples.value.map(([name, value]) => [name, renderFakeOnly(value, cache)]),
+    body,
+  };
+}
+
 async function execute(): Promise<void> {
   const replay = backend.replay;
   if (executing.value || !replay || !selectedSession.value) return;
@@ -331,11 +363,12 @@ async function execute(): Promise<void> {
     error: null,
   };
   try {
+    const sent = buildSentPayload();
     const result = await replay(record.sessionId, {
       method: method.value,
-      url: url.value,
-      headers: tuples.value,
-      body: buildBody(),
+      url: sent.url,
+      headers: sent.headers,
+      body: sent.body,
     });
     record.logId = result.log_id;
   } catch (error) {
@@ -364,7 +397,7 @@ const bodyExtra = computed(() => {
 
 <template>
   <div class="replay-root">
-    <header class="summary">
+    <header class="summary" :title="FAKE_TEMPLATE_HINT">
       <UrlInput v-model="url" class="url" />
     </header>
 
@@ -455,7 +488,7 @@ const bodyExtra = computed(() => {
 
     <div class="tab-page">
       <section class="card headers-card">
-        <div class="card-title">
+        <div class="card-title" :title="FAKE_TEMPLATE_HINT">
           请求头
           <div
             v-if="headerWarnings.length > 0"
@@ -493,7 +526,7 @@ const bodyExtra = computed(() => {
       </section>
 
       <section class="card body-card">
-        <div class="card-title">
+        <div class="card-title" :title="FAKE_TEMPLATE_HINT">
           请求体
           <div
             v-if="bodyWarnings.length > 0"

@@ -2665,6 +2665,416 @@ ${source}`
     return typeof status === "number" && status >= 400;
   }
 
+  // flow-engine/src/fake.ts
+  function randomInt(min, max) {
+    return min + Math.floor(Math.random() * (max - min + 1));
+  }
+  function pick(list) {
+    return list[randomInt(0, list.length - 1)];
+  }
+  function randomHex(length) {
+    let out = "";
+    for (let i = 0; i < length; i++) {
+      out += Math.floor(Math.random() * 16).toString(16);
+    }
+    return out;
+  }
+  var PHONE_PREFIXES = [
+    "133",
+    "135",
+    "136",
+    "137",
+    "138",
+    "139",
+    "147",
+    "148",
+    "149",
+    "150",
+    "151",
+    "152",
+    "155",
+    "156",
+    "157",
+    "158",
+    "159",
+    "165",
+    "166",
+    "170",
+    "171",
+    "172",
+    "173",
+    "175",
+    "176",
+    "177",
+    "178",
+    "180",
+    "181",
+    "182",
+    "183",
+    "184",
+    "185",
+    "186",
+    "187",
+    "188",
+    "189",
+    "191",
+    "193",
+    "195",
+    "198",
+    "199"
+  ];
+  var NAME_SURNAMES = [
+    "\u738B",
+    "\u674E",
+    "\u5F20",
+    "\u5218",
+    "\u9648",
+    "\u6768",
+    "\u9EC4",
+    "\u8D75",
+    "\u5434",
+    "\u5468",
+    "\u5F90",
+    "\u5B59",
+    "\u9A6C",
+    "\u6731",
+    "\u80E1",
+    "\u90ED",
+    "\u4F55",
+    "\u6797",
+    "\u7F57",
+    "\u9AD8",
+    "\u90D1",
+    "\u6881",
+    "\u8C22",
+    "\u5B8B",
+    "\u5510",
+    "\u8BB8",
+    "\u97E9",
+    "\u51AF",
+    "\u9093",
+    "\u66F9",
+    "\u5F6D",
+    "\u66FE",
+    "\u8096",
+    "\u7530",
+    "\u8463",
+    "\u6F58",
+    "\u8881",
+    "\u848B",
+    "\u8521",
+    "\u4F59"
+  ];
+  var NAME_GIVENS = [
+    "\u4F1F",
+    "\u82B3",
+    "\u5A1C",
+    "\u654F",
+    "\u9759",
+    "\u78CA",
+    "\u519B",
+    "\u6D0B",
+    "\u52C7",
+    "\u8273",
+    "\u6770",
+    "\u6D9B",
+    "\u660E",
+    "\u8D85",
+    "\u971E",
+    "\u5E73",
+    "\u521A",
+    "\u8F89",
+    "\u6D01",
+    "\u5A77",
+    "\u5B50\u6DB5",
+    "\u96E8\u6B23",
+    "\u6D69\u7136",
+    "\u6B23\u6021",
+    "\u6893\u8431",
+    "\u5B87\u8F69",
+    "\u601D\u8FDC",
+    "\u68A6\u742A",
+    "\u5FD7\u5F3A",
+    "\u5EFA\u56FD",
+    "\u4E3D\u534E",
+    "\u6653\u4E1C",
+    "\u5929\u4F51",
+    "\u82E5\u66E6",
+    "\u4FCA\u6770",
+    "\u6167\u654F"
+  ];
+  var ADDRESS_REGIONS = [
+    {
+      province: "\u5317\u4EAC\u5E02",
+      city: "\u5317\u4EAC\u5E02",
+      districts: ["\u671D\u9633\u533A", "\u6D77\u6DC0\u533A", "\u4E1C\u57CE\u533A", "\u897F\u57CE\u533A", "\u4E30\u53F0\u533A"]
+    },
+    {
+      province: "\u4E0A\u6D77\u5E02",
+      city: "\u4E0A\u6D77\u5E02",
+      districts: ["\u6D66\u4E1C\u65B0\u533A", "\u5F90\u6C47\u533A", "\u9759\u5B89\u533A", "\u6768\u6D66\u533A", "\u95F5\u884C\u533A"]
+    },
+    {
+      province: "\u5E7F\u4E1C\u7701",
+      city: "\u6DF1\u5733\u5E02",
+      districts: ["\u5357\u5C71\u533A", "\u798F\u7530\u533A", "\u7F57\u6E56\u533A", "\u5B9D\u5B89\u533A", "\u9F99\u5C97\u533A"]
+    },
+    {
+      province: "\u5E7F\u4E1C\u7701",
+      city: "\u5E7F\u5DDE\u5E02",
+      districts: ["\u5929\u6CB3\u533A", "\u8D8A\u79C0\u533A", "\u6D77\u73E0\u533A", "\u767D\u4E91\u533A", "\u9EC4\u57D4\u533A"]
+    },
+    {
+      province: "\u6D59\u6C5F\u7701",
+      city: "\u676D\u5DDE\u5E02",
+      districts: ["\u897F\u6E56\u533A", "\u6EE8\u6C5F\u533A", "\u4F59\u676D\u533A", "\u62F1\u5885\u533A", "\u8427\u5C71\u533A"]
+    },
+    {
+      province: "\u6C5F\u82CF\u7701",
+      city: "\u5357\u4EAC\u5E02",
+      districts: ["\u7384\u6B66\u533A", "\u79E6\u6DEE\u533A", "\u9F13\u697C\u533A", "\u5EFA\u90BA\u533A", "\u6C5F\u5B81\u533A"]
+    },
+    {
+      province: "\u56DB\u5DDD\u7701",
+      city: "\u6210\u90FD\u5E02",
+      districts: ["\u9526\u6C5F\u533A", "\u9752\u7F8A\u533A", "\u6B66\u4FAF\u533A", "\u6210\u534E\u533A", "\u91D1\u725B\u533A"]
+    },
+    {
+      province: "\u6E56\u5317\u7701",
+      city: "\u6B66\u6C49\u5E02",
+      districts: ["\u6C5F\u5CB8\u533A", "\u6B66\u660C\u533A", "\u6D2A\u5C71\u533A", "\u6C49\u9633\u533A", "\u785A\u53E3\u533A"]
+    },
+    {
+      province: "\u9655\u897F\u7701",
+      city: "\u897F\u5B89\u5E02",
+      districts: ["\u96C1\u5854\u533A", "\u7891\u6797\u533A", "\u672A\u592E\u533A", "\u83B2\u6E56\u533A", "\u65B0\u57CE\u533A"]
+    },
+    {
+      province: "\u5C71\u4E1C\u7701",
+      city: "\u9752\u5C9B\u5E02",
+      districts: ["\u5E02\u5357\u533A", "\u5E02\u5317\u533A", "\u5D02\u5C71\u533A", "\u674E\u6CA7\u533A", "\u57CE\u9633\u533A"]
+    }
+  ];
+  var ADDRESS_STREETS = [
+    "\u4EBA\u6C11\u8DEF",
+    "\u4E2D\u5C71\u8DEF",
+    "\u89E3\u653E\u8DEF",
+    "\u5EFA\u8BBE\u8DEF",
+    "\u79D1\u6280\u56ED\u8DEF",
+    "\u548C\u5E73\u8DEF",
+    "\u6587\u5316\u8DEF",
+    "\u671D\u9633\u8DEF",
+    "\u5E78\u798F\u5927\u9053",
+    "\u6EE8\u6C5F\u9053"
+  ];
+  var PLATE_PROVINCES = [
+    "\u4EAC",
+    "\u6D25",
+    "\u6CAA",
+    "\u6E1D",
+    "\u5180",
+    "\u664B",
+    "\u8499",
+    "\u8FBD",
+    "\u5409",
+    "\u9ED1",
+    "\u82CF",
+    "\u6D59",
+    "\u7696",
+    "\u95FD",
+    "\u8D63",
+    "\u9C81",
+    "\u8C6B",
+    "\u9102",
+    "\u6E58",
+    "\u7CA4",
+    "\u6842",
+    "\u743C",
+    "\u5DDD",
+    "\u8D35",
+    "\u4E91",
+    "\u85CF",
+    "\u9655",
+    "\u7518",
+    "\u9752",
+    "\u5B81",
+    "\u65B0"
+  ];
+  var PLATE_LETTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+  var IDCARD_AREA_CODES = [
+    "110101",
+    "110105",
+    "310101",
+    "310104",
+    "440303",
+    "440304",
+    "330102",
+    "330106",
+    "320102",
+    "510104",
+    "420102",
+    "610113",
+    "370202",
+    "350102",
+    "430102"
+  ];
+  var EMAIL_DOMAINS = ["example.com", "example.org", "example.net"];
+  function parseIntArg(raw) {
+    if (!/^-?\d+$/.test(raw)) return null;
+    const value = Number(raw);
+    return Number.isSafeInteger(value) ? value : null;
+  }
+  function generatePhone() {
+    return { value: pick(PHONE_PREFIXES) + String(randomInt(0, 99999999)).padStart(8, "0") };
+  }
+  function generateName() {
+    return { value: pick(NAME_SURNAMES) + pick(NAME_GIVENS) };
+  }
+  function generateAddress() {
+    const region = pick(ADDRESS_REGIONS);
+    const streetNo = String(randomInt(1, 999));
+    return {
+      value: `${region.province}${region.city}${pick(region.districts)}${pick(ADDRESS_STREETS)}${streetNo}\u53F7`
+    };
+  }
+  function generateAvatar() {
+    return { value: `https://picsum.photos/seed/${randomHex(6)}/300/300` };
+  }
+  function generatePlate() {
+    let tail = "";
+    for (let i = 0; i < 5; i++) {
+      const useLetter = Math.random() < 0.4;
+      tail += useLetter ? PLATE_LETTERS[randomInt(0, PLATE_LETTERS.length - 1)] : String(randomInt(0, 9));
+    }
+    return {
+      value: pick(PLATE_PROVINCES) + PLATE_LETTERS[randomInt(0, PLATE_LETTERS.length - 1)] + tail
+    };
+  }
+  var IDCARD_WEIGHTS = [7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2];
+  var IDCARD_CHECK_MAP = "10X98765432";
+  function generateIdcard() {
+    const area = pick(IDCARD_AREA_CODES);
+    const year = randomInt(1970, 2005);
+    const month = String(randomInt(1, 12)).padStart(2, "0");
+    const day = String(randomInt(1, 28)).padStart(2, "0");
+    const sequence = String(randomInt(1, 999)).padStart(3, "0");
+    const body = `${area}${year}${month}${day}${sequence}`;
+    let sum = 0;
+    for (let i = 0; i < 17; i++) {
+      sum += Number(body[i]) * IDCARD_WEIGHTS[i];
+    }
+    return { value: body + IDCARD_CHECK_MAP[sum % 11] };
+  }
+  function generateEmail() {
+    return { value: `${randomHex(8)}@${pick(EMAIL_DOMAINS)}` };
+  }
+  function generateIp() {
+    return {
+      value: `${randomInt(1, 254)}.${randomInt(1, 254)}.${randomInt(1, 254)}.${randomInt(1, 254)}`
+    };
+  }
+  function generateNumber(args) {
+    if (args.length === 0) {
+      return { value: String(randomInt(0, 9999)) };
+    }
+    if (args.length === 2) {
+      const min = parseIntArg(args[0]);
+      const max = parseIntArg(args[1]);
+      if (min === null || max === null || min > max) {
+        return { value: "", warning: "number \u9700\u8981\u4E24\u4E2A\u6574\u6570\u53C2\u6570\u4E14 min <= max\uFF0C\u5982 number(1,100)" };
+      }
+      return { value: String(randomInt(min, max)) };
+    }
+    return { value: "", warning: "number \u9700\u8981\u96F6\u4E2A\u6216\u4E24\u4E2A\u53C2\u6570\uFF0C\u5982 number / number(1,100)" };
+  }
+  function generateUuid() {
+    let out = "";
+    for (let i = 0; i < 36; i++) {
+      if (i === 8 || i === 13 || i === 18 || i === 23) {
+        out += "-";
+        continue;
+      }
+      if (i === 14) {
+        out += "4";
+        continue;
+      }
+      if (i === 19) {
+        out += "89ab"[randomInt(0, 3)];
+        continue;
+      }
+      out += Math.floor(Math.random() * 16).toString(16);
+    }
+    return { value: out };
+  }
+  function generateTimestamp() {
+    return { value: String(Date.now()) };
+  }
+  function generateHex(args) {
+    if (args.length === 0) {
+      return { value: randomHex(32) };
+    }
+    if (args.length === 1) {
+      const length = parseIntArg(args[0]);
+      if (length === null || length < 1 || length > 256) {
+        return { value: "", warning: "hex \u9700\u8981\u4E00\u4E2A 1~256 \u7684\u6574\u6570\u957F\u5EA6\u53C2\u6570\uFF0C\u5982 hex(16)" };
+      }
+      return { value: randomHex(length) };
+    }
+    return { value: "", warning: "hex \u9700\u8981\u96F6\u4E2A\u6216\u4E00\u4E2A\u53C2\u6570\uFF0C\u5982 hex / hex(16)" };
+  }
+  var GENERATOR_IMPLS = {
+    phone: generatePhone,
+    name: generateName,
+    address: generateAddress,
+    avatar: generateAvatar,
+    plate: generatePlate,
+    idcard: generateIdcard,
+    email: generateEmail,
+    number: generateNumber,
+    ip: generateIp,
+    uuid: generateUuid,
+    timestamp: generateTimestamp,
+    hex: generateHex
+  };
+  var FAKE_GENERATORS = [
+    { name: "phone", description: "11 \u4F4D\u624B\u673A\u53F7", example: "13912345678" },
+    { name: "name", description: "\u4E2D\u6587\u59D3\u540D", example: "\u5F20\u4F1F" },
+    {
+      name: "address",
+      description: "\u4E2D\u6587\u5730\u5740\uFF08\u7701\u5E02\u533A + \u8857\u9053\u95E8\u724C\uFF09",
+      example: "\u5E7F\u4E1C\u7701\u6DF1\u5733\u5E02\u5357\u5C71\u533A\u79D1\u6280\u56ED\u8DEF48\u53F7"
+    },
+    { name: "email", description: "\u90AE\u7BB1\uFF08\u4FDD\u7559\u57DF\uFF0C\u4E0D\u4F1A\u8BEF\u6295\uFF09", example: "a3f9c2d1@example.com" },
+    { name: "idcard", description: "18 \u4F4D\u8EAB\u4EFD\u8BC1\u53F7\uFF08\u542B\u5408\u6CD5\u6821\u9A8C\u4F4D\uFF09", example: "110101199003077758" },
+    { name: "plate", description: "\u8F66\u724C\u53F7", example: "\u4EACA12345" },
+    {
+      name: "avatar",
+      description: "\u5934\u50CF\u5360\u4F4D\u56FE\u5916\u94FE\uFF08\u9700\u5916\u7F51\u62C9\u53D6\uFF09",
+      example: "https://picsum.photos/seed/a3b2c1/300/300"
+    },
+    { name: "ip", description: "IPv4 \u5730\u5740", example: "203.0.113.88" },
+    {
+      name: "number",
+      description: "\u968F\u673A\u6574\u6570\uFF0C\u53EF\u5E26\u95ED\u533A\u95F4\u53C2\u6570",
+      example: "{{ fake.number(1,100) }} \u2192 87"
+    },
+    {
+      name: "hex",
+      description: "\u968F\u673A\u5341\u516D\u8FDB\u5236\u4E32\uFF0C\u9ED8\u8BA4 32 \u4F4D\u53EF\u6307\u5B9A\u957F\u5EA6",
+      example: "{{ fake.hex(16) }} \u2192 a3f9\u2026"
+    },
+    { name: "uuid", description: "UUID v4", example: "3f2504e0-4f89-41d3-9a0c-0305e82c3301" },
+    { name: "timestamp", description: "\u5F53\u524D\u6BEB\u79D2\u65F6\u95F4\u6233", example: "1730000000000" }
+  ];
+  var FAKE_GENERATOR_NAMES = FAKE_GENERATORS.map((def) => def.name);
+  function generateFake(name, args) {
+    const generator = GENERATOR_IMPLS[name];
+    if (!generator) {
+      return { value: "", warning: `\u672A\u77E5\u7684\u751F\u6210\u5668\uFF1A${name}` };
+    }
+    return generator(args);
+  }
+
   // flow-engine/src/template.ts
   var UNCLOSED_BRACE_WARNING = '\u672A\u95ED\u5408\u7684 "{{" \u5DF2\u6309\u5B57\u9762\u91CF\u5904\u7406';
   var OPEN_SEQUENCE = "{{";
@@ -2700,6 +3110,14 @@ ${source}`
       const name = rest.slice(0, secondDot);
       if (name === "") return null;
       return { kind: "env", name, path: rest.slice(secondDot + 1) };
+    }
+    if (root === "fake") {
+      if (rest === "") return null;
+      const match = /^([A-Za-z][\w-]*)(?:\(([^)]*)\))?$/.exec(rest);
+      if (!match) return null;
+      const name = match[1];
+      const args = match[2] === void 0 ? void 0 : match[2].split(",").map((item) => item.trim());
+      return { kind: "fake", name, args, path: "" };
     }
     if (BARE_PATH_PATTERN.test(content)) {
       return { kind: "input", path: content };
@@ -2806,6 +3224,15 @@ ${source}`
     }
     return { present: true, value: record[name] };
   }
+  var FAKE_RENDER_CACHES = /* @__PURE__ */ new WeakMap();
+  function fakeCacheFor(ctx) {
+    let cache = FAKE_RENDER_CACHES.get(ctx);
+    if (!cache) {
+      cache = /* @__PURE__ */ new Map();
+      FAKE_RENDER_CACHES.set(ctx, cache);
+    }
+    return cache;
+  }
   function renderTemplate(raw, ctx) {
     const warnings = [];
     const parts = [];
@@ -2820,6 +3247,22 @@ ${source}`
         continue;
       }
       const ref = token.ref;
+      if (ref.kind === "fake") {
+        const cache = fakeCacheFor(ctx);
+        const cached = cache.get(token.raw);
+        if (cached !== void 0) {
+          parts.push(cached);
+          continue;
+        }
+        const generated = generateFake(ref.name ?? "", ref.args ?? []);
+        if (generated.warning) {
+          warnings.push(`\u5047\u6570\u636E\u6A21\u677F\u751F\u6210\u5931\u8D25\uFF1A{{ ${token.raw} }}\uFF08${generated.warning}\uFF09`);
+          continue;
+        }
+        cache.set(token.raw, generated.value);
+        parts.push(generated.value);
+        continue;
+      }
       let rootValue;
       if (ref.kind === "input") {
         rootValue = ctx.input;
@@ -5435,7 +5878,7 @@ ${helperBlock}return ${body};`;
       if (token.ref === null) {
         return `\u7B2C ${position} \u6761\u6761\u4EF6\uFF1A${slotName}\u5B58\u5728\u65E0\u6CD5\u8BC6\u522B\u7684\u6A21\u677F\u5F15\u7528\uFF08{{ ${token.raw} }}\uFF09`;
       }
-      if (token.ref.kind === "node" || token.ref.kind === "env") {
+      if (token.ref.kind === "node" || token.ref.kind === "env" || token.ref.kind === "fake") {
         return `\u7B2C ${position} \u6761\u6761\u4EF6\uFF1A${slotName}\u7684 {{ ${token.raw} }} \u5F15\u7528\u5728\u6761\u4EF6\u8868\u8FBE\u5F0F\u4E2D\u4E0D\u53EF\u7528\uFF08\u6761\u4EF6\u6C99\u7BB1\u4EC5\u652F\u6301 input / var \u5F15\u7528\uFF09`;
       }
     }

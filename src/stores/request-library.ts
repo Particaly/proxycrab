@@ -1,14 +1,8 @@
-<script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { Io5Download } from "vue-icons-plus/io5";
-import { useBackend } from "../api";
+import { computed, ref } from "vue";
+import { getBackend } from "../api/runtime-backend";
 import type { HttpApiChange, RequestLibraryEntry, RequestLibrarySource } from "../api/types";
-import { appStore, reportError } from "../stores/app";
-import { confirmDialog, openDropdownMenu } from "../stores/dialog";
-import { HTTP_API_CHANGE_EVENT } from "../stores/http-api-sync";
-import RequestLibraryList from "../components/request-library/RequestLibraryList.vue";
-import RequestLibraryDetail from "../components/request-library/RequestLibraryDetail.vue";
-import RequestLibraryImportDialog from "../components/request-library/RequestLibraryImportDialog.vue";
+import { appStore, reportError } from "./app";
+import { confirmDialog, openDropdownMenu } from "./dialog";
 import { copyText as writeClipboardText } from "../utils/clipboard";
 import {
   REQUEST_EXPORT_FORMATS,
@@ -23,7 +17,7 @@ import {
   type RequestGroupKey,
   type RequestSortKey,
 } from "../components/request-library/request-library-view";
-// 导入（Task 8）：解析与去重均为纯函数；落库复用既有 POST /api/request-library。
+// 导入：解析与去重均为纯函数；落库复用既有 POST /api/request-library。
 import {
   buildImportRequest,
   filterDuplicateItems,
@@ -33,16 +27,17 @@ import {
 } from "../utils/request-library-import";
 
 /**
- * 请求库窗口：工作区级可重放请求集合（ReqFlow「请求中心」形态）。
- * 左列表（服务端过滤 + limit/offset 续页 + 客户端分组/排序 + 批量删除）、
- * 右详情（名称/标签编辑 + 四 tab）。入口依赖 Backend.requestLibrary 能力位；
- * `request_library` 资源变更时自动刷新列表与当前详情。
+ * 请求库共享状态（原浮窗 RequestLibraryWindow 的 script 提升）：工作区级
+ * 可重放请求集合。手风琴导航下「侧栏列表（服务端过滤 + limit/offset 续页 +
+ * 客户端分组/排序 + 批量删除）」与「主区详情（名称/标签编辑 + 四 tab）+
+ * 导入/导出」是两个组件，列表与选中态在此共享；`request_library` 资源变更
+ * 时自动刷新列表与当前详情。入口依赖 Backend.requestLibrary 能力位
+ * （workspace-view / 手风琴区块把关）。
  */
-const backend = useBackend();
 
-const PAGE_SIZE = 200;
+export const REQUEST_PAGE_SIZE = 200;
 /** 关键字输入防抖（毫秒），避免逐键打后端。 */
-const KEYWORD_DEBOUNCE_MS = 300;
+export const REQUEST_KEYWORD_DEBOUNCE_MS = 300;
 
 const entries = ref<RequestLibraryEntry[]>([]);
 const total = ref(0);
@@ -63,26 +58,13 @@ const selectedId = ref<string | null>(null);
 const selected = ref<RequestLibraryEntry | null>(null);
 const checkedIds = ref<string[]>([]);
 
-let keywordTimer: number | undefined;
 let loadGeneration = 0;
 
-watch(keyword, (value) => {
-  if (keywordTimer !== undefined) window.clearTimeout(keywordTimer);
-  keywordTimer = window.setTimeout(() => {
-    keywordTimer = undefined;
-    if (debouncedKeyword.value !== value.trim()) {
-      debouncedKeyword.value = value.trim();
-    }
-  }, KEYWORD_DEBOUNCE_MS);
-});
-
-watch([debouncedKeyword, source, activeTags], () => void refresh());
-
-const groups = computed(() =>
+export const groups = computed(() =>
   buildRequestGroups(entries.value, { groupBy: groupBy.value, sortBy: sortBy.value }),
 );
 
-const tagOptions = computed(() => {
+export const tagOptions = computed(() => {
   const seen = new Set<string>();
   for (const entry of entries.value) {
     for (const tag of entry.tags) seen.add(tag);
@@ -90,8 +72,8 @@ const tagOptions = computed(() => {
   return [...seen].sort((a, b) => (a < b ? -1 : 1));
 });
 
-async function refresh(): Promise<void> {
-  const requestLibrary = backend.requestLibrary;
+export async function refresh(): Promise<void> {
+  const requestLibrary = getBackend().requestLibrary;
   if (!requestLibrary) return;
   const generation = ++loadGeneration;
   loading.value = true;
@@ -101,7 +83,7 @@ async function refresh(): Promise<void> {
       query: debouncedKeyword.value === "" ? null : debouncedKeyword.value,
       tags: activeTags.value.length === 0 ? null : activeTags.value.join(","),
       source: source.value === "" ? null : source.value,
-      limit: PAGE_SIZE,
+      limit: REQUEST_PAGE_SIZE,
       offset: 0,
     });
     if (generation !== loadGeneration) return;
@@ -121,8 +103,8 @@ async function refresh(): Promise<void> {
 }
 
 /** 续页：按 offset 取下一页并追加（滚动近底部或点「加载更多」时触发）。 */
-async function loadMore(): Promise<void> {
-  const requestLibrary = backend.requestLibrary;
+export async function loadMore(): Promise<void> {
+  const requestLibrary = getBackend().requestLibrary;
   if (!requestLibrary || loadingMore.value || entries.value.length >= total.value) return;
   loadingMore.value = true;
   try {
@@ -130,7 +112,7 @@ async function loadMore(): Promise<void> {
       query: debouncedKeyword.value === "" ? null : debouncedKeyword.value,
       tags: activeTags.value.length === 0 ? null : activeTags.value.join(","),
       source: source.value === "" ? null : source.value,
-      limit: PAGE_SIZE,
+      limit: REQUEST_PAGE_SIZE,
       offset: entries.value.length,
     });
     const known = new Set(entries.value.map((entry) => entry.id));
@@ -143,14 +125,14 @@ async function loadMore(): Promise<void> {
   }
 }
 
-async function select(id: string): Promise<void> {
+export async function select(id: string): Promise<void> {
   if (selectedId.value === id) return;
   selectedId.value = id;
   await loadSelected();
 }
 
 async function loadSelected(): Promise<void> {
-  const requestLibrary = backend.requestLibrary;
+  const requestLibrary = getBackend().requestLibrary;
   const id = selectedId.value;
   if (!requestLibrary || id === null) return;
   try {
@@ -169,8 +151,8 @@ function replaceInList(entry: RequestLibraryEntry): void {
   if (index >= 0) entries.value.splice(index, 1, entry);
 }
 
-async function updateMeta(patch: { name?: string; tags?: string[] }): Promise<void> {
-  const requestLibrary = backend.requestLibrary;
+export async function updateMeta(patch: { name?: string; tags?: string[] }): Promise<void> {
+  const requestLibrary = getBackend().requestLibrary;
   const entry = selected.value;
   if (!requestLibrary || !entry || saving.value) return;
   saving.value = true;
@@ -185,20 +167,20 @@ async function updateMeta(patch: { name?: string; tags?: string[] }): Promise<vo
   }
 }
 
-async function removeOne(): Promise<void> {
+export async function removeOne(): Promise<void> {
   const entry = selected.value;
   if (!entry) return;
   await removeEntries([entry.id]);
 }
 
-async function removeCheckedEntries(): Promise<void> {
+export async function removeCheckedEntries(): Promise<void> {
   if (checkedIds.value.length === 0) return;
   await removeEntries([...checkedIds.value]);
 }
 
 /** 批量删除：确认弹窗明确数量与不可恢复；逐条调用 DELETE（无批量端点）。 */
 async function removeEntries(ids: string[]): Promise<void> {
-  const requestLibrary = backend.requestLibrary;
+  const requestLibrary = getBackend().requestLibrary;
   if (!requestLibrary) return;
   const ok = await confirmDialog({
     title: ids.length === 1 ? "删除请求库条目" : "批量删除请求库条目",
@@ -226,36 +208,36 @@ async function removeEntries(ids: string[]): Promise<void> {
   if (selectedId.value !== null) void loadSelected();
 }
 
-function toggleChecked(id: string): void {
+export function toggleChecked(id: string): void {
   checkedIds.value = checkedIds.value.includes(id)
     ? checkedIds.value.filter((current) => current !== id)
     : [...checkedIds.value, id];
 }
 
-function toggleAll(ids: string[]): void {
+export function toggleAll(ids: string[]): void {
   const allChecked = ids.length > 0 && ids.every((id) => checkedIds.value.includes(id));
   checkedIds.value = allChecked
     ? checkedIds.value.filter((id) => !ids.includes(id))
     : [...new Set([...checkedIds.value, ...ids])];
 }
 
-function toggleTag(tag: string): void {
+export function toggleTag(tag: string): void {
   activeTags.value = activeTags.value.includes(tag)
     ? activeTags.value.filter((current) => current !== tag)
     : [...activeTags.value, tag];
 }
 
-// ---- 导入入口（Task 8；独立区块，与列表/详情逻辑无耦合） ----
+// ---- 导入入口（独立区块，与列表/详情逻辑无耦合） ----
 
-const importOpen = ref(false);
+export const importOpen = ref(false);
 
 /**
  * 导入对话框回调：skipDuplicates 时全量拉取库内既有条目构建 `METHOD URL` 键集
  * 去重，随后逐条走既有 POST /api/request-library 入库（服务端做默认命名与重名
  * 后缀），最后刷新列表并汇总提示。
  */
-async function importRequests(payload: ImportSubmitPayload): Promise<ImportSubmitOutcome> {
-  const requestLibrary = backend.requestLibrary;
+export async function importRequests(payload: ImportSubmitPayload): Promise<ImportSubmitOutcome> {
+  const requestLibrary = getBackend().requestLibrary;
   if (!requestLibrary) return { imported: 0, failed: payload.items.length, skipped: 0 };
   let existingKeys: Set<string> | null = null;
   if (payload.skipDuplicates) {
@@ -266,7 +248,7 @@ async function importRequests(payload: ImportSubmitPayload): Promise<ImportSubmi
         query: null,
         tags: null,
         source: null,
-        limit: PAGE_SIZE,
+        limit: REQUEST_PAGE_SIZE,
         offset,
       });
       for (const entry of page.entries) {
@@ -300,7 +282,7 @@ async function importRequests(payload: ImportSubmitPayload): Promise<ImportSubmi
   return { imported, failed, skipped: duplicates.length };
 }
 
-// ---- 导出入口（Task 9；独立区块，仅针对当前选中条目，与列表/导入逻辑无耦合） ----
+// ---- 导出入口（独立区块：仅针对当前选中条目，与列表/导入逻辑无耦合） ----
 
 /** 结果反馈文案（null = 无反馈）；1.5s 后自动清除。 */
 const exportFeedback = ref<string | null>(null);
@@ -319,7 +301,7 @@ function showExportFeedback(message: string, failed: boolean): void {
 }
 
 /** 「导出为…」下拉菜单：六格式按 REQUEST_EXPORT_FORMATS 顺序。 */
-function openExportMenu(event: MouseEvent): void {
+export function openExportMenu(event: MouseEvent): void {
   if (!selected.value) return;
   openDropdownMenu(
     event.currentTarget as HTMLElement,
@@ -335,7 +317,8 @@ function openExportMenu(event: MouseEvent): void {
  * 取消时提示）；copy 型（cURL / fetch / axios / Python）复制到剪贴板。
  * 快照无 entry 的条目（防御性形态）生成空串：不做任何动作。
  */
-async function runExport(format: RequestExportFormatId): Promise<void> {
+export async function runExport(format: RequestExportFormatId): Promise<void> {
+  const backend = getBackend();
   const entry = selected.value;
   if (!entry) return;
   const meta = REQUEST_EXPORT_FORMATS.find((candidate) => candidate.id === format);
@@ -360,7 +343,13 @@ async function runExport(format: RequestExportFormatId): Promise<void> {
   }
 }
 
-function onHttpApiChange(event: Event): void {
+/** 清除导出反馈计时（视图卸载时调用，防跨挂载期定时器回流）。 */
+export function clearExportFeedbackTimer(): void {
+  if (exportFeedbackTimer !== undefined) window.clearTimeout(exportFeedbackTimer);
+}
+
+/** `request_library` 资源变更（其他窗口 / CLI 改动）对账入口。 */
+export function onRequestLibraryHttpApiChange(event: Event): void {
   const { resources } = (event as CustomEvent<HttpApiChange>).detail;
   if (!resources.includes("all") && !resources.includes("request_library")) return;
   // 名称/标签均为即时提交，无未保存草稿；直接刷新列表与详情。
@@ -368,150 +357,40 @@ function onHttpApiChange(event: Event): void {
   if (selectedId.value !== null) void loadSelected();
 }
 
-onMounted(() => {
-  void refresh();
-  window.addEventListener(HTTP_API_CHANGE_EVENT, onHttpApiChange);
-});
-
-onBeforeUnmount(() => {
-  if (keywordTimer !== undefined) window.clearTimeout(keywordTimer);
-  if (exportFeedbackTimer !== undefined) window.clearTimeout(exportFeedbackTimer);
-  window.removeEventListener(HTTP_API_CHANGE_EVENT, onHttpApiChange);
-});
-</script>
-
-<template>
-  <div class="rl-root">
-    <RequestLibraryList
-      v-model:keyword="keyword"
-      v-model:group-by="groupBy"
-      v-model:sort-by="sortBy"
-      v-model:source="source"
-      :groups="groups"
-      :active-tags="activeTags"
-      :tag-options="tagOptions"
-      :loaded-count="entries.length"
-      :total="total"
-      :loading="loading"
-      :loaded="loaded"
-      :loading-more="loadingMore"
-      :selected-id="selectedId"
-      :checked-ids="checkedIds"
-      @toggle-tag="toggleTag"
-      @select="select"
-      @toggle-checked="toggleChecked"
-      @toggle-all="toggleAll"
-      @remove-checked="removeCheckedEntries"
-      @clear-checked="checkedIds = []"
-      @load-more="loadMore"
-    />
-    <div v-if="loadError && !selected" class="rl-error">
-      <span>加载请求库失败：{{ loadError }}</span>
-      <button class="btn" @click="refresh()">重试</button>
-    </div>
-    <RequestLibraryDetail
-      v-if="selected"
-      :key="selected.id"
-      :entry="selected"
-      :saving="saving"
-      @update-meta="updateMeta"
-      @remove="removeOne"
-    />
-    <div v-else class="rl-no-selection">
-      <p>{{ selectedId === null ? "未选择请求" : "请求详情加载失败" }}</p>
-      <p class="rl-no-selection-detail">
-        {{
-          selectedId === null
-            ? "从左侧列表选择一条请求，查看并编辑其 Headers / Query / Body / Response。"
-            : "该条目可能已被删除，刷新列表后重试。"
-        }}
-      </p>
-    </div>
-    <!-- 导入对话框（Task 8；Teleport 到 body，独立于列表/详情布局） -->
-    <RequestLibraryImportDialog
-      v-if="importOpen"
-      :import-requests="importRequests"
-      @close="importOpen = false"
-    />
-    <!-- 导出（Task 9；独立区块：浮在详情右下角，仅当前选中条目可导出） -->
-    <div v-if="selected" class="rl-export-bar">
-      <span
-        v-if="exportFeedback"
-        class="rl-export-feedback"
-        :class="{ failed: exportFailed }"
-        aria-live="polite"
-      >
-        {{ exportFeedback }}
-      </span>
-      <button class="btn" @click="openExportMenu"><Io5Download :size="13" /> 导出为…</button>
-    </div>
-  </div>
-</template>
-
-<style scoped>
-.rl-root {
-  flex: 1;
-  min-height: 0;
-  min-width: 0;
-  display: flex;
-  position: relative;
+export function useRequestLibraryStore() {
+  return {
+    entries,
+    total,
+    loading,
+    loadingMore,
+    loaded,
+    loadError,
+    saving,
+    keyword,
+    debouncedKeyword,
+    source,
+    activeTags,
+    groupBy,
+    sortBy,
+    selectedId,
+    selected,
+    checkedIds,
+    groups,
+    tagOptions,
+    importOpen,
+    exportFeedback,
+    exportFailed,
+    refresh,
+    loadMore,
+    select,
+    updateMeta,
+    removeOne,
+    removeCheckedEntries,
+    toggleChecked,
+    toggleAll,
+    toggleTag,
+    importRequests,
+    openExportMenu,
+    runExport,
+  };
 }
-
-/* 导出区块：浮在详情右下角，不占用详情布局空间（独立于列表/详情/导入）。 */
-.rl-export-bar {
-  position: absolute;
-  right: var(--space-3);
-  bottom: var(--space-3);
-  z-index: 5;
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-.rl-export-feedback {
-  font-size: 11px;
-  color: var(--success);
-  background: var(--bg-panel);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  padding: 3px 8px;
-}
-
-.rl-export-feedback.failed {
-  color: var(--danger);
-}
-
-.rl-error {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-2);
-  color: var(--danger);
-  font-size: 12px;
-  padding: var(--space-4);
-}
-
-.rl-no-selection {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-1);
-  padding: var(--space-4);
-  text-align: center;
-}
-
-.rl-no-selection p {
-  margin: 0;
-  color: var(--text-secondary);
-}
-
-.rl-no-selection-detail {
-  font-size: 11px;
-  color: var(--text-faint);
-}
-</style>

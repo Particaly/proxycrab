@@ -312,11 +312,13 @@ describe("执行顺序与陈旧节点", () => {
 });
 
 describe("边运行态", () => {
-  test("任一端点 running 加流动动画类，其余组合保持常态", () => {
+  test("仅目标端 running 加流动动画类，其余边显式清除 class", () => {
+    // 执行到节点 b：流入 b 的 e1 动画，b 的出边 e2 保持常态（source running
+    // 不点亮出边——动画语义是「数据正流入执行中节点」）
     const states = nodeRunsToRunStates(
       [
-        sampleNodeRun({ nodeId: "a", status: "running" }),
-        sampleNodeRun({ nodeId: "b", status: "success" }),
+        sampleNodeRun({ nodeId: "a", status: "success" }),
+        sampleNodeRun({ nodeId: "b", status: "running" }),
       ],
       "running",
     );
@@ -331,8 +333,49 @@ describe("边运行态", () => {
       target: "b",
       class: "flow-edge-running",
     });
-    expect(withClasses[1]).toEqual({ id: "e2", source: "b", target: "c" });
-    // 关闭运行态（null）原样返回
-    expect(withEdgeRunClasses(edges, null)).toEqual(edges);
+    // 未命中边显式 class: undefined——Vue Flow 按 Object.assign 合并边更新，
+    // 缺席键不清除旧值，动画类会永久滞留（运行结束停不下来）
+    expect(withClasses[1]).toEqual({ id: "e2", source: "b", target: "c", class: undefined });
+
+    // 执行推进到 c 后：e1 的动画清除，e2 点亮
+    const nextStates = nodeRunsToRunStates(
+      [
+        sampleNodeRun({ nodeId: "b", status: "success" }),
+        sampleNodeRun({ nodeId: "c", status: "running" }),
+      ],
+      "running",
+    );
+    const advanced = withEdgeRunClasses(edges, nextStates);
+    expect(advanced[0]).toEqual({ id: "e1", source: "a", target: "b", class: undefined });
+    expect(advanced[1]).toEqual({
+      id: "e2",
+      source: "b",
+      target: "c",
+      class: "flow-edge-running",
+    });
+  });
+
+  test("运行态关闭（null）时全部边显式清除 class", () => {
+    const edges = [{ id: "e1", source: "a", target: "b" }];
+    expect(withEdgeRunClasses(edges, null)).toEqual([
+      { id: "e1", source: "a", target: "b", class: undefined },
+    ]);
+  });
+
+  test("运行结束（终态无 running）时全部边保持常态", () => {
+    const states = nodeRunsToRunStates(
+      [
+        sampleNodeRun({ nodeId: "a", status: "success" }),
+        sampleNodeRun({ nodeId: "b", status: "success" }),
+      ],
+      "success",
+    );
+    const edges = [
+      { id: "e1", source: "a", target: "b" },
+      { id: "e2", source: "b", target: "c" },
+    ];
+    for (const edge of withEdgeRunClasses(edges, states)) {
+      expect(edge.class).toBeUndefined();
+    }
   });
 });

@@ -5,7 +5,7 @@
  * 请求描述），输出六种常用格式的字符串；无 Vue / store / DOM 依赖，可被 vitest
  * node 环境直测。与请求库导入（request-library-import.ts，Task 8）同一分层约定：
  * 解析 / 生成全部在本模块，下载动作在 request-export-download.ts，UI 编排在
- * RequestLibraryWindow.vue 的独立「导出」区块。
+ * 请求库视图的「导出」区块（stores/request-library.ts runExport）。
  *
  * 六种格式与关键决策（均为文档化选择，测试逐条锁定）：
  *   1. cURL：复用既有 src/utils/curl.ts 的命令形态与 POSIX 引号规则（--request /

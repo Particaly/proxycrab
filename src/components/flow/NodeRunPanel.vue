@@ -6,7 +6,7 @@ import JsonTree from "./JsonTree.vue";
 import { isTruncatedSnapshot } from "./json-tree";
 import { appStore, reportError } from "../../stores/app";
 import { requestEditorFocus } from "../../stores/editor-focus";
-import { openWorkflowEditor } from "../../windows/launcher";
+import { workspaceStore } from "../../stores/workspace-view";
 import {
   formatDurationMs,
   formatLoopIterationProgress,
@@ -157,7 +157,7 @@ async function pinOutput(): Promise<void> {
 function openInEditor(): void {
   if (!backend.workflows) return;
   requestEditorFocus(props.run.workflowId, props.nodeId);
-  openWorkflowEditor();
+  workspaceStore.open("workflow");
 }
 
 /* ------------------------------ 快照查看器 ------------------------------ */

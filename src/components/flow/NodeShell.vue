@@ -12,10 +12,11 @@ export const NODE_RENAME_KEY: InjectionKey<(nodeId: string, label: string) => vo
 
 <script setup lang="ts">
 import { computed, inject, ref } from "vue";
+import { Io5Pin } from "vue-icons-plus/io5";
 import { Handle, Position } from "@vue-flow/core";
 import type { NodeProps } from "@vue-flow/core";
 import type { WorkflowNode } from "../../api/types";
-import { getWorkflowNodeMeta, nodeBadge, nodeSummary } from "./node-meta";
+import { getWorkflowNodeMeta, nodeBadge, nodeSummary, replayCardFields } from "./node-meta";
 import { badgeIssues, type NodeIssue } from "./node-issue-badge";
 import { formatLoopIterationProgress } from "./run-view";
 
@@ -45,6 +46,12 @@ const label = computed(() => {
 });
 const summary = computed(() => nodeSummary(node.value));
 const badge = computed(() => nodeBadge(node.value));
+/** 请求重放卡的徽章字段（method / URL / 失败策略 / 超时 / 已固定；他类为 null）。 */
+const replay = computed(() => replayCardFields(node.value));
+/** method 徽章配色类（flow.css 分档；未知方法灰色档）。 */
+const methodClass = computed(() =>
+  replay.value === null ? null : `flow-method-${replay.value.method.toLowerCase()}`,
+);
 
 /** 徽标展示问题（info 级语义披露不进徽标，仅窗口校验面板展示）。 */
 const issues = computed(() => badgeIssues(props.data.issues ?? []));
@@ -160,6 +167,13 @@ function commitRename(): void {
     >
       {{ runMark }}
     </span>
+    <span
+      v-if="replay?.pinned"
+      class="flow-node-pinned"
+      title="输出已固定：后续运行此节点不再执行（配置抽屉可清除）"
+    >
+      <Io5Pin :size="10" />
+    </span>
     <div class="flow-node-head">
       <span v-if="meta.handles !== 'none'" class="flow-node-dot" aria-hidden="true" />
       <input
@@ -183,9 +197,32 @@ function commitRename(): void {
       >
         {{ label }}
       </span>
-      <span v-if="badge !== undefined" class="flow-node-badge mono">{{ badge }}</span>
+      <span
+        v-if="replay?.timeout !== undefined"
+        class="flow-node-badge mono flow-node-timeout"
+        :title="`重放超时 ${replay.timeout}`"
+      >
+        {{ replay.timeout }}
+      </span>
+      <span v-else-if="badge !== undefined" class="flow-node-badge mono">{{ badge }}</span>
     </div>
-    <div class="flow-node-summary mono" :title="summary">{{ summary }}</div>
+    <!-- 请求重放卡第二行：method 彩色徽章 + URL 摘要 + 失败策略（对齐归档卡片密度） -->
+    <div v-if="replay !== null" class="flow-node-replay">
+      <span class="flow-node-method mono" :class="methodClass">{{ replay.method }}</span>
+      <span class="flow-node-url mono" :title="replay.url">{{ replay.url }}</span>
+      <span
+        class="flow-node-fail"
+        :class="{ continue: replay.failContinue }"
+        :title="
+          replay.failContinue
+            ? '失败策略：节点失败后继续执行后续节点'
+            : '失败策略：节点失败即停止流程'
+        "
+      >
+        {{ replay.failPolicy }}
+      </span>
+    </div>
+    <div v-else class="flow-node-summary mono" :title="summary">{{ summary }}</div>
     <div v-if="runIterations !== null" class="flow-node-iterations mono" :title="runIterations">
       {{ runIterations }}
     </div>

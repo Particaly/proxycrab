@@ -5,7 +5,8 @@
 //! 重放与 runs.db 落库组装成完整的运行链路——
 //!
 //!   trigger(workflowId, sessionId?)：
-//!     前提校验（代理运行中 / 目标 Session 存在 / 图合法，不满足明确报错不建单）
+//!     前提校验（目标 Session 存在 / 图合法，不满足明确报错不建单；重放走
+//!     流程专属连接代，不要求代理运行中）
 //!     → 建单（`running` + 图快照，落库失败即失败）
 //!     → spawn 编排任务（VM + 写队列消费者），立即返回 run 记录。
 //!
@@ -61,7 +62,6 @@ use crate::{
         store::FlowStore,
         validate::validate_workflow_graph,
     },
-    model::ProxyStatus,
     proxy::replay::{REPLAY_DEFAULT_TIMEOUT, ReplayAwaitError, ReplayBody, ReplayRequest},
     workspace::now_millis,
 };
@@ -107,8 +107,6 @@ pub enum RunTriggerError {
     WorkflowNotFound(String),
     #[error("工作流图校验未通过：{0}")]
     NotValid(String),
-    #[error("代理未运行：工作流重放需要代理运行中，请先启动代理")]
-    ProxyNotRunning,
     #[error("目标 Session {0} 不存在或已归档")]
     SessionMissing(u64),
     #[error("未指定目标 Session 且当前无活动 Session")]
@@ -230,7 +228,8 @@ impl FlowRunManager {
         }
     }
 
-    /// 触发一次工作流运行（trigger = `manual`）：前提校验 → 建单（`running`
+    /// 触发一次工作流运行（trigger = `manual`）：前提校验（目标 Session 存在 /
+    /// 图合法；重放走流程专属连接代，不要求代理运行中）→ 建单（`running`
     /// + 图快照）→ 派发。前提不满足时不建单，返回明确错误。
     pub async fn trigger(
         self: &Arc<Self>,
@@ -247,10 +246,8 @@ impl FlowRunManager {
                     RunTriggerError::Storage(anyhow!("运行输入任务失败: {error}"))
                 })??;
 
-        // 前提校验（Step 3）：代理运行中、目标 Session 存在、图合法。
-        if !matches!(self.runtime.proxy_status(), ProxyStatus::Running { .. }) {
-            return Err(RunTriggerError::ProxyNotRunning);
-        }
+        // 前提校验（Step 3）：目标 Session 存在、图合法（重放走流程专属连接代，
+        // 不要求代理运行中）。
         let session_id = match session_id.or_else(|| self.runtime.active_session_id()) {
             Some(id) => id,
             None => return Err(RunTriggerError::NoSession),
@@ -669,9 +666,9 @@ const RUN_DRIVER_JS: &str = r"(async () => {
 })()";
 
 /// 运行宿主桥：把引擎的宿主调用接到真实运行时——重放走
-/// [`ProxyCrab::replay_await`]（错误按 `[kind]` 前缀约定归一，引擎按前缀
-/// 分类），事件经 mpsc 交付本运行的写队列消费者，取消轮询读取共享
-/// [`FlowCancel`]。
+/// [`ProxyCrab::replay_await_flow`]（流程专属连接代，不要求代理运行中；错误按
+/// `[kind]` 前缀约定归一，引擎按前缀分类），事件经 mpsc 交付本运行的写队列
+/// 消费者，取消轮询读取共享 [`FlowCancel`]。
 struct RunHost {
     runtime: Arc<crate::runtime::ProxyCrab>,
     session_id: u64,
@@ -730,7 +727,7 @@ impl FlowHost for RunHost {
             .unwrap_or(REPLAY_DEFAULT_TIMEOUT);
         match self
             .runtime
-            .replay_await(self.session_id, request, timeout)
+            .replay_await_flow(self.session_id, request, timeout)
             .await
         {
             Ok(response) => serde_json::to_value(&response)
@@ -743,7 +740,7 @@ impl FlowHost for RunHost {
             Err(ReplayAwaitError::Network(message)) => {
                 Err(FlowError::new(FlowErrorKind::Network, message))
             }
-            // 发起阶段的环境性失败（Session 缺失 / 代理已停止 / 参数非法）：
+            // 发起阶段的环境性失败（Session 缺失 / 参数非法）：
             // 运行环境拒绝，归 blocked（对齐 FlowErrorKind 分类约定）。
             Err(ReplayAwaitError::Replay(error)) => {
                 Err(FlowError::new(FlowErrorKind::Blocked, error.to_string()))

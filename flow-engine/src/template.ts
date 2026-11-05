@@ -13,14 +13,20 @@
  *     裸 `{{ var }}`（缺变量名）不算合法引用，按未知引用告警）；
  *   - `{{ env.<key>.<path> }}`     → 取环境变量的路径值（M10-T4 环境变量集：
  *     当前激活环境集合的键值快照，经 RenderContext.env 注入；独立命名空间，
- *     与 var 并存不冲突；无激活环境 / 键不存在 → 空串 + 专属告警）。
+ *     与 var 并存不冲突；无激活环境 / 键不存在 → 空串 + 专属告警）；
+ *   - `{{ fake.<名称>(<参数>) }}`  → 内置假数据生成器（fake.ts）：重放测试
+ *     伪造手机号 / 姓名 / 邮箱等业务字段，如 `{{ fake.phone }}`、
+ *     `{{ fake.number(1,100) }}`。不经 RenderContext 取数——每次调用独立随机，
+ *     同一 RenderContext 实例内同表达式取值一致（WeakMap 缓存，见 fake 分支）；
+ *     未知生成器 / 参数不合法 → 空串 + 专属告警。
  *
- * 裸路径的判定：内容不以 node / input / $json / var / env 这些保留根开头、且
+ * 裸路径的判定：内容不以 node / input / $json / var / env / fake 这些保留根开头、且
  * 形如点分路径（标识符段，允许 - 与 $，用于请求头名）时按入参路径解析；其余
  * 形态（含空表达式）仍按未知引用处理并告警。保留根优先——入参里恰好有名为
  * var / env 的字段时需要写 `input.var...` 消歧。
  *
- * 本模块为纯函数、零依赖（不依赖 React / 存储 / 网络），供三处消费：
+ * 本模块为纯函数、零环境依赖（不依赖 React / 存储 / 网络；仅引入同目录 fake.ts
+ * 的假数据生成器，彼模块同为纯函数），供三处消费：
  *   - M5 执行器：发请求前对 URL / headers / body 做 renderTemplate / renderValueDeep；
  *   - 表达式提示组件（M4-T4）：extractReferences 展示模板已引用的数据；
  *   - 调试 / 校验场景：parseTemplate 切分 token 检查语法。
@@ -37,6 +43,8 @@
  * 不改动既有 engine 文件），调用方按路径 `@/engine/template` 直接引入。
  */
 
+import { generateFake } from "./fake";
+
 /** 模板引用：`{{ ... }}` 内的取数描述（供提示组件与校验展示） */
 export interface TemplateRef {
   /**
@@ -45,13 +53,22 @@ export interface TemplateRef {
    * 合并后的变量）；'env' 指环境变量集（M10-T4：当前激活环境的键值快照，
    * 独立命名空间——与 var 前缀选型说明：env 与 node / input / var 四根互不
    * 冲突，环境值不并入 var 命名空间，避免与流程 / 项目 / 全局变量同名键
-   * 产生优先级歧义）
+   * 产生优先级歧义）；'fake' 指内置假数据生成器（fake.ts，不经 RenderContext
+   * 取数，渲染时直接生成随机值）
    */
-  kind: "node" | "input" | "var" | "env";
-  /** kind === 'node' 时的目标节点 id（'input' / 'var' / 'env' 引用没有该字段） */
+  kind: "node" | "input" | "var" | "env" | "fake";
+  /** kind === 'node' 时的目标节点 id（'input' / 'var' / 'env' / 'fake' 引用没有该字段） */
   nodeId?: string;
-  /** kind === 'var' / 'env' 时的变量名 / 环境键名（'node' / 'input' 引用没有该字段） */
+  /**
+   * kind === 'var' / 'env' 时为变量名 / 环境键名；kind === 'fake' 时为假数据
+   * 生成器名（如 'phone'）（'node' / 'input' 引用没有该字段）
+   */
   name?: string;
+  /**
+   * kind === 'fake' 时为括号段参数（已按逗号切分、trim，如 ['1','100']；
+   * 表达式未带括号时不存在）。其余 kind 的点分路径取数存于 path，不用本字段。
+   */
+  args?: string[];
   /** 点分路径（如 'output.token'、'user.0.id'）；空串表示引用根值本身 */
   path: string;
 }
@@ -119,12 +136,14 @@ const ARRAY_INDEX_PATTERN = /^(0|[1-9]\d*)$/;
  *
  * 语法：`input.<path>`、`node.<nodeId>.<path>`（nodeId 自身不含点）、
  * `var.<name>.<path>`（M7-T2，变量名自身不含点）或 `env.<key>.<path>`（M10-T4）；
+ * `fake.<名称>(<参数>)`（假数据生成器：名称后可带括号参数段，按逗号切分 trim，
+ * 如 `fake.number(1,100)` → name='number'、args=['1','100']；括号可省略）；
  * `$json.<path>` 是 `input.<path>` 的别名（n8n 习惯，M12-T3，方便从入参取字段）。
  * 裸点分路径（如 `headers.x-token`）是 `input.<path>` 的简写——节点配置内的
  * 模板引用绝大多数就是取当前节点入参，省略前缀可少输一长串。
  * path 允许为空串（引用根值本身，如 `{{ node.n2 }}` / `{{ input }}` /
  * `{{ $json }}` / `{{ var.token }}`）；其余不符合语法的内容（空表达式、未知根、
- * 缺 nodeId / 变量名等，含裸 `{{ var }}`）返回 null。
+ * 缺 nodeId / 变量名 / 生成器名等，含裸 `{{ var }}`、裸 `{{ fake }}`）返回 null。
  */
 function parseRef(content: string): TemplateRef | null {
   const dotIndex = content.indexOf(".");
@@ -162,6 +181,19 @@ function parseRef(content: string): TemplateRef | null {
     const name = rest.slice(0, secondDot);
     if (name === "") return null;
     return { kind: "env", name, path: rest.slice(secondDot + 1) };
+  }
+  if (root === "fake") {
+    // 假数据生成器：'fake' 后必须显式给出生成器名，名称后可带括号参数段
+    // （如 `fake.number(1,100)` → ['1','100']；无括号 → args 省略）。
+    // 形态不符（裸 `{{ fake }}`、括号后拖尾内容、非法字符等）→ null，
+    // 渲染层按「未知的模板引用」告警，与 var / env 的缺名口径一致
+    if (rest === "") return null;
+    const match = /^([A-Za-z][\w-]*)(?:\(([^)]*)\))?$/.exec(rest);
+    if (!match) return null;
+    const name = match[1];
+    const args =
+      match[2] === undefined ? undefined : match[2].split(",").map((item) => item.trim());
+    return { kind: "fake", name, args, path: "" };
   }
   // 裸路径 = 入参路径简写（保留根已在上方优先匹配）：非点分路径形态的内容
   // （含空白 / 括号等）仍判为未知引用，保留原有的语法告警
@@ -319,6 +351,30 @@ function getEnvRoot(ctx: RenderContext, name: string): { present: boolean; value
 }
 
 /**
+ * 假数据一致性缓存表：按 RenderContext 实例缓存「表达式原文 → 生成值」。
+ *
+ * 选 WeakMap 而非往 RenderContext 上挂字段的缘故：不改动上下文形状（执行器
+ * buildTemplateContext 的既有形状被测试锁定），也不在渲染层变异调用方对象。
+ * 生命周期随 ctx 实例——执行器为每个节点执行（loop 每迭代）新建 ctx，缓存随之
+ * 失效重随机；buildReplayRequest 对同一 ctx 依次渲染 url / headers / body，
+ * 同一表达式（含参数，缓存键用 token.raw 原文）因此取到同一个值。
+ */
+const FAKE_RENDER_CACHES = new WeakMap<object, Map<string, string>>();
+
+/**
+ * 取（或惰性创建）某个渲染上下文的假数据缓存表。
+ * @param ctx 渲染上下文（仅作 WeakMap 键，读取不改动其内容）
+ */
+function fakeCacheFor(ctx: RenderContext): Map<string, string> {
+  let cache = FAKE_RENDER_CACHES.get(ctx);
+  if (!cache) {
+    cache = new Map();
+    FAKE_RENDER_CACHES.set(ctx, cache);
+  }
+  return cache;
+}
+
+/**
  * 渲染单个模板字符串：把全部 `{{ ... }}` 表达式求值并拼接为最终字符串。
  *
  * 行为约定（渲染永不因缺数据失败）：
@@ -327,6 +383,10 @@ function getEnvRoot(ctx: RenderContext, name: string): { present: boolean; value
  *   - var 引用的变量不在 ctx.var 中 → 空串 + 「变量不存在」警告（M7-T2）；
  *   - env 引用的键不在 ctx.env 中（含无激活环境的表缺失场景）→ 空串 +
  *     「环境变量不存在」警告（M10-T4，缺省值约定与 var 一致）；
+ *   - fake 引用交给假数据生成器（fake.ts）：未知生成器 / 参数不合法 → 空串 +
+ *     「假数据模板生成失败」警告（含原因短语）；成功值按 ctx 实例缓存——同一
+ *     RenderContext 内同表达式取值一致（URL / headers / body 复用同一次生成），
+ *     换 ctx（新节点执行 / 新迭代）即重新随机；生成失败不缓存（每处独立告警）；
  *   - 路径缺失 → 空串 + 「路径不存在」警告；
  *   - 求值结果为 null / undefined → 空串 + 「值为空」警告（JSON null 亦然，
  *     与「键存在但值就是 null」的场景统一提示，便于上游排查数据链路）；
@@ -357,6 +417,24 @@ export function renderTemplate(
     }
 
     const ref = token.ref;
+    // fake 引用不经 RenderContext 取数：直接调生成器（缓存与告警见分支内），
+    // 渲染完 continue——不落入下方 resolvePath 的取数管线
+    if (ref.kind === "fake") {
+      const cache = fakeCacheFor(ctx);
+      const cached = cache.get(token.raw);
+      if (cached !== undefined) {
+        parts.push(cached);
+        continue;
+      }
+      const generated = generateFake(ref.name ?? "", ref.args ?? []);
+      if (generated.warning) {
+        warnings.push(`假数据模板生成失败：{{ ${token.raw} }}（${generated.warning}）`);
+        continue;
+      }
+      cache.set(token.raw, generated.value);
+      parts.push(generated.value);
+      continue;
+    }
     let rootValue: unknown;
     if (ref.kind === "input") {
       rootValue = ctx.input;
@@ -455,11 +533,61 @@ export function renderValueDeep(
 }
 
 /**
+ * 只渲染 fake 引用，其余表达式保持字面量（独立重放窗口专用）。
+ *
+ * 独立重放窗口没有流程运行的 node / var / env 上下文，若直接用 renderTemplate
+ * 渲染，`{{ var.x }}` 之类引用会被静默替换为空串——那不是用户意图（窗口里的
+ * 模板能力约定为「只做假数据」）。本函数解析 `{{ ... }}` 表达式后仅替换
+ * kind === 'fake' 的引用；fake 生成失败（未知生成器 / 参数不合法）与其他 kind
+ * 一律保留 `{{ ... }}` 原文，让用户在发送前直接看到未解析的表达式。
+ *
+ * 与 renderTemplate 的 fake 分支共用同一次生成口径（generateFake），但不走
+ * WeakMap 缓存——窗口每次渲染各槽位（URL / 头 / 体）是独立调用，跨槽位一致性
+ * 由调用方传入同一个 cache Map 实现（可选参数）。
+ *
+ * @param raw 模板原文
+ * @param cache 可选的跨调用一致性缓存（键 = 表达式原文）；同一窗口发送一次
+ *        请求时传同一个 Map，即可让 URL / headers / body 中的同表达式取同一值
+ * @returns 仅替换 fake 引用后的字符串（其余内容原样保留，包括未闭合 `{{`）
+ */
+export function renderFakeOnly(raw: string, cache?: Map<string, string>): string {
+  const parts: string[] = [];
+  for (const token of parseTemplate(raw)) {
+    if (token.kind === "text") {
+      parts.push(token.value);
+      continue;
+    }
+    if (token.ref?.kind === "fake") {
+      const key = token.raw;
+      const cached = cache?.get(key);
+      if (cached !== undefined) {
+        parts.push(cached);
+        continue;
+      }
+      const generated = generateFake(token.ref.name ?? "", token.ref.args ?? []);
+      if (generated.warning || generated.value === "") {
+        // 失败保留原文：直发场景没有告警通道，字面量残留便于用户肉眼发现
+        parts.push(`{{ ${token.raw} }}`);
+        continue;
+      }
+      cache?.set(key, generated.value);
+      parts.push(generated.value);
+      continue;
+    }
+    // 非 fake 引用（node / input / var / env / 未知）恢复 `{{ ... }}` 字面量
+    // （token.raw 为 trim 后内容，拼回时保持与原文等价的可读形态）
+    parts.push(`{{ ${token.raw} }}`);
+  }
+  return parts.join("");
+}
+
+/**
  * 提取模板中的引用清单（保序、不去重，供提示组件 / 校验展示）。
  *
- * 只收录能解析为合法引用的表达式（node / input / var / env 四种根，var 为
- * M7-T2 新增、env 为 M10-T4 新增）；未知引用（渲染时会告警）不在此列，
- * 若需要检查语法问题请改用 parseTemplate 查看 token.ref === null 的表达式。
+ * 只收录能解析为合法引用的表达式（node / input / var / env / fake 五种根，var 为
+ * M7-T2 新增、env 为 M10-T4 新增、fake 为假数据生成器命名空间新增）；未知引用
+ * （渲染时会告警）不在此列，若需要检查语法问题请改用 parseTemplate 查看
+ * token.ref === null 的表达式。
  *
  * @param raw 模板原文
  * @returns 按出现顺序排列的引用列表（同一引用重复出现会重复收录）

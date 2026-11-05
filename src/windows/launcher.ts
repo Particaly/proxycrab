@@ -24,10 +24,7 @@ import AboutWindow from "./AboutWindow.vue";
 import ReadonlyViewerWindow from "./ReadonlyViewerWindow.vue";
 import SkillManagerWindow from "./SkillManagerWindow.vue";
 import RoutingManagerWindow from "./RoutingManagerWindow.vue";
-import EnvSetsWindow from "./EnvSetsWindow.vue";
-import WorkflowEditorWindow from "./WorkflowEditorWindow.vue";
 import WorkflowTransferWindow from "./WorkflowTransferWindow.vue";
-import RequestLibraryWindow from "./RequestLibraryWindow.vue";
 import BypassWindow from "./BypassWindow.vue";
 import BreakpointListWindow from "./BreakpointListWindow.vue";
 import AgentsPresetsWindow from "./AgentsPresetsWindow.vue";
@@ -37,8 +34,6 @@ import BrowserWindow from "./BrowserWindow.vue";
 import SessionExportShareWindow from "./SessionExportShareWindow.vue";
 import InterceptorSnapshotWindow from "./InterceptorSnapshotWindow.vue";
 import ReplayWindow from "./ReplayWindow.vue";
-import RunHistoryWindow from "./RunHistoryWindow.vue";
-import RunDetailWindow from "./RunDetailWindow.vue";
 import type { ReplayDraft } from "../utils/replay";
 import { getBackend } from "../api/runtime-backend";
 
@@ -352,28 +347,6 @@ export function openRedactionManager(): void {
   });
 }
 
-/** 环境变量集与全局变量；后端未提供 envSets 能力时不打开入口。 */
-export function openEnvSets(): void {
-  if (!getBackend().envSets) return;
-  windowsStore.open("env-sets", {
-    title: "环境变量",
-    component: EnvSetsWindow,
-    width: 880,
-    height: 580,
-  });
-}
-
-/** 请求工作流编辑器；后端未提供 workflows 能力时不打开入口。 */
-export function openWorkflowEditor(): void {
-  if (!getBackend().workflows) return;
-  windowsStore.open("workflow-editor", {
-    title: "工作流编辑器",
-    component: WorkflowEditorWindow,
-    width: 1180,
-    height: 720,
-  });
-}
-
 /** 工作流导入导出；后端未提供 workflows 能力时不打开入口。 */
 export function openWorkflowTransfer(): void {
   if (!getBackend().workflows) return;
@@ -384,40 +357,6 @@ export function openWorkflowTransfer(): void {
     height: 600,
   });
 }
-
-/** 运行记录列表；后端未提供 flowRuns 能力时不打开入口。 */
-export function openRunHistory(): void {
-  if (!getBackend().flowRuns) return;
-  windowsStore.open("run-history", {
-    title: "运行记录",
-    component: RunHistoryWindow,
-    width: 960,
-    height: 600,
-  });
-}
-
-/** 运行详情（只读运行画布 + 节点快照面板）；同受 flowRuns 能力位把关。 */
-export function openRunDetail(runId: string): void {
-  if (!getBackend().flowRuns) return;
-  windowsStore.open(`run-detail-${runId}`, {
-    title: `运行详情 ${runId.length <= 8 ? runId : `${runId.slice(0, 8)}…`}`,
-    component: RunDetailWindow,
-    props: { runId },
-    width: 1080,
-    height: 680,
-  });
-}
-/** 请求库；后端未提供 requestLibrary 能力时不打开入口。 */
-export function openRequestLibrary(): void {
-  if (!getBackend().requestLibrary) return;
-  windowsStore.open("request-library", {
-    title: "请求库",
-    component: RequestLibraryWindow,
-    width: 1000,
-    height: 640,
-  });
-}
-
 /** A single export window follows the list until the user starts a frozen export. */
 export function openHarExport(logs: LogsStore): void {
   const backend = getBackend();

@@ -3,13 +3,15 @@
  *
  * 自归档 `_archive/reqflow/src/components/expression-input/expression-suggest.ts
  * @ 485fa00` 移植形态（React 组件配套纯函数 → 本仓框架无关写法），语义契约是
- * 本仓 `flow-engine/src/template.ts`（Task 2 移植的模板引擎）：四命名空间
- * `node.<nodeId>.<path>` / `input.<path>` / `var.<name>.<path>` / `env.<key>.<path>`，
+ * 本仓 `flow-engine/src/template.ts`（Task 2 移植的模板引擎）：五命名空间
+ * `node.<nodeId>.<path>` / `input.<path>` / `var.<name>.<path>` / `env.<key>.<path>` /
+ * `fake.<名称>(<参数>)`（内置假数据生成器，清单见 flow-engine/src/fake.ts），
  * 裸路径是 `input.<path>` 的简写、`$json.<path>` 是其别名。
  *
  * 为 ExpressionInput 提供可单测的纯函数：
  *   - buildRootOptions / buildNodeOptions  两个提示层级的候选构造；
- *   - buildVariableOptions / buildEnvOptions 变量名 / 环境键候选构造；
+ *   - buildVariableOptions / buildEnvOptions / buildFakeOptions
+ *     变量名 / 环境键 / 假数据生成器候选构造；
  *   - filterRefs                           按输入过滤候选（大小写不敏感子串匹配）；
  *   - buildSuggestOptions                  依据当前查询串决定层级并给出候选；
  *   - detectSuggestState                   判定光标是否处于未闭合的 {{ 表达式内；
@@ -31,6 +33,13 @@
  * 时，路径段给出候选、节点 id 候选改为可下钻；未提供时路径段返回空（用户继续
  * 手输，渲染层 resolvePath 支持任意深度）。
  */
+
+import { FAKE_GENERATORS } from "../../../flow-engine/src/fake";
+
+/** 生成器名 → 展示说明（取自引擎元数据表；建议浮层与插入菜单共用同一口径） */
+const FAKE_GENERATOR_DESCRIPTIONS: ReadonlyMap<string, string> = new Map(
+  FAKE_GENERATORS.map((def) => [def.name, def.description]),
+);
 
 /** 上游可引用节点选项（组件 props 传入，来自画布上游节点清单） */
 export interface SuggestNodeOption {
@@ -96,21 +105,26 @@ const OPEN_SEQUENCE = "{{";
  *
  * 入参字段清单提供时，第一级直接列出 `headers.` / `body.` 这类入参顶层字段
  * （选中后浮层推进到该字段下的完整路径），不必先写 `input.` 前缀；清单缺失
- * 时保留 `input.` 根作为入口（此时无字段可取，用户继续手输路径）。
+ * 时保留 `input.` 根作为入口（此时无法给出字段候选）。
  *
  * 传入非空 variableNames 时追加 `var.` 根（引用运行期变量，插入后浮层推进到
  * 变量名列表）；传入非空 envKeys 时追加 `env.` 根（引用环境变量集，插入后
- * 浮层推进到环境键列表）。清单缺省或为空时不出现对应根——上下文没有该命名
- * 空间时不给出无处落地的候选。
+ * 浮层推进到环境键列表）；传入非空 fakeNames 时追加 `fake.` 根（内置假数据
+ * 生成器，插入后浮层推进到生成器列表）。清单缺省或为空时不出现对应根——
+ * 上下文没有该命名空间时不给出无处落地的候选（fake 建议由调用方显式传入
+ * 常量清单 FAKE_GENERATOR_NAMES 才出现，条件构建等仅支持 input / var 的
+ * 沙箱场景因此不会给出 fake 候选）。
  *
  * @param variableNames 可引用的变量名清单（可选；流程 / 项目 / 全局合并后的名字集合）
  * @param inputPaths 当前节点入参字段点分路径清单（可选；用于入参简写）
  * @param envKeys 当前激活环境集合的键名清单（可选；环境变量建议）
+ * @param fakeNames 假数据生成器名清单（可选；一般传 FAKE_GENERATOR_NAMES 常量）
  */
 export function buildRootOptions(
   variableNames?: ReadonlyArray<string>,
   inputPaths?: ReadonlyArray<string>,
   envKeys?: ReadonlyArray<string>,
+  fakeNames?: ReadonlyArray<string>,
 ): RefSuggestOption[] {
   const fieldRoots = buildInputFieldRoots(inputPaths ?? []);
   const roots: RefSuggestOption[] =
@@ -148,6 +162,15 @@ export function buildRootOptions(
       description: "引用激活环境的环境变量",
       leaf: false,
       searchText: "env.",
+    });
+  }
+  if (fakeNames !== undefined && fakeNames.length > 0) {
+    roots.push({
+      insert: "fake.",
+      label: "fake.",
+      description: "内置假数据生成器（手机号 / 姓名 / 邮箱等）",
+      leaf: false,
+      searchText: "fake.",
     });
   }
   return roots;
@@ -262,6 +285,27 @@ export function buildEnvOptions(envKeys: ReadonlyArray<string>): RefSuggestOptio
 }
 
 /**
+ * 构造假数据生成器候选：`{{ fake.` 之后的第二级候选。
+ *
+ * 与变量 / 环境键候选同形：插入片段为完整 `fake.<名称>`（叶子语义——插入后
+ * 关闭浮层，用户补 `}}` 即完成引用；带参数的生成器如 `fake.number(1,100)`
+ * 由用户在插入后手输括号段，描述文案里演示了参数写法）。说明文案来自
+ * flow-engine/src/fake.ts 的生成器元数据表，浮层与「插入假数据」菜单共用
+ * 同一份描述口径。
+ *
+ * @param fakeNames 生成器名清单（一般传 FAKE_GENERATOR_NAMES 常量）
+ */
+export function buildFakeOptions(fakeNames: ReadonlyArray<string>): RefSuggestOption[] {
+  return fakeNames.map((name) => ({
+    insert: `fake.${name}`,
+    label: name,
+    description: FAKE_GENERATOR_DESCRIPTIONS.get(name) ?? "内置假数据生成器",
+    leaf: true,
+    searchText: `${name}\n${FAKE_GENERATOR_DESCRIPTIONS.get(name) ?? ""}`.toLowerCase(),
+  }));
+}
+
+/**
  * 构造第二级候选：上游节点 id 列表（label 作次要说明）。
  *
  * 插入片段为 `node.<id>.`，以点号收尾方便用户直接续写 output 路径。
@@ -357,11 +401,15 @@ export function filterRefs(
  *     下钻 JSON 值时用户继续手输，渲染层支持）；变量清单缺省 / 为空时第二级
  *     同样返回空（无候选则浮层不弹）；
  *   - 查询以 `env.` 开头 → 第二级（环境键列表），判定与 var 分支完全同形；
+ *   - 查询以 `fake.` 开头 → 第二级（假数据生成器列表），判定与 var 分支同形
+ *     （名称之后出现点号 / 括号 → 用户手输路径或参数，返回空；fakeNames 缺省 /
+ *     为空时同样返回空——条件构建等仅支持 input / var 的场景不传即不给候选）；
  *   - 查询含点号且不在上述保留根内（入参简写）→ 入参路径候选：按已输入的
  *     裸路径前缀匹配字段清单（`headers.x` → `headers.x-token`）；清单没有
  *     匹配时返回空；
  *   - 其余（含空查询）→ 第一级（入参顶层字段 + 引用根；variableNames /
- *     envKeys 提供时根候选含 `var.` / `env.`，见 buildRootOptions）。
+ *     envKeys / fakeNames 提供时根候选含 `var.` / `env.` / `fake.`，
+ *     见 buildRootOptions）。
  *
  * @param query 用户已输入的查询串（`{{` 之后到光标）
  * @param nodes 上游可引用节点清单
@@ -370,6 +418,7 @@ export function filterRefs(
  * @param nodePathSamples 节点深路径样本清单（可选；深路径补全——按节点样本
  *   数据预派生，见 SuggestNodePathSample）
  * @param envKeys 当前激活环境集合的键名清单（可选；环境变量建议）
+ * @param fakeNames 假数据生成器名清单（可选；一般传 FAKE_GENERATOR_NAMES 常量）
  */
 export function buildSuggestOptions(
   query: string,
@@ -378,6 +427,7 @@ export function buildSuggestOptions(
   inputPaths?: ReadonlyArray<string>,
   nodePathSamples?: ReadonlyArray<SuggestNodePathSample>,
   envKeys?: ReadonlyArray<string>,
+  fakeNames?: ReadonlyArray<string>,
 ): RefSuggestOption[] {
   const trimmed = query.trim();
   if (trimmed.startsWith("node.")) {
@@ -422,12 +472,20 @@ export function buildSuggestOptions(
     if (envKeys === undefined || envKeys.length === 0) return [];
     return filterRefs(buildEnvOptions(envKeys), rest);
   }
+  if (trimmed.startsWith("fake.")) {
+    // 假数据生成器候选：判定与 var 分支同形；名称之后出现点号或括号 → 用户
+    // 正在手输路径 / 参数（如 fake.number(1,100)），组件不再给候选
+    const rest = trimmed.slice("fake.".length);
+    if (rest.includes(".") || rest.includes("(")) return [];
+    if (fakeNames === undefined || fakeNames.length === 0) return [];
+    return filterRefs(buildFakeOptions(fakeNames), rest);
+  }
   // 入参简写：已进入路径段（含点号）时只给字段路径候选，不再回落到根候选
   if (trimmed.includes(".")) {
     if (inputPaths === undefined || inputPaths.length === 0) return [];
     return buildBareInputPathOptions(inputPaths, trimmed);
   }
-  return filterRefs(buildRootOptions(variableNames, inputPaths, envKeys), trimmed);
+  return filterRefs(buildRootOptions(variableNames, inputPaths, envKeys, fakeNames), trimmed);
 }
 
 /**

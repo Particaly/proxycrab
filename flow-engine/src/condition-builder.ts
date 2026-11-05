@@ -41,9 +41,9 @@
  *     true/false/null → 字面量、含 {{ }} 或其余 → string），保证往返稳定。
  *   - 首尾空白忽略：整串 trim 后判定是否单一引用（纯输入便利性；混合模板的
  *     内部空白仍按原文保留）。
- *   - `{{ node.* }}` / `{{ env.* }}` 引用在条件沙箱不可用（函数形参只有
- *     input / vars，见 logic-nodes.ts）→ 保存校验阻断（compileValueTemplate
- *     防御性地编译为 undefined，不做静默假数据）。
+ *   - `{{ node.* }}` / `{{ env.* }}` / `{{ fake.* }}` 引用在条件沙箱不可用
+ *     （函数形参只有 input / vars，见 logic-nodes.ts）→ 保存校验阻断
+ *     （compileValueTemplate 防御性地编译为 undefined，不做静默假数据）。
  *
  * ─── 比较语义（逐操作符，含边界决策）───────────────────────────────────
  *
@@ -250,7 +250,7 @@ const COMPILED_HEADER = `/* ReqFlow 条件构建器编译产物（分组树 → 
  * 模板值 → 表达式代码
  * ------------------------------------------------------------------ */
 
-/** 单个模板引用 → 表达式内的原始值取数代码（node / env 沙箱不可用，防御性 undefined） */
+/** 单个模板引用 → 表达式内的原始值取数代码（node / env / fake 沙箱不可用，防御性 undefined） */
 function compileRefAccess(ref: TemplateRef): string {
   if (ref.kind === "input") return `__p(input, ${JSON.stringify(ref.path)})`;
   if (ref.kind === "var") {
@@ -460,7 +460,8 @@ export function compileConditionTree(tree: ConditionGroup): string {
 /**
  * 校验单个值模板的引用可用性（条件沙箱仅 input / var）：
  *   - 存在语法不合法的表达式（parseTemplate 得 ref = null）→ 错误文案；
- *   - 存在 node / env 引用 → 错误文案（形参缺失，无法在条件表达式内取值）；
+ *   - 存在 node / env / fake 引用 → 错误文案（形参缺失 / 无生成器通道，
+ *     无法在条件表达式内取值）；
  *   - 纯文本 / 合法引用 → null。
  *
  * @param raw 模板原文（trim 前后均可——parseTemplate 自行处理）
@@ -473,7 +474,7 @@ function validateValueTemplate(raw: string, position: number, slotName: string):
     if (token.ref === null) {
       return `第 ${position} 条条件：${slotName}存在无法识别的模板引用（{{ ${token.raw} }}）`;
     }
-    if (token.ref.kind === "node" || token.ref.kind === "env") {
+    if (token.ref.kind === "node" || token.ref.kind === "env" || token.ref.kind === "fake") {
       return `第 ${position} 条条件：${slotName}的 {{ ${token.raw} }} 引用在条件表达式中不可用（条件沙箱仅支持 input / var 引用）`;
     }
   }

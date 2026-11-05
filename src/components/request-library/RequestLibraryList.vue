@@ -326,8 +326,8 @@ function urlParts(entry: RequestLibraryEntry): { host: string; path: string } {
 
 <style scoped>
 .rl-list {
-  width: 380px;
-  flex: none;
+  flex: 1;
+  min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;

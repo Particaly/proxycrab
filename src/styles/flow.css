@@ -120,12 +120,89 @@
   font-size: 9px;
   line-height: 14px;
 }
+.flow-node-badge.flow-node-timeout {
+  background: color-mix(in srgb, var(--warning) 15%, transparent);
+  color: var(--warning);
+}
 .flow-node-summary {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 10px;
   color: var(--text-secondary);
+}
+
+/* ---------- 请求重放卡第二行：method 徽章 + URL 摘要 + 失败策略 ---------- */
+
+.flow-node-replay {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+.flow-node-method {
+  flex: none;
+  padding: 1px 4px;
+  border-radius: 5px;
+  background: var(--bg-active);
+  color: var(--text-secondary);
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 13px;
+}
+.flow-node-method.flow-method-get {
+  background: color-mix(in srgb, var(--success) 15%, transparent);
+  color: var(--success);
+}
+.flow-node-method.flow-method-post {
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  color: var(--accent);
+}
+.flow-node-method.flow-method-put {
+  background: color-mix(in srgb, var(--warning) 15%, transparent);
+  color: var(--warning);
+}
+.flow-node-method.flow-method-delete {
+  background: color-mix(in srgb, var(--danger) 15%, transparent);
+  color: var(--danger);
+}
+.flow-node-url {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+.flow-node-fail {
+  flex: none;
+  padding: 1px 4px;
+  border-radius: 5px;
+  background: var(--bg-active);
+  color: var(--text-faint);
+  font-size: 9px;
+  line-height: 13px;
+}
+.flow-node-fail.continue {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+}
+
+/* 已固定输出角标（卡左上角；清除入口在配置抽屉高级区） */
+.flow-node-pinned {
+  position: absolute;
+  top: -7px;
+  left: -7px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 8px;
+  background: var(--warning);
+  color: #1f2937;
+  cursor: help;
 }
 
 /* 便签：无手柄注释卡，底色由 config.color（或默认黄）注入 */
@@ -335,31 +412,6 @@
   white-space: nowrap;
 }
 
-/* ---------- 画布工具条（顶部居中悬浮） ---------- */
-
-.flow-toolbar {
-  position: absolute;
-  top: 10px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 10;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  padding: 3px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--bg-panel);
-  box-shadow: var(--shadow-popup);
-}
-
-.flow-toolbar-divider {
-  width: 1px;
-  height: 16px;
-  margin: 0 3px;
-  background: var(--border);
-}
-
 /* ---------- 对齐辅助线 ---------- */
 
 .flow-alignment-guide {
@@ -441,4 +493,100 @@
 .flow-canvas .vue-flow__minimap-mask {
   stroke: var(--accent);
   fill: color-mix(in srgb, var(--bg-app) 72%, transparent);
+}
+
+/* ---------- 请求头行编辑表（一张表：常见头固定行 + HeaderRows 行共用） ---------- */
+
+.kv-edit-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.kv-edit-table tr + tr {
+  border-top: 1px solid var(--border);
+}
+
+.kv-edit-table tr:hover {
+  background: var(--bg-hover);
+}
+
+.kv-edit-table td {
+  padding: 4px 6px;
+  vertical-align: top;
+  font-size: 11px;
+}
+
+.kv-drag-col {
+  width: 18px;
+  text-align: center;
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.kv-name {
+  color: var(--text);
+  white-space: nowrap;
+  width: 1%;
+  padding-right: 8px;
+}
+
+.kv-value {
+  word-break: break-all;
+  padding-right: 0;
+}
+
+.kv-menu-col {
+  width: 22px;
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.kv-edit {
+  display: block;
+  border: none;
+  background: transparent;
+  outline: none;
+  font: inherit;
+  color: inherit;
+  padding: 0;
+  resize: none;
+  border-radius: 3px;
+}
+
+.kv-edit::placeholder {
+  color: var(--text-faint);
+}
+
+.kv-edit:focus {
+  background: var(--bg-active);
+}
+
+.kv-name-input {
+  width: auto;
+  max-width: 130px;
+}
+
+/* 值列表达式输入：融进行内表格——去边框与内边距、继承表格字号，保持行编辑
+ * 密度；聚焦底色与名/值单元格的既有 .kv-edit 口径一致。 */
+.kv-value-host {
+  min-width: 0;
+}
+
+.kv-value-host .expression-control {
+  height: auto;
+  padding: 1px 3px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--success);
+  font-size: 11px;
+  line-height: 18px;
+}
+
+.kv-value-host .expression-control:focus {
+  background: var(--bg-active);
+}
+
+.kv-value-host:inert {
+  opacity: 0.5;
 }

@@ -128,7 +128,14 @@ impl ProxyCrab {
         session_id: u64,
         request: ReplayRequest,
     ) -> std::result::Result<u64, ReplayError> {
-        Ok(self.dispatch_replay(session_id, request).await?.0)
+        Ok(self
+            .dispatch_replay(session_id, request, || {
+                self.proxy_controller()
+                    .replay_generation()
+                    .ok_or(ReplayError::ProxyNotRunning)
+            })
+            .await?
+            .0)
     }
 
     /// 发起重放并等待响应完成，回传归一化响应信封（供 flow 域复用）。
@@ -151,9 +158,42 @@ impl ProxyCrab {
         request: ReplayRequest,
         timeout: Duration,
     ) -> std::result::Result<ReplayResponse, ReplayAwaitError> {
+        self.replay_with_generation(session_id, request, timeout, || {
+            self.proxy_controller()
+                .replay_generation()
+                .ok_or(ReplayError::ProxyNotRunning)
+        })
+        .await
+    }
+
+    /// 流程运行专用的重放等待：与 [`ProxyCrab::replay_await`] 同一执行与装配
+    /// 链路，但走流程专属连接代（[`ProxyController::flow_generation`]）——
+    /// 代理未运行也照常执行，代理停止 / 连接代轮换不取消进行中的流程重放
+    /// （取消只随运行自身的取消令牌）。
+    pub async fn replay_await_flow(
+        self: &Arc<Self>,
+        session_id: u64,
+        request: ReplayRequest,
+        timeout: Duration,
+    ) -> std::result::Result<ReplayResponse, ReplayAwaitError> {
+        self.replay_with_generation(session_id, request, timeout, || {
+            Ok(self.proxy_controller().flow_generation())
+        })
+        .await
+    }
+
+    /// `replay_await` / `replay_await_flow` 共用通路：按给定连接代来源发起
+    /// 重放并等待 capture 终态，装配归一化响应信封。
+    async fn replay_with_generation(
+        self: &Arc<Self>,
+        session_id: u64,
+        request: ReplayRequest,
+        timeout: Duration,
+        generation: impl FnOnce() -> std::result::Result<ConnectionGeneration, ReplayError>,
+    ) -> std::result::Result<ReplayResponse, ReplayAwaitError> {
         let started_at = Instant::now();
         let (log_id, generation) = self
-            .dispatch_replay(session_id, request)
+            .dispatch_replay(session_id, request, generation)
             .await
             .map_err(ReplayAwaitError::from)?;
         let summary = tokio::select! {
@@ -216,12 +256,15 @@ impl ProxyCrab {
         }
     }
 
-    /// `replay` / `replay_await` 共用的发起通路：校验并装配请求、提交到当前
-    /// 连接代执行，返回 capture id 与所属连接代（其取消令牌用于等待中断）。
+    /// `replay` / `replay_await` / `replay_await_flow` 共用的发起通路：校验并
+    /// 装配请求、提交到 `generation` 来源解析出的连接代执行，返回 capture id
+    /// 与该连接代（其取消令牌用于等待中断）。generation 在会话 / 参数校验之后
+    /// 才解析，保持既有错误优先级（Session 缺失先于代理未运行）。
     async fn dispatch_replay(
         self: &Arc<Self>,
         session_id: u64,
         request: ReplayRequest,
+        generation: impl FnOnce() -> std::result::Result<ConnectionGeneration, ReplayError>,
     ) -> std::result::Result<(u64, ConnectionGeneration), ReplayError> {
         if !self
             .sessions()
@@ -270,10 +313,7 @@ impl ProxyCrab {
                 }
             }
         };
-        let generation = self
-            .proxy_controller()
-            .replay_generation()
-            .ok_or(ReplayError::ProxyNotRunning)?;
+        let generation = generation()?;
         let mut builder = Request::builder()
             .method(request.method.as_str())
             .uri(request.url.as_str())

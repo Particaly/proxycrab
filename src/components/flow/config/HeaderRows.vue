@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { Io5EllipsisHorizontal, Io5ReorderTwo, Io5Trash } from "vue-icons-plus/io5";
+import { FAKE_GENERATORS, FAKE_GENERATOR_NAMES } from "../../../../flow-engine/src/fake";
 import { useBackend } from "../../../api";
 import type { EnvSetsPayload } from "../../../api/types";
 import { reportError } from "../../../stores/app";
@@ -17,20 +18,35 @@ type ExpressionInputInstance = InstanceType<typeof ExpressionInput>;
 /**
  * 请求头编辑行（计划 Task 14 Step 2，值列升级为表达式输入：Task 15 薄片 C
  * Step 2）：复用行表格形态（拖拽排序 + 名/值行内编辑 + 末尾空行），值列为
- * `ExpressionInput`（`{{` 建议 + 求值预览 + 缺失引用告警，样式经 :deep 融入
- * 行编辑密度），「…」行内菜单——删除 / 插入模板引用（经组件 ref 调
- * insertTemplate，与建议浮层同一插入出口）/ 插入环境变量（Backend.envSets
- * 能力位存在时展示，列激活集合与全局变量名，经 insertSnippet 插入
- * `{{ env.<名> }}`）。行数据 { name, value, original? } 见 node-config.ts
- * （original = 捕获行基线，供覆盖项计算）。
+ * `ExpressionInput`（`{{` 建议 + 求值预览 + 缺失引用告警，样式经全局
+ * `.kv-edit-table` 口径融入行编辑密度；fake. 根候选恒展示——假数据为引擎
+ * 内置能力，清单取 FAKE_GENERATOR_NAMES 常量），「…」行内菜单——删除 /
+ * 插入模板引用（经组件 ref 调 insertTemplate，与建议浮层同一插入出口）/
+ * 插入假数据（列内置生成器，插入 `{{ fake.<名称> }}`）/ 插入环境变量
+ * （Backend.envSets 能力位存在时展示，列激活集合与全局变量名，经
+ * insertSnippet 插入 `{{ env.<名> }}`）/ 添加到环境变量（把该行名值写入所选
+ * 环境变量集，弹窗由父级承载）。行数据 { name, value, original? } 见
+ * node-config.ts（original = 捕获行基线，供覆盖项计算）。
+ *
+ * 模板根为 `<tbody>` 行片段：与常见头固定行（ReplayNodeConfig）共处请求头
+ * 区同一张 `.kv-edit-table`，视觉上是一个整体列表（表格外壳与共享单元格
+ * 样式见 styles/flow.css）。
  */
 const rows = defineModel<HeaderRowDraft[]>({ required: true });
+
+const emit = defineEmits<{
+  /** 行菜单「添加到环境变量」：携带该行当前名 / 值，由父级开弹窗确认。 */
+  "save-to-env": [payload: { name: string; value: string }];
+}>();
 
 const props = defineProps<{
   /** 置灰全部编辑（运行期锁定等场景）。 */
   disabled?: boolean;
   /** 值列输入占位（默认 value）。 */
   placeholder?: string;
+  /** 名字命中的行在表中隐藏（大小写不敏感；数据透传不丢，commit 原样带回
+   * v-model）——常见头由外部固定行接管展示时避免同一头双行。 */
+  hideNames?: ReadonlyArray<string>;
   /** 上游可引用节点清单（`node.` 第二级候选；透传表达式输入）。 */
   availableNodeIds?: ReadonlyArray<SuggestNodeOption>;
   /** 可引用变量名清单（提供时出现 var. 根候选）。 */
@@ -44,17 +60,36 @@ const props = defineProps<{
 }>();
 
 const backend = useBackend();
-/** 能力位：环境变量 API 未实现时不展示「插入环境变量」入口。 */
+/** 能力位：环境变量 API 未实现时不展示「插入环境变量」/「添加到环境变量」。 */
 const canInsertEnv = computed(() => backend.envSets !== undefined);
 
 const nonEmpty = (list: HeaderRowDraft[]) =>
   list.filter((row) => row.name.trim() !== "" || row.value !== "");
 
-// 展示态始终以恰好一个末尾空行结尾；与外部 v-model 同步时去空行。
-const display = ref<HeaderRowDraft[]>(normalizeRows(rows.value));
-watch(rows, (value) => {
-  if (JSON.stringify(nonEmpty(value)) !== JSON.stringify(nonEmpty(display.value))) {
-    display.value = normalizeRows(value);
+/** 行名是否命中隐藏名单（大小写不敏感；空名行永不隐藏）。 */
+function isHiddenRow(row: HeaderRowDraft): boolean {
+  const name = row.name.trim().toLowerCase();
+  if (name === "") return false;
+  return (props.hideNames ?? []).some((item) => item.trim().toLowerCase() === name);
+}
+
+/** 被隐藏的行（数据透传；commit 时原样追加回 v-model，不触发覆盖 / 删除）。 */
+const hiddenRows = ref<HeaderRowDraft[]>([]);
+
+/** 按隐藏名单拆出可见行，并同步隐藏行缓存。 */
+function splitVisible(list: HeaderRowDraft[]): HeaderRowDraft[] {
+  const visible = list.filter((row) => !isHiddenRow(row));
+  hiddenRows.value = list.filter(isHiddenRow);
+  return visible;
+}
+
+// 展示态始终以恰好一个末尾空行结尾；与外部 v-model 同步时去空行与隐藏行
+// （隐藏名单变化——如固定常见头行显隐切换——同样触发重拆）。
+const display = ref<HeaderRowDraft[]>(normalizeRows(splitVisible(rows.value)));
+watch([rows, () => props.hideNames], ([value]) => {
+  const visible = splitVisible(value);
+  if (JSON.stringify(nonEmpty(visible)) !== JSON.stringify(nonEmpty(display.value))) {
+    display.value = normalizeRows(visible);
   }
 });
 
@@ -64,7 +99,7 @@ function normalizeRows(list: HeaderRowDraft[]): HeaderRowDraft[] {
 
 function commit(): void {
   display.value = normalizeRows(display.value);
-  rows.value = nonEmpty(display.value);
+  rows.value = [...nonEmpty(display.value), ...hiddenRows.value];
 }
 
 function addRow(): void {
@@ -139,12 +174,25 @@ function openRowMenu(index: number, event: MouseEvent): void {
       title: "在光标处插入 {{ }} 骨架（输入 {{ 弹出引用建议）",
       action: () => void insertTemplateAt(index),
     },
+    {
+      label: "插入假数据",
+      title: "选择内置假数据生成器并插入 {{ fake.<名称> }}",
+      action: () => openFakePicker(index, event.currentTarget as HTMLElement),
+    },
   ];
   if (canInsertEnv.value) {
     items.push({
       label: "插入环境变量",
       title: "选择环境变量并插入 {{ env.<名> }}",
       action: () => void openEnvPicker(index, event.currentTarget as HTMLElement),
+    });
+    items.push({
+      label: "添加到环境变量",
+      title: "把该请求头的名 / 值写入所选环境变量集（弹窗内可修改）",
+      action: () => {
+        const row = display.value[index];
+        emit("save-to-env", { name: row?.name ?? "", value: row?.value ?? "" });
+      },
     });
   }
   items.push({
@@ -192,7 +240,24 @@ async function openEnvPicker(index: number, anchor: HTMLElement): Promise<void> 
   );
 }
 
-// ---------- 值列提交 ----------
+/**
+ * 假数据生成器选择菜单（「插入假数据」菜单项）：列出引擎内置生成器
+ * （flow-engine/src/fake.ts 元数据表），选中后在该行值输入框插入
+ * `{{ fake.<名称> }}`。假数据是引擎内置能力、无需运行期上下文，本菜单
+ * 不设能力位（与「插入环境变量」的 backend.envSets 门控不同）。
+ */
+function openFakePicker(index: number, anchor: HTMLElement): void {
+  openDropdownMenu(
+    anchor,
+    FAKE_GENERATORS.map((generator) => ({
+      label: `${generator.name} — ${generator.description}`,
+      title: `插入 {{ fake.${generator.name} }}（示例：${generator.example}）`,
+      action: () => void insertSnippetAt(index, `{{ fake.${generator.name} }}`),
+    })),
+  );
+}
+
+// ---------- 行容器（tbody）引用：拖拽排序的落点判定边界 ----------
 const tableRef = ref<HTMLElement | null>(null);
 
 // ---------- 拖拽排序（pointer 事件实现，不依赖浏览器 DnD） ----------
@@ -230,122 +295,86 @@ function onHandlePointerDown(index: number, event: PointerEvent): void {
   window.addEventListener("pointermove", onMove);
   window.addEventListener("pointerup", onUp);
 }
+
+defineExpose({ addRow });
 </script>
 
 <template>
-  <div class="hr-root">
-    <table ref="tableRef" class="kv-edit-table">
-      <tbody>
-        <tr
-          v-for="(row, index) in display"
-          :key="index"
-          :data-kv-index="index"
-          :class="{
-            dragging: dragIndex === index,
-            placeholder:
-              row.original === undefined &&
-              row.name === '' &&
-              row.value === '' &&
-              index === display.length - 1,
-          }"
+  <tbody ref="tableRef">
+    <tr
+      v-for="(row, index) in display"
+      :key="index"
+      :data-kv-index="index"
+      :class="{
+        dragging: dragIndex === index,
+        placeholder:
+          row.original === undefined &&
+          row.name === '' &&
+          row.value === '' &&
+          index === display.length - 1,
+      }"
+    >
+      <td class="kv-drag-col">
+        <span
+          v-if="draggable(index)"
+          class="drag-handle text-faint"
+          title="拖动排序"
+          @pointerdown="onHandlePointerDown(index, $event)"
         >
-          <td class="kv-drag-col">
-            <span
-              v-if="draggable(index)"
-              class="drag-handle text-faint"
-              title="拖动排序"
-              @pointerdown="onHandlePointerDown(index, $event)"
-            >
-              <Io5ReorderTwo :size="13" />
-            </span>
-          </td>
-          <td class="mono kv-name">
-            <input
-              v-model="row.name"
-              class="kv-edit kv-name-input"
-              placeholder="header"
-              :disabled="disabled"
-              :size="Math.max(6, row.name.length)"
-              spellcheck="false"
-              @input="commit"
-            />
-          </td>
-          <td class="mono kv-value">
-            <!-- inert 包裹层：置灰时阻断整子树交互（组件无 disabled prop，不改其源）；
-                 拖放承接 IO 字段 chip（dragover 按 MIME 标记接管，drop 插入引用） -->
-            <div
-              class="kv-value-host"
-              :inert="disabled || undefined"
-              @dragover="onValueDragOver"
-              @drop="onValueDrop(index, $event)"
-            >
-              <ExpressionInput
-                :ref="(el) => setValueRef(index, el)"
-                v-model="row.value"
-                :placeholder="placeholder ?? 'value'"
-                :available-node-ids="availableNodeIds"
-                :variable-names="variableNames"
-                :input-paths="inputPaths"
-                :env-keys="envKeys"
-                :sample="sample"
-                hide-insert-button
-                @update:model-value="commit"
-              />
-            </div>
-          </td>
-          <td class="kv-menu-col">
-            <button
-              class="btn icon hr-menu"
-              title="行操作"
-              :aria-label="`请求头 ${row.name || '新行'} 操作菜单`"
-              :disabled="disabled"
-              @click="openRowMenu(index, $event)"
-            >
-              <Io5EllipsisHorizontal :size="13" />
-            </button>
-          </td>
-        </tr>
-      </tbody>
-    </table>
-    <button v-if="!disabled" class="btn icon hr-add" title="添加请求头" @click="addRow">
-      + 添加请求头
-    </button>
-  </div>
+          <Io5ReorderTwo :size="13" />
+        </span>
+      </td>
+      <td class="mono kv-name">
+        <input
+          v-model="row.name"
+          class="kv-edit kv-name-input"
+          placeholder="header"
+          :disabled="disabled"
+          :size="Math.max(6, row.name.length)"
+          spellcheck="false"
+          @input="commit"
+        />
+      </td>
+      <td class="mono kv-value">
+        <!-- inert 包裹层：置灰时阻断整子树交互（组件无 disabled prop，不改其源）；
+             拖放承接 IO 字段 chip（dragover 按 MIME 标记接管，drop 插入引用） -->
+        <div
+          class="kv-value-host"
+          :inert="disabled || undefined"
+          @dragover="onValueDragOver"
+          @drop="onValueDrop(index, $event)"
+        >
+          <ExpressionInput
+            :ref="(el) => setValueRef(index, el)"
+            v-model="row.value"
+            :placeholder="placeholder ?? 'value'"
+            :available-node-ids="availableNodeIds"
+            :variable-names="variableNames"
+            :input-paths="inputPaths"
+            :env-keys="envKeys"
+            :fake-names="FAKE_GENERATOR_NAMES"
+            :sample="sample"
+            hide-insert-button
+            @update:model-value="commit"
+          />
+        </div>
+      </td>
+      <td class="kv-menu-col">
+        <button
+          class="btn icon hr-menu"
+          title="行操作"
+          :aria-label="`请求头 ${row.name || '新行'} 操作菜单`"
+          :disabled="disabled"
+          @click="openRowMenu(index, $event)"
+        >
+          <Io5EllipsisHorizontal :size="13" />
+        </button>
+      </td>
+    </tr>
+  </tbody>
 </template>
 
 <style scoped>
-.hr-root {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.kv-edit-table {
-  width: 100%;
-  border-collapse: collapse;
-}
-
-.kv-edit-table tr + tr {
-  border-top: 1px solid var(--border);
-}
-
-.kv-edit-table tr:hover {
-  background: var(--bg-hover);
-}
-
-.kv-edit-table td {
-  padding: 4px 6px;
-  vertical-align: top;
-  font-size: 11px;
-}
-
-.kv-drag-col {
-  width: 18px;
-  text-align: center;
-  padding-left: 0;
-  padding-right: 0;
-}
-
 .drag-handle {
   display: inline-flex;
   align-items: center;
@@ -355,74 +384,6 @@ function onHandlePointerDown(index: number, event: PointerEvent): void {
   user-select: none;
 }
 
-.kv-name {
-  color: var(--text);
-  white-space: nowrap;
-  width: 1%;
-  padding-right: 8px;
-}
-
-.kv-value {
-  word-break: break-all;
-  padding-right: 0;
-}
-
-/* 值列表达式输入：融进行内表格——去边框与内边距、继承表格字号，保持行编辑
- * 密度；聚焦底色与名/值单元格的既有 .kv-edit 口径一致。 */
-.kv-value-host {
-  min-width: 0;
-}
-
-.kv-value-host :deep(.expression-control) {
-  height: auto;
-  padding: 1px 3px;
-  border: none;
-  border-radius: 0;
-  background: transparent;
-  color: var(--success);
-  font-size: 11px;
-  line-height: 18px;
-}
-
-.kv-value-host :deep(.expression-control:focus) {
-  background: var(--bg-active);
-}
-
-.kv-value-host:inert {
-  opacity: 0.5;
-}
-
-.kv-edit {
-  display: block;
-  border: none;
-  background: transparent;
-  outline: none;
-  font: inherit;
-  color: inherit;
-  padding: 0;
-  resize: none;
-  border-radius: 3px;
-}
-
-.kv-edit::placeholder {
-  color: var(--text-faint);
-}
-
-.kv-edit:focus {
-  background: var(--bg-active);
-}
-
-.kv-name-input {
-  width: auto;
-  max-width: 130px;
-}
-
-.kv-menu-col {
-  width: 22px;
-  padding-left: 0;
-  padding-right: 0;
-}
-
 .hr-menu {
   opacity: 0;
   padding: 2px;
@@ -430,13 +391,6 @@ function onHandlePointerDown(index: number, event: PointerEvent): void {
 .kv-edit-table tr:hover .hr-menu,
 .hr-menu:focus-visible {
   opacity: 1;
-}
-
-.hr-add {
-  align-self: flex-start;
-  color: var(--text-secondary);
-  padding: 3px 4px;
-  font-size: 11px;
 }
 
 tr.dragging {

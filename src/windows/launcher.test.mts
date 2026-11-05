@@ -1,13 +1,6 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { windowsStore } from "../stores/windows";
-import {
-  openReplay,
-  openRequestLibrary,
-  openRunDetail,
-  openRunHistory,
-  openWorkflowEditor,
-  openWorkflowTransfer,
-} from "./launcher";
+import { openReplay, openWorkflowTransfer } from "./launcher";
 
 const { backend } = vi.hoisted(() => ({ backend: { replay: vi.fn() as unknown } }));
 vi.mock("../api/runtime-backend", () => ({
@@ -34,58 +27,6 @@ test("workflow transfer window opens once and requires the workflows capability"
   windowsStore.windows = [];
   (backend as Record<string, unknown>).workflows = undefined;
   openWorkflowTransfer();
-  expect(windowsStore.windows).toHaveLength(0);
-});
-
-test("workflow editor window opens once and requires the workflows capability", () => {
-  (backend as Record<string, unknown>).workflows = { listProjects: vi.fn() };
-  openWorkflowEditor();
-  openWorkflowEditor();
-  expect(windowsStore.windows).toHaveLength(1);
-  expect(windowsStore.windows[0]!.title).toBe("工作流编辑器");
-  windowsStore.windows = [];
-  (backend as Record<string, unknown>).workflows = undefined;
-  openWorkflowEditor();
-  expect(windowsStore.windows).toHaveLength(0);
-});
-
-test("run history window opens once and requires the flowRuns capability", () => {
-  (backend as Record<string, unknown>).flowRuns = { list: vi.fn() };
-  openRunHistory();
-  openRunHistory();
-  expect(windowsStore.windows).toHaveLength(1);
-  expect(windowsStore.windows[0]!.title).toBe("运行记录");
-  windowsStore.windows = [];
-  (backend as Record<string, unknown>).flowRuns = undefined;
-  openRunHistory();
-  expect(windowsStore.windows).toHaveLength(0);
-});
-
-test("run detail windows are keyed by run id and require the flowRuns capability", () => {
-  (backend as Record<string, unknown>).flowRuns = { get: vi.fn() };
-  openRunDetail("run-abcdef123456");
-  openRunDetail("run-abcdef123456");
-  expect(windowsStore.windows).toHaveLength(1);
-  expect(windowsStore.windows[0]!.props).toEqual({ runId: "run-abcdef123456" });
-  expect(windowsStore.windows[0]!.title).toBe("运行详情 run-abcd…");
-  // 不同运行各自成窗
-  openRunDetail("run-other");
-  expect(windowsStore.windows).toHaveLength(2);
-  windowsStore.windows = [];
-  (backend as Record<string, unknown>).flowRuns = undefined;
-  openRunDetail("run-abcdef123456");
-  expect(windowsStore.windows).toHaveLength(0);
-});
-
-test("request library window opens once and requires the requestLibrary capability", () => {
-  (backend as Record<string, unknown>).requestLibrary = { page: vi.fn() };
-  openRequestLibrary();
-  openRequestLibrary();
-  expect(windowsStore.windows).toHaveLength(1);
-  expect(windowsStore.windows[0]!.title).toBe("请求库");
-  windowsStore.windows = [];
-  (backend as Record<string, unknown>).requestLibrary = undefined;
-  openRequestLibrary();
   expect(windowsStore.windows).toHaveLength(0);
 });
 

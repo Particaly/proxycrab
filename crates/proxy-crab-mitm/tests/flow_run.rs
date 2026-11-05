@@ -333,17 +333,13 @@ mod flow_run {
         );
         put_workflow(root.path(), &wf);
 
-        // 代理未运行：前提不满足，明确报错且不建单。
+        // 代理未运行且无活动 Session：明确报错且不建单（重放走流程专属连接代，
+        // 代理状态不再是触发前提）。
         let error = manager.trigger(&wf.id, None).await.unwrap_err();
-        assert!(matches!(error, RunTriggerError::ProxyNotRunning));
+        assert!(matches!(error, RunTriggerError::NoSession));
         assert_eq!(manager.list_runs(None, None, 10, 0).await.unwrap().1, 0);
 
-        // 启动代理后：工作流不存在同样明确报错（与存储故障分开归类）。
-        let mut config = runtime.config();
-        config.proxy_host = "127.0.0.1".into();
-        config.proxy_port = unused_port();
-        runtime.replace_config(config).await.unwrap();
-        runtime.start_proxy().await.unwrap();
+        // 工作流不存在同样明确报错（与存储故障分开归类）。
         let error = manager.trigger("wf-missing", None).await.unwrap_err();
         assert!(matches!(error, RunTriggerError::WorkflowNotFound(id) if id == "wf-missing"));
 
@@ -367,6 +363,34 @@ mod flow_run {
         };
         assert!(message.contains("开始节点"), "{message}");
         assert_eq!(manager.list_runs(None, None, 10, 0).await.unwrap().1, 0);
-        runtime.stop_proxy().await.unwrap();
+    }
+
+    /// 代理未启动也能触发并完成运行（重放走流程专属连接代，出站机制与代理
+    /// 监听无关）；全流程只有纯逻辑节点，不发起真实出站请求。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn trigger_succeeds_while_proxy_stopped() {
+        let root = tempdir().unwrap();
+        let runtime = ProxyCrab::open(root.path(), Arc::new(LogBuffer::default())).unwrap();
+        let manager = Arc::new(FlowRunManager::open(
+            root.path().to_path_buf(),
+            runtime.clone(),
+        ));
+        let wf = workflow(
+            vec![
+                node("s", WorkflowNodeType::Start, NodeConfig::default()),
+                node("d", WorkflowNodeType::Delay, delay_config(10)),
+            ],
+            vec![edge("e1", "s", "d")],
+        );
+        put_workflow(root.path(), &wf);
+        let session = runtime.create_session(NewSession::default()).unwrap();
+
+        let mut rx = manager.subscribe_events();
+        let run = manager.trigger(&wf.id, Some(session.id)).await.unwrap();
+        assert_eq!(run.status, "running");
+        collect_until_finished(&mut rx).await;
+        let (page, total) = manager.list_runs(None, None, 10, 0).await.unwrap();
+        assert_eq!(total, 1);
+        assert_eq!(page[0].status, "success");
     }
 }

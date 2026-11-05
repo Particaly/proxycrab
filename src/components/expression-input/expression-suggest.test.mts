@@ -3,6 +3,7 @@ import {
   applySuggestInsert,
   buildDropInsertPlan,
   buildEnvOptions,
+  buildFakeOptions,
   buildInsertTemplatePlan,
   buildNodeOptions,
   buildNodePathOptions,
@@ -39,6 +40,8 @@ const SAMPLES: SuggestNodePathSample[] = [
 /** 测试用变量名 / 环境键清单 */
 const VARS = ["Token", "host", "env"];
 const ENV_KEYS = ["BASE_URL", "apiToken"];
+/** 测试用假数据生成器名清单（真实用法传 FAKE_GENERATOR_NAMES 常量，此处取子集） */
+const FAKE_NAMES = ["phone", "name", "email"];
 
 /** 取候选的 insert 片段序列，便于断言过滤结果 */
 const insertsOf = (options: ReadonlyArray<RefSuggestOption>) =>
@@ -298,6 +301,86 @@ describe("buildSuggestOptions：var / env 层级判定", () => {
     expect(filterRefs(buildEnvOptions(ENV_KEYS), "base").map((o) => o.insert)).toEqual([
       "env.BASE_URL",
     ]);
+  });
+});
+
+describe("buildSuggestOptions：fake 层级判定", () => {
+  it("空查询且传入 fakeNames → 根候选追加 fake.（排在 env. 之后）", () => {
+    expect(
+      insertsOf(
+        buildSuggestOptions("", NODES, undefined, undefined, undefined, undefined, FAKE_NAMES),
+      ),
+    ).toEqual(["input.", "node.", "fake."]);
+    expect(
+      insertsOf(buildSuggestOptions("", NODES, VARS, undefined, undefined, ENV_KEYS, FAKE_NAMES)),
+    ).toEqual(["input.", "node.", "var.", "env.", "fake."]);
+  });
+
+  it("查询以 fake. 开头 → 生成器候选（大小写不敏感过滤）", () => {
+    expect(
+      buildSuggestOptions(
+        "fake.",
+        NODES,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        FAKE_NAMES,
+      ).map((o) => o.insert),
+    ).toEqual(["fake.phone", "fake.name", "fake.email"]);
+    expect(
+      buildSuggestOptions(
+        "fake.PH",
+        NODES,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        FAKE_NAMES,
+      ).map((o) => o.insert),
+    ).toEqual(["fake.phone"]);
+  });
+
+  it("名称之后出现点号或括号 → 不再给建议（路径 / 参数手输）", () => {
+    expect(
+      buildSuggestOptions(
+        "fake.phone.",
+        NODES,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        FAKE_NAMES,
+      ),
+    ).toEqual([]);
+    expect(
+      buildSuggestOptions("fake.number(1,100)", NODES, undefined, undefined, undefined, undefined, [
+        "phone",
+        "number",
+      ]),
+    ).toEqual([]);
+  });
+
+  it("fakeNames 缺省 / 为空：fake. 查询返回空候选，根候选不含 fake.", () => {
+    expect(buildSuggestOptions("fake.", NODES)).toEqual([]);
+    expect(
+      buildSuggestOptions("fake.", NODES, undefined, undefined, undefined, undefined, []),
+    ).toEqual([]);
+    expect(
+      insertsOf(buildSuggestOptions("", NODES, undefined, undefined, undefined, undefined, [])),
+    ).toEqual(["input.", "node."]);
+  });
+
+  it("buildFakeOptions：插入片段叶子语义，说明来自引擎元数据表", () => {
+    const options = buildFakeOptions(FAKE_NAMES);
+    expect(options.map((o) => o.insert)).toEqual(["fake.phone", "fake.name", "fake.email"]);
+    for (const option of options) {
+      expect(option.leaf).toBe(true);
+      expect(option.description).not.toBe("");
+    }
+    // 说明文案取自 FAKE_GENERATORS 元数据（name 命中 → 中文描述而非兜底文案）
+    expect(buildFakeOptions(["phone"])[0]?.description).toContain("手机号");
+    expect(buildFakeOptions(["__missing__"])[0]?.description).toBe("内置假数据生成器");
   });
 });
 

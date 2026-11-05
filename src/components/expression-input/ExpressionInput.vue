@@ -55,6 +55,12 @@ const props = defineProps<{
   /** 当前激活环境集合的键名清单（提供时根候选追加 env. 与环境键建议） */
   envKeys?: ReadonlyArray<string>;
   /**
+   * 假数据生成器名清单（提供时根候选追加 fake. 与生成器建议；一般传引擎导出的
+   * FAKE_GENERATOR_NAMES 常量——内置能力不依赖运行期上下文，是否暴露由调用方
+   * 决定：条件构建等仅支持 input / var 的沙箱场景不传即不给候选）
+   */
+  fakeNames?: ReadonlyArray<string>;
+  /**
    * 模板样本上下文（可选）：深路径候选与实时求值预览共用的样本数据（最近
    * 运行入参 / 上游输出 / 捕获响应体 / 变量 / 激活环境）。须引用稳定（调用方
    * 用 computed / 常量）；缺省时无深路径候选、不渲染预览行。
@@ -101,6 +107,7 @@ const options = computed<RefSuggestOption[]>(() =>
         props.inputPaths,
         nodePathSamples.value,
         props.envKeys,
+        props.fakeNames,
       )
     : [],
 );

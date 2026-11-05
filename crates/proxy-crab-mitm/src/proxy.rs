@@ -93,6 +93,9 @@ pub struct ProxyController {
     status_changes: watch::Sender<u64>,
     cancellation: Mutex<Option<CancellationToken>>,
     connections: Mutex<Option<Arc<ConnectionRegistry>>>,
+    /// 流程重放专属连接代：不随代理启停 / 配置轮换创建或关闭，代理停止后
+    /// 流程运行照常执行（出站机制挂在 `ProxyCrab` 上，与监听无关）。
+    flow_connections: ConnectionRegistry,
     task: Mutex<Option<JoinHandle<()>>>,
     operation: tokio::sync::Mutex<()>,
 }
@@ -100,12 +103,15 @@ pub struct ProxyController {
 impl ProxyController {
     pub fn new() -> Self {
         let (status_changes, _) = watch::channel(0);
+        let activity = ActivityTracker::new(status_changes.clone());
+        let flow_connections = ConnectionRegistry::new(activity.clone());
         Self {
             status: Arc::new(RwLock::new(ProxyStatus::Stopped)),
-            activity: ActivityTracker::new(status_changes.clone()),
+            activity,
             status_changes,
             cancellation: Mutex::new(None),
             connections: Mutex::new(None),
+            flow_connections,
             task: Mutex::new(None),
             operation: tokio::sync::Mutex::new(()),
         }
@@ -613,6 +619,12 @@ impl ProxyController {
             .lock()
             .expect("proxy connections lock poisoned");
         registry.as_ref().map(|registry| registry.current())
+    }
+
+    /// 流程重放专属连接代（常驻，无状态闸门）：流程运行不要求代理运行中，
+    /// 且代理停止 / 连接代轮换不影响进行中的流程重放（取消只随运行取消）。
+    pub(crate) fn flow_generation(&self) -> ConnectionGeneration {
+        self.flow_connections.current()
     }
 }
 

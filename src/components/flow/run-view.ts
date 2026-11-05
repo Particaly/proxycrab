@@ -404,19 +404,27 @@ export function listStaleNodeRuns(
  * 边运行态
  * ------------------------------------------------------------------ */
 
-/** 运行中边的流动动画标记类（任一端点处于 running 即视为「执行中路径」）。 */
+/** 运行中边的流动动画标记类（目标端处于 running = 数据正流入执行中节点）。 */
 export const EDGE_RUNNING_CLASS = "flow-edge-running";
 
-/** 给连线集合附加运行态类：端点 running 时加流动动画类，其余保持常态。 */
+/**
+ * 给连线集合附加运行态类（纯函数）。
+ *
+ * 动画口径：仅当**目标端**节点执行中（数据正流入该节点）时该边播放流动
+ * 动画——执行到节点 N 时只有流入 N 的边动画，N 的出边保持常态，直到下游
+ * 开始执行；失败 / 跳过路径不做流动暗示。
+ *
+ * 未命中的边显式写回 `class: undefined`（而非省略键）：Vue Flow 对 edges
+ * prop 的更新按 Object.assign 合并进既有边对象，缺席键不会覆盖旧值——
+ * 一旦带上动画类就永久滞留（运行结束动画停不下来）；显式 undefined 才能
+ * 清除。states 为 null（无运行态）时同样写回 undefined，兜底清残留。
+ */
 export function withEdgeRunClasses<E extends { id: string; source: string; target: string }>(
   edges: readonly E[],
   states: RunNodeStateMap | null,
 ): E[] {
-  if (states === null) return [...edges];
   return edges.map((edge) => {
-    const sourceStatus = states[edge.source]?.status;
-    const targetStatus = states[edge.target]?.status;
-    const running = sourceStatus === "running" || targetStatus === "running";
-    return running ? { ...edge, class: EDGE_RUNNING_CLASS } : edge;
+    const targetRunning = states !== null && states[edge.target]?.status === "running";
+    return { ...edge, class: targetRunning ? EDGE_RUNNING_CLASS : undefined };
   });
 }

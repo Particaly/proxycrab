@@ -148,11 +148,12 @@ The list is newest-first, filters by workflow/status before pagination (default
 page size 200, hard cap 1000); the detail payload flattens the run record and
 appends its node checkpoints (`nodeRuns`).
 
-- Lifecycle: triggering prechecks proxy running, an existing target Session
-  (defaulting to the active one), and a valid graph; a failed precondition
+- Lifecycle: triggering prechecks an existing target Session (defaulting to the
+  active one) and a valid graph; replays run on a flow-dedicated connection
+  generation, so the proxy does not need to be running. A failed precondition
   creates no run row and maps to stable errors (missing workflow/Session 404,
-  invalid graph 422 `workflow_graph_invalid`, proxy not running 409, no active
-  Session 409). The run row is inserted as `running` with its graph snapshot
+  invalid graph 422 `workflow_graph_invalid`, no active Session 409). The run
+  row is inserted as `running` with its graph snapshot
   (`pinnedOutput` always stripped; over 256 KiB it degrades to a self-describing
   skeleton with `truncated`), then the orchestration task (VM + write consumer)
   spawns and the record returns immediately. Node events flow through
@@ -187,7 +188,7 @@ appends its node checkpoints (`nodeRuns`).
   `proxycrab://http-api-change`). When that service cannot start, desktop run
   progress is not live — triggering, cancelling, listing, and reading runs keep
   working through trusted Tauri commands that call the manager directly, and
-  the run-history window's manual refresh is the fallback.
+  the run-history section's manual refresh is the fallback.
 - VM limits and inputs: workflow execution reuses `FlowLimits::default()` —
   64 MiB QuickJS heap, 100,000 interrupt-handler ticks, and a 30-second
   accumulated active wall clock (time spent awaiting host calls does not
@@ -202,6 +203,18 @@ appends its node checkpoints (`nodeRuns`).
   backfilled as base64 `postData`). Secrets from all three layers, the active
   environment set, and script write-backs join the masking list; node snapshots
   and error text are masked before persistence and broadcast.
+- Template rendering: node config strings (`{{ … }}`) are rendered by the
+  embedded engine per node execution over the namespaces `node.<refId>.<path>` /
+  `input.<path>` (bare path shorthand, `$json` alias) / `var.<name>.<path>` /
+  `env.<key>` / `fake.<name>(<args>)`. Missing data renders as empty text plus a
+  warning on the node checkpoint (rendering never fails a run); the `fake`
+  namespace generates built-in fake data (phone / name / address / email /
+  idcard / plate / avatar URL / ip / number(min,max) / hex(len) / uuid /
+  timestamp — see `flow-engine/src/fake.ts`). Fake values are cached per
+  `RenderContext` instance, so one node execution (URL, headers, body, fidelity
+  and cookie overrides) sees one value per expression while every new execution
+  or loop iteration re-randomizes. Condition-node expressions only compile
+  `input` / `var` roots; `node` / `env` / `fake` are rejected at save validation.
 - Known limitations: engine `bodyBase64` byte bodies replay lossily as UTF-8
   text (`ReplayBody` has no byte variant today; a byte channel would be its own
   task). Cancel idempotency is not promised — cancelling an already-finished or

@@ -12,7 +12,6 @@ import {
 } from "./lib/common.mjs";
 
 const RUN_ERROR_HINTS = {
-  proxy_not_running: "start the ProxyCrab proxy before triggering a workflow run",
   conflict: "no active Session; pass --session-id or activate one first",
   not_found: "the target Session is missing or archived; pass a live --session-id",
   workflow_graph_invalid:
@@ -37,14 +36,14 @@ run(async () => {
 Usage: node run-trigger.mjs --workflow-id ID [--session-id ID] [--base-url URL]
 
 Trigger one workflow run through the target Session's pipeline and print the run record
-(id "run-…", status "running", graph snapshot captured at dispatch). The endpoint defaults to
+(id "run-…", status "running", graph snapshot captured at dispatch). The proxy does not need
+to be running (replays use a flow-dedicated connection generation). The endpoint defaults to
 the approval permission tier.
 
   --workflow-id ID       Stored workflow definition to execute (required)
   --session-id ID        Target Session; defaults to the active Session
 
 Known failure codes are re-emitted with a readable hint appended to the server message:
-  409 proxy_not_running       The proxy must be running before a run can be dispatched
   404 not_found               The given --session-id is missing or archived
   409 conflict                No active Session (when --session-id is omitted)
   422 workflow_graph_invalid  The stored graph failed validation before the run row was created

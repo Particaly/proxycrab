@@ -19,6 +19,11 @@ import { startHttpApiSync, stopHttpApiSync } from "./stores/http-api-sync";
 import { breakpointsStore } from "./stores/breakpoints";
 import { approvalsStore } from "./stores/approvals";
 import { skillStore } from "./stores/skill";
+import { workspaceStore } from "./stores/workspace-view";
+import WorkflowEditorView from "./components/workspace/WorkflowEditorView.vue";
+import RequestLibraryView from "./components/workspace/RequestLibraryView.vue";
+import EnvSetsView from "./components/workspace/EnvSetsView.vue";
+import RunHistoryView from "./components/workspace/RunHistoryView.vue";
 import { useBackend } from "./api";
 
 const backend = useBackend();
@@ -137,16 +142,25 @@ function onOpenSession(event: Event): void {
     <div class="app-main">
       <SessionSidebar :logs="logs" />
       <section class="app-content">
-        <div class="traffic-controls">
-          <FilterBar
-            :filter="logs.appliedFilter"
-            :session-id="logs.sessionId"
-            :syncing="Boolean(backend.replaceSessionFilter)"
-            :apply-filter="(filter) => logs.applyFilter(filter)"
-          />
-          <InterceptorPipeline :logs="logs" />
-        </div>
-        <LogTable :logs="logs" />
+        <!-- 手风琴当前区块对应的主内容；工作流 KeepAlive 保活编辑态 -->
+        <template v-if="workspaceStore.section === 'capture'">
+          <div class="traffic-controls">
+            <FilterBar
+              :filter="logs.appliedFilter"
+              :session-id="logs.sessionId"
+              :syncing="Boolean(backend.replaceSessionFilter)"
+              :apply-filter="(filter) => logs.applyFilter(filter)"
+            />
+            <InterceptorPipeline :logs="logs" />
+          </div>
+          <LogTable :logs="logs" />
+        </template>
+        <KeepAlive v-else-if="workspaceStore.section === 'workflow'">
+          <WorkflowEditorView />
+        </KeepAlive>
+        <RequestLibraryView v-else-if="workspaceStore.section === 'library'" />
+        <EnvSetsView v-else-if="workspaceStore.section === 'env'" />
+        <RunHistoryView v-else-if="workspaceStore.section === 'runs'" />
       </section>
     </div>
 

@@ -244,8 +244,10 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+/* 遮罩铺满整个窗口：配置抽屉已绝对定位，若用 absolute 会以抽屉列为包含块，
+ * 遮罩被困在抽屉内（画布仍可点、面板错位居中）。 */
 .rp-mask {
-  position: absolute;
+  position: fixed;
   inset: 0;
   z-index: 30;
   display: flex;

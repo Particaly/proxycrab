@@ -219,8 +219,9 @@ export interface Backend {
     list(query: FlowRunListQuery): Promise<FlowRunPage>;
     get(id: string): Promise<FlowRunDetail>;
     /**
-     * 触发一次运行（按最近保存的流程定义）。前置校验失败时报
-     * 409 proxy_not_running / 404 not_found / 409 conflict / 422 workflow_graph_invalid。
+     * 触发一次运行（按最近保存的流程定义；重放走流程专属连接代，不要求
+     * 代理运行中）。前置校验失败时报 404 not_found / 409 conflict /
+     * 422 workflow_graph_invalid。
      */
     trigger(request: FlowRunTriggerRequest): Promise<FlowRunRecord>;
     /** 取消进行中的运行；运行已结算（或不存在）时报 not_found。 */

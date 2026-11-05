@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
 import { Io5ChevronDown, Io5Close, Io5Pin, Io5Search } from "vue-icons-plus/io5";
+import { FAKE_GENERATORS, FAKE_GENERATOR_NAMES } from "../../../../flow-engine/src/fake";
 import { useBackend } from "../../../api";
 import type {
   AssetMetadata,
@@ -9,24 +10,21 @@ import type {
   WorkflowNodeConfig,
 } from "../../../api/types";
 import { reportError } from "../../../stores/app";
-import { confirmDialog } from "../../../stores/dialog";
+import { confirmDialog, openDropdownMenu } from "../../../stores/dialog";
 import CustomSelect from "../../CustomSelect.vue";
 import AssetTreePicker from "../../AssetTreePicker.vue";
 import ExpressionInput from "../../expression-input/ExpressionInput.vue";
 import type { SuggestNodeOption } from "../../expression-input/expression-suggest";
 import { buildDropInsertPlan } from "../../expression-input/expression-suggest";
 import type { TemplateSampleContext } from "../../expression-input/use-expression-preview";
-import type { FlowTrialTarget } from "../../../stores/flow-trial";
 import { hasIoPathPayload, readIoPathPayload } from "../template-dnd";
 import { formatBytes, formatDateTime } from "../../../utils/format";
 import { REPLAY_METHODS } from "../../../utils/replay";
-import ScriptEditor from "./ScriptEditor.vue";
 import HeaderRows from "./HeaderRows.vue";
+import CommonHeaderRow from "./CommonHeaderRow.vue";
+import EnvSaveDialog from "./EnvSaveDialog.vue";
 import RequestPicker from "./RequestPicker.vue";
-import FidelityModeControl from "./FidelityModeControl.vue";
-import CookieModeControl from "./CookieModeControl.vue";
 import RetryFields from "./RetryFields.vue";
-import RefIdField from "./RefIdField.vue";
 import {
   baselineFromEntry,
   buildReplayNodeConfig,
@@ -39,21 +37,23 @@ import {
   urlHint,
   validateHeaderRows,
   type CapturedBaseline,
-  type HeaderFidelitySource,
   type HeaderRowDraft,
   type ReplayConfigDraft,
+  type ReplayHeaderFidelity,
   type ReplayOverride,
   type ReplayRetry,
 } from "./node-config";
 
 /**
- * 请求重放节点（httpReplay）配置面（计划 Task 14）：引用短码 + ① 请求引用
- * （请求库挑选 / 手工请求）→ ② 请求内容（method / url，引用态仅覆盖改动
- * 字段）→ ③ 请求头（行编辑 + 删除即移除，落 removedHeaders）→ ④ 请求体
- * （无 / 文本 / 请求库 body / 工作区资产；后两者编辑期解析为文本落库）→
- * ⑤ 请求标识与 Cookie（headerFidelity 三头「捕获值 / 自定义」二态 + cookieMode）
- * → ⑥ 高级（超时 / 失败策略 / 重试退避 / 固定输出清除）+ 前置 / 后置脚本
- * （Task 18 的 ScriptEditor 落位）。
+ * 请求重放节点（httpReplay）配置面（计划 Task 14）：① 请求引用（请求库
+ * 挑选 / 手工请求）→ ② 请求内容（method + URL 并排一行，引用态仅覆盖改动
+ * 字段）→ ③ 请求头（统一区：常见头 User-Agent / Origin / Referer / Cookie
+ * 固定行与其他请求头行同款行式展示（值留空回放快照捕获值，填写即覆盖），
+ * 「其他请求头」点击后行编辑区向下滑出并与上方行融合；删除即移除落
+ * removedHeaders；行菜单可把名值写入环境变量集）→ ④ 请求体（无 / 文本 /
+ * 请求库 body / 工作区资产）→ ⑤ 高级（超时 / 失败策略 / 重试退避 / 固定输出
+ * 清除）。引用短码在抽屉「其他信息」tab、前置 / 后置脚本在抽屉独立 tab 编辑
+ * （本组件 persist 时从节点 config 透传，不覆盖外部编辑）。
  *
  * 交互：全部编辑即改即生效（上抛 update:config 重建配置，空白值省略），由
  * 窗口统一保存；字段级校验就地提示，非法值不落库。组件按节点 id 由父级
@@ -61,12 +61,8 @@ import {
  */
 const props = defineProps<{
   node: WorkflowNode;
-  /** 流程内已占用短码键集合（节点 id + 既有短码，含自身）。 */
-  takenKeys: ReadonlySet<string>;
   /** 置灰全部编辑（运行期锁定等场景）。 */
   disabled?: boolean;
-  /** 所属流程 id（脚本试跑样本并入会话态的归属键；缺省不并入）。 */
-  workflowId?: string;
   /** 上游可引用节点候选（模板引用键 refId ?? id + 展示名；透传表达式输入）。 */
   availableNodeIds?: ReadonlyArray<SuggestNodeOption>;
   /** 可引用变量名清单（流程级普通变量；透传表达式输入）。 */
@@ -81,15 +77,9 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   "update:config": [config: WorkflowNodeConfig];
-  "update:refId": [refId: string | null];
 }>();
 
 const backend = useBackend();
-
-/** 脚本试跑样本归属（本节点；流程 id 由窗口注入，缺省不并入会话态）。 */
-const trialKey = computed<FlowTrialTarget | null>(() =>
-  props.workflowId ? { workflowId: props.workflowId, nodeId: props.node.id } : null,
-);
 
 /* ------------------------------ 表单草稿状态 ------------------------------ */
 
@@ -113,20 +103,23 @@ const capturedBinaryBody = ref(false);
 const timeoutInput = ref(initial.timeoutMs === undefined ? "" : String(initial.timeoutMs));
 const failPolicy = ref<"stop" | "continue">(initial.failPolicy);
 const retry = ref<ReplayRetry | null>(initial.retry ?? null);
-const preProcess = ref(initial.preProcess ?? "");
-const postProcess = ref(initial.postProcess ?? "");
 const pinnedOutput = ref(initial.pinnedOutput ?? null);
 
-interface FidelityDraft {
-  source: HeaderFidelitySource;
-  value: string;
-}
-const fidelity = ref<Record<"origin" | "referer" | "userAgent", FidelityDraft>>({
-  origin: { source: "fromCapture", value: "" },
-  referer: { source: "fromCapture", value: "" },
-  userAgent: { source: "fromCapture", value: "" },
+/* --------------------- 统一请求头区（常见头固定行 + 其他可展开） --------------------- */
+
+/** 「其他请求头」折叠区开关（缺省收起；展开后行编辑 + 已删捕获头还原）。 */
+const otherHeadersOpen = ref(false);
+
+/**
+ * 常见头自定义值草稿（空 = 回放快照捕获值，headerFidelity 键缺省；填写即
+ * 自定义注入，落库按值非空派生 static 档，见 persist）。
+ */
+const specialValues = ref<Record<"origin" | "referer" | "userAgent", string>>({
+  origin: "",
+  referer: "",
+  userAgent: "",
 });
-const cookieMode = ref<"snapshot" | "custom">("snapshot");
+/** Cookie 自定义值草稿（空 = 快照捕获档；非空落 cookieMode:custom + cookieValue）。 */
 const cookieValue = ref("");
 
 const method = computed(() =>
@@ -142,6 +135,34 @@ const methodOptions = REPLAY_METHODS.map((value) => ({ value, label: value }));
 const headerError = computed(() => validateHeaderRows(headerRows.value));
 const timeoutResult = computed(() => parseTimeoutMs(timeoutInput.value));
 const urlWarning = computed(() => urlHint(url.value));
+
+/* ------------------- 统一请求头表（常见头行 + 其他头行共处一张表） ------------------- */
+
+/** HeaderRows 行片段实例（折叠区展开后的「添加请求头」入口）。 */
+const headerRowsRef = ref<InstanceType<typeof HeaderRows> | null>(null);
+
+/** 环境变量能力位：缺失时行菜单不提供「添加到环境变量」。 */
+const canSaveEnv = computed(() => backend.envSets !== undefined);
+
+/** 「添加到环境变量」弹窗目标（当前请求头名值预填；null = 关闭）。 */
+const envSaveFor = ref<{ name: string; value: string } | null>(null);
+
+/** 行菜单「添加到环境变量」统一入口（常见头行 / 其他头行共用）。 */
+function openEnvSave(payload: { name: string; value: string }): void {
+  if (props.disabled) return;
+  envSaveFor.value = payload;
+}
+
+/** 「添加请求头」：折叠时先展开再补空行（展开态直接补行）。 */
+function addHeaderRow(): void {
+  if (props.disabled) return;
+  if (!otherHeadersOpen.value) {
+    otherHeadersOpen.value = true;
+    void nextTick(() => headerRowsRef.value?.addRow());
+    return;
+  }
+  headerRowsRef.value?.addRow();
+}
 
 /* --------------------- 模板字段拖放承接（IO 字段 chip） --------------------- */
 
@@ -178,6 +199,13 @@ async function onUrlDrop(event: DragEvent): Promise<void> {
 function onBodyDrop(event: DragEvent): void {
   const snippet = ioDropSnippet(event);
   if (snippet === null) return;
+  insertBodySnippet(snippet);
+}
+
+/** 在 body textarea 光标处插入完整片段（拖放 / 假数据菜单共用的单一出口，
+ * 写入计划与拖放落点同口径，见 buildDropInsertPlan）。 */
+function insertBodySnippet(snippet: string): void {
+  if (props.disabled) return;
   const caret = bodyInput.value?.selectionStart ?? body.value.length;
   const plan = buildDropInsertPlan(body.value, caret, snippet);
   body.value = plan.text;
@@ -185,6 +213,21 @@ function onBodyDrop(event: DragEvent): void {
     bodyInput.value?.focus();
     bodyInput.value?.setSelectionRange(plan.caret, plan.caret);
   });
+}
+
+/** body「插入假数据」按钮：列内置生成器（引擎元数据表），选中后在光标处
+ * 插入 `{{ fake.<名称> }}`。仅文本模式下提供（请求库 / 资产模式的 body 来源
+ * 不可手工编辑，不引导插入）。 */
+function openBodyFakePicker(event: MouseEvent): void {
+  if (props.disabled) return;
+  openDropdownMenu(
+    event.currentTarget as HTMLElement,
+    FAKE_GENERATORS.map((generator) => ({
+      label: `${generator.name} — ${generator.description}`,
+      title: `插入 {{ fake.${generator.name} }}（示例：${generator.example}）`,
+      action: () => insertBodySnippet(`{{ fake.${generator.name} }}`),
+    })),
+  );
 }
 
 /* ------------------------------ 引用快照基线 ------------------------------ */
@@ -222,6 +265,22 @@ const capturedUserAgent = computed(() =>
 const capturedCookie = computed(() =>
   referenced.value ? capturedSpecialHeader(referenced.value, "cookie") : null,
 );
+
+/**
+ * 常见头固定行恒展示（User-Agent / Origin / Referer / Cookie 各一行，形态
+ * 与其他请求头行统一）：值留空 = 回放快照捕获值（捕获值经 placeholder 就地
+ * 展示），填写即自定义覆盖。行编辑表里同名行隐藏（避免同一头双行展示）。
+ */
+const hiddenHeaderNames: readonly string[] = ["User-Agent", "Origin", "Referer", "Cookie"];
+
+/** 「其他请求头」计数（排除被固定行接管的同名行；标题展示用）。 */
+const otherRowsCount = computed(() => {
+  const hide = hiddenHeaderNames.map((name) => name.toLowerCase());
+  return headerRows.value.filter((row) => {
+    const name = row.name.trim().toLowerCase();
+    return name !== "" && !hide.includes(name);
+  }).length;
+});
 
 /** 被删除的捕获头（行列表里消失的基线头），展示为可还原 chip。 */
 const removedCapturedHeaders = computed(() => {
@@ -342,10 +401,9 @@ function rowsFromRecord(record: Record<string, string> | undefined): HeaderRowDr
   }
   for (const key of ["origin", "referer", "userAgent"] as const) {
     const item = initial.headerFidelity?.[key];
-    if (item) fidelity.value[key] = { source: item.source, value: item.value ?? "" };
+    if (item && item.source === "static") specialValues.value[key] = item.value ?? "";
   }
   if (initial.cookieCustom !== undefined) {
-    cookieMode.value = "custom";
     cookieValue.value = initial.cookieCustom;
   }
 }
@@ -419,10 +477,13 @@ function selectBodyMode(mode: BodyMode): void {
 
 function persist(): void {
   if (hydrating || props.disabled) return;
+  // 前置 / 后置脚本已迁移到抽屉独立 tab 编辑（窗口直改 config）：这里从节点
+  // config 即时透传，避免本组件的重建覆盖脚本编辑。
+  const carried = props.node.config as Record<string, unknown> | undefined;
   const draft: ReplayConfigDraft = {
     failPolicy: failPolicy.value,
-    preProcess: preProcess.value,
-    postProcess: postProcess.value,
+    preProcess: typeof carried?.["preProcess"] === "string" ? carried["preProcess"] : "",
+    postProcess: typeof carried?.["postProcess"] === "string" ? carried["postProcess"] : "",
     timeoutMs: timeoutResult.value.value,
     retry: retry.value ?? undefined,
     pinnedOutput: pinnedOutput.value ?? undefined,
@@ -458,51 +519,24 @@ function persist(): void {
       body: bodyMode.value === "none" ? undefined : body.value !== "" ? body.value : undefined,
     };
   }
-  draft.headerFidelity = {
-    origin: { ...fidelity.value.origin },
-    referer: { ...fidelity.value.referer },
-    userAgent: { ...fidelity.value.userAgent },
-  };
-  if (cookieMode.value === "custom") draft.cookieCustom = cookieValue.value;
+  // 常见头按值派生档位：非空 = 自定义（static），空 = 捕获档（键缺省，
+  // buildReplayNodeConfig 的 staticFidelityOnly 只落 static 非空项）。
+  const headerFidelity: ReplayHeaderFidelity = {};
+  for (const key of ["origin", "referer", "userAgent"] as const) {
+    const value = specialValues.value[key];
+    if (value.trim() !== "") headerFidelity[key] = { source: "static", value };
+  }
+  if (Object.keys(headerFidelity).length > 0) draft.headerFidelity = headerFidelity;
+  if (cookieValue.value.trim() !== "") draft.cookieCustom = cookieValue.value;
   emit("update:config", buildReplayNodeConfig(draft));
 }
 
-watch(
-  [
-    methodChoice,
-    customMethod,
-    url,
-    bodyMode,
-    body,
-    timeoutInput,
-    failPolicy,
-    preProcess,
-    postProcess,
-  ],
-  () => {
-    if (props.disabled) return;
-    void persist();
-  },
-);
+watch([methodChoice, customMethod, url, bodyMode, body, timeoutInput, failPolicy], () => {
+  if (props.disabled) return;
+  void persist();
+});
 watch(headerRows, () => void persist(), { deep: true });
-
-function onFidelity(key: "origin" | "referer" | "userAgent", patch: Partial<FidelityDraft>): void {
-  if (props.disabled) return;
-  fidelity.value[key] = { ...fidelity.value[key], ...patch };
-  void persist();
-}
-
-function onCookieMode(mode: "snapshot" | "custom"): void {
-  if (props.disabled) return;
-  cookieMode.value = mode;
-  void persist();
-}
-
-function onCookieValue(value: string): void {
-  if (props.disabled) return;
-  cookieValue.value = value;
-  void persist();
-}
+watch([specialValues, cookieValue], () => void persist(), { deep: true });
 
 function onRetry(next: ReplayRetry | null): void {
   if (props.disabled) return;
@@ -531,43 +565,11 @@ const pinnedValuePreview = computed(() => {
     return String(value);
   }
 });
-
-/* ------------------------------ 脚本折叠区 ------------------------------ */
-
-const scriptSections = ref<{ pre: boolean; post: boolean }>({ pre: false, post: false });
-watch(
-  [preProcess, postProcess],
-  () => {
-    if (preProcess.value.trim() !== "" && !scriptSections.value.pre)
-      scriptSections.value.pre = true;
-    if (postProcess.value.trim() !== "" && !scriptSections.value.post) {
-      scriptSections.value.post = true;
-    }
-  },
-  { immediate: true },
-);
-
-function toggleScript(section: "pre" | "post"): void {
-  scriptSections.value[section] = !scriptSections.value[section];
-}
 </script>
 
 <template>
   <div class="rnc-root">
     <RequestPicker v-if="pickerFor !== null" @pick="onPicked" @close="pickerFor = null" />
-
-    <!-- 引用短码 -->
-    <div class="rnc-section">
-      <div class="rnc-field">
-        <span class="rnc-label">引用短码</span>
-        <RefIdField
-          :ref-id="node.refId ?? null"
-          :taken-keys="takenKeys"
-          :disabled="disabled"
-          @update:ref-id="emit('update:refId', $event)"
-        />
-      </div>
-    </div>
 
     <!-- ① 请求引用 -->
     <div class="rnc-section">
@@ -608,7 +610,7 @@ function toggleScript(section: "pre" | "post"): void {
       </template>
     </div>
 
-    <!-- ② 请求内容 -->
+    <!-- ② 请求内容：method + URL 并排一行 -->
     <div class="rnc-section">
       <div class="rnc-title">
         ② 请求内容
@@ -616,8 +618,7 @@ function toggleScript(section: "pre" | "post"): void {
           requestId !== null ? "仅覆盖改动字段" : "手动请求基线"
         }}</span>
       </div>
-      <div class="rnc-field">
-        <span class="rnc-label">方法</span>
+      <div class="rnc-request-row">
         <CustomSelect
           class="rnc-method"
           :model-value="methodChoice"
@@ -641,9 +642,6 @@ function toggleScript(section: "pre" | "post"): void {
             />
           </template>
         </CustomSelect>
-      </div>
-      <div class="rnc-field">
-        <span class="rnc-label">URL</span>
         <!-- inert 包裹层：置灰 + IO 字段 chip 拖放承接（dragover 按 MIME 标记接管，
              drop 经组件 ref 插入引用） -->
         <div
@@ -659,31 +657,150 @@ function toggleScript(section: "pre" | "post"): void {
             :available-node-ids="availableNodeIds"
             :variable-names="variableNames"
             :env-keys="envKeys"
+            :fake-names="FAKE_GENERATOR_NAMES"
             :input-paths="inputPaths"
             :sample="sample"
           />
         </div>
-        <div v-if="urlWarning" class="rnc-warning">{{ urlWarning }}</div>
       </div>
+      <div v-if="urlWarning" class="rnc-warning">{{ urlWarning }}</div>
     </div>
 
-    <!-- ③ 请求头 -->
+    <!-- ③ 请求头（统一区）：常见头 User-Agent / Origin / Referer / Cookie
+         固定行与其他请求头行同款展示（拖拽列 + 头名 + 值表达式输入 + 行菜单，
+         无捕获 / 自定义切换——值留空回放快照捕获值，填写即覆盖）；「其他请求头」
+         点击后行编辑区向下滑出，与上方行融合为一张连续列表。行菜单可把名值
+         写入环境变量集。 -->
     <div class="rnc-section">
       <div class="rnc-title">
         ③ 请求头
         <span class="rnc-title-hint text-faint">{{
-          requestId !== null ? "改动落覆盖项，删除捕获头落移除列表" : "作为请求基线请求头"
+          requestId !== null
+            ? "常见头留空用捕获值，填写落保真配置；其余头落覆盖项"
+            : "未引用快照时填写的头直接发送"
         }}</span>
       </div>
-      <HeaderRows
-        v-model="headerRows"
-        :disabled="disabled"
-        :available-node-ids="availableNodeIds"
-        :variable-names="variableNames"
-        :env-keys="envKeys"
-        :input-paths="inputPaths"
-        :sample="sample"
-      />
+      <!-- 请求头连续列表容器：常见头表 + 其他头滑出区 + 沉底开关零间距
+           续接（section 是带 gap 的 flex 列，包裹层还原无 gap 的连续列表） -->
+      <div class="rnc-headers-list">
+        <table class="kv-edit-table">
+          <tbody>
+            <CommonHeaderRow
+              name="User-Agent"
+              :value="specialValues.userAgent"
+              :captured-value="capturedUserAgent"
+              empty-placeholder="填写 User-Agent（留空用快照捕获值）"
+              :disabled="disabled"
+              :can-save-env="canSaveEnv"
+              :available-node-ids="availableNodeIds"
+              :variable-names="variableNames"
+              :input-paths="inputPaths"
+              :env-keys="envKeys"
+              :sample="sample"
+              @update:value="specialValues.userAgent = $event"
+              @save-to-env="openEnvSave"
+            />
+            <CommonHeaderRow
+              name="Origin"
+              :value="specialValues.origin"
+              :captured-value="capturedOrigin"
+              empty-placeholder="填写 Origin（留空用快照捕获值）"
+              :disabled="disabled"
+              :can-save-env="canSaveEnv"
+              :available-node-ids="availableNodeIds"
+              :variable-names="variableNames"
+              :input-paths="inputPaths"
+              :env-keys="envKeys"
+              :sample="sample"
+              @update:value="specialValues.origin = $event"
+              @save-to-env="openEnvSave"
+            />
+            <CommonHeaderRow
+              name="Referer"
+              :value="specialValues.referer"
+              :captured-value="capturedReferer"
+              empty-placeholder="填写 Referer（留空用快照捕获值）"
+              :disabled="disabled"
+              :can-save-env="canSaveEnv"
+              :available-node-ids="availableNodeIds"
+              :variable-names="variableNames"
+              :input-paths="inputPaths"
+              :env-keys="envKeys"
+              :sample="sample"
+              @update:value="specialValues.referer = $event"
+              @save-to-env="openEnvSave"
+            />
+            <CommonHeaderRow
+              name="Cookie"
+              :value="cookieValue"
+              :captured-value="capturedCookie"
+              empty-placeholder="填写 Cookie（留空用快照捕获值）"
+              :disabled="disabled"
+              :can-save-env="canSaveEnv"
+              :available-node-ids="availableNodeIds"
+              :variable-names="variableNames"
+              :input-paths="inputPaths"
+              :env-keys="envKeys"
+              :sample="sample"
+              @update:value="cookieValue = $event"
+              @save-to-env="openEnvSave"
+            />
+          </tbody>
+        </table>
+        <!-- 其他请求头行编辑区：grid 行高 0fr → 1fr 过渡实现向下滑出；独立
+             一张同款表与常见头表 0 间距续接（首行无 border-top，展开后与常见头
+             融合为一张连续列表），收起时 inert 阻断交互 -->
+        <div
+          class="rnc-others-slide"
+          :class="{ open: otherHeadersOpen }"
+          :inert="!otherHeadersOpen || undefined"
+        >
+          <div class="rnc-others-clip">
+            <table class="kv-edit-table">
+              <HeaderRows
+                ref="headerRowsRef"
+                v-model="headerRows"
+                :disabled="disabled"
+                :hide-names="hiddenHeaderNames"
+                :available-node-ids="availableNodeIds"
+                :variable-names="variableNames"
+                :env-keys="envKeys"
+                :input-paths="inputPaths"
+                :sample="sample"
+                @save-to-env="openEnvSave"
+              />
+            </table>
+          </div>
+        </div>
+
+        <!-- 「其他请求头」开关（沉底）：收起时贴在常见头下方，展开后被行编辑区
+             推到列表最底（展开行不被标题隔断，直接续接常见头） -->
+        <div class="rnc-others-footer">
+          <button
+            class="rnc-others-toggle"
+            :aria-expanded="otherHeadersOpen"
+            @click="otherHeadersOpen = !otherHeadersOpen"
+          >
+            <Io5ChevronDown
+              class="rnc-others-caret"
+              :class="{ open: otherHeadersOpen }"
+              :size="12"
+            />
+            其他请求头{{ otherRowsCount > 0 ? `（${otherRowsCount}）` : "" }}
+          </button>
+        </div>
+      </div>
+
+      <div class="rnc-header-actions">
+        <button
+          class="btn compact"
+          :disabled="disabled"
+          title="添加请求头（收起时自动展开其他请求头区）"
+          @click="addHeaderRow"
+        >
+          + 添加请求头
+        </button>
+      </div>
       <div v-if="headerError" class="rnc-warning">{{ headerError }}</div>
       <div v-if="removedCapturedHeaders.length > 0" class="rnc-removed">
         <span class="text-faint">已删除：</span>
@@ -698,6 +815,21 @@ function toggleScript(section: "pre" | "post"): void {
           {{ name }} ×
         </button>
       </div>
+      <div class="rnc-hint text-faint">
+        {{
+          requestId !== null
+            ? "常见头留空 = 回放快照捕获值；填写即自定义覆盖（支持模板）"
+            : "未引用快照时填写值直接发送"
+        }}
+      </div>
+
+      <!-- 添加到环境变量弹窗（常见头行 / 其他头行菜单共用） -->
+      <EnvSaveDialog
+        v-if="envSaveFor !== null"
+        :initial-name="envSaveFor.name"
+        :initial-value="envSaveFor.value"
+        @close="envSaveFor = null"
+      />
     </div>
 
     <!-- ④ 请求体 -->
@@ -727,6 +859,16 @@ function toggleScript(section: "pre" | "post"): void {
             <Io5Search :size="12" /> 从请求库引用 body
           </button>
         </div>
+        <div v-else-if="bodyMode === 'text'" class="rnc-body-source">
+          <button
+            class="btn compact"
+            :disabled="disabled"
+            title="选择内置假数据生成器，在光标处插入 {{ fake.<名称> }}（发送时逐次随机）"
+            @click="openBodyFakePicker"
+          >
+            插入假数据
+          </button>
+        </div>
         <div v-else-if="bodyMode === 'asset'" class="rnc-body-source">
           <div v-if="assetsError" class="rnc-warning">资源加载失败：{{ assetsError }}</div>
           <AssetTreePicker
@@ -752,54 +894,9 @@ function toggleScript(section: "pre" | "post"): void {
       </template>
     </div>
 
-    <!-- ⑤ 请求标识与 Cookie -->
+    <!-- ⑤ 高级 -->
     <div class="rnc-section">
-      <div class="rnc-title">⑤ 请求标识与 Cookie</div>
-      <FidelityModeControl
-        label="Origin"
-        :source="fidelity.origin.source"
-        :value="fidelity.origin.value"
-        :captured-value="capturedOrigin"
-        :disabled="disabled"
-        @update:source="onFidelity('origin', { source: $event })"
-        @update:value="onFidelity('origin', { value: $event })"
-      />
-      <FidelityModeControl
-        label="Referer"
-        :source="fidelity.referer.source"
-        :value="fidelity.referer.value"
-        :captured-value="capturedReferer"
-        :disabled="disabled"
-        @update:source="onFidelity('referer', { source: $event })"
-        @update:value="onFidelity('referer', { value: $event })"
-      />
-      <FidelityModeControl
-        label="User-Agent"
-        :source="fidelity.userAgent.source"
-        :value="fidelity.userAgent.value"
-        :captured-value="capturedUserAgent"
-        :disabled="disabled"
-        @update:source="onFidelity('userAgent', { source: $event })"
-        @update:value="onFidelity('userAgent', { value: $event })"
-      />
-      <CookieModeControl
-        :mode="cookieMode"
-        :value="cookieValue"
-        :captured-value="capturedCookie"
-        :disabled="disabled"
-        @update:mode="onCookieMode"
-        @update:value="onCookieValue"
-      />
-      <div class="rnc-hint text-faint">
-        {{
-          requestId !== null ? "「捕获值」回放引用快照捕获的值" : "未引用快照时「捕获值」无注入值"
-        }}
-      </div>
-    </div>
-
-    <!-- ⑥ 高级 -->
-    <div class="rnc-section">
-      <div class="rnc-title">⑥ 高级</div>
+      <div class="rnc-title">⑤ 高级</div>
       <div class="rnc-field">
         <span class="rnc-label">超时（毫秒）</span>
         <input
@@ -843,41 +940,6 @@ function toggleScript(section: "pre" | "post"): void {
           pinnedValuePreview
         }}</pre>
       </div>
-    </div>
-
-    <!-- 前置 / 后置脚本 -->
-    <div class="rnc-section">
-      <button
-        v-for="side in ['pre', 'post'] as const"
-        :key="side"
-        class="rnc-script-toggle"
-        :aria-expanded="scriptSections[side]"
-        @click="toggleScript(side)"
-      >
-        <Io5ChevronDown
-          class="rnc-script-caret"
-          :class="{ open: scriptSections[side] }"
-          :size="12"
-        />
-        {{ side === "pre" ? "前置脚本" : "后置脚本" }}
-        <span
-          v-if="(side === 'pre' ? preProcess : postProcess).trim() !== ''"
-          class="rnc-script-dot"
-          title="已配置脚本"
-        />
-      </button>
-      <template v-for="side in ['pre', 'post'] as const" :key="side">
-        <div v-if="scriptSections[side]" class="rnc-script-body">
-          <ScriptEditor
-            :side="side"
-            :model-value="side === 'pre' ? preProcess : postProcess"
-            :disabled="disabled"
-            editor-height="12em"
-            :trial-key="trialKey"
-            @update:model-value="side === 'pre' ? (preProcess = $event) : (postProcess = $event)"
-          />
-        </div>
-      </template>
     </div>
   </div>
 </template>
@@ -985,13 +1047,22 @@ function toggleScript(section: "pre" | "post"): void {
   align-self: flex-start;
 }
 
-/* 方法行 */
+/* 请求内容行：method 下拉 + URL 表达式输入并排一行 */
+.rnc-request-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
 .rnc-method {
-  align-self: flex-start;
+  flex: none;
+  width: 108px;
 }
 
 /* URL 表达式输入：与既有 .input 同框感（描边盒），置灰由 inert 包裹层降透明 */
 .rnc-url-host {
+  flex: 1;
   min-width: 0;
 }
 
@@ -1137,12 +1208,45 @@ function toggleScript(section: "pre" | "post"): void {
   color: var(--text-secondary);
 }
 
-/* 脚本折叠区 */
-.rnc-script-toggle {
-  display: flex;
+/* 请求头连续列表容器：常见头表 + 其他头滑出区 + 沉底开关零间距续接
+ * （section 是带 gap 的 flex 列，本包裹层还原为无 gap 的连续列表） */
+.rnc-headers-list {
+  min-width: 0;
+}
+
+/* 列宽对齐：两张表（常见头 / 其他头）是独立表格，auto 布局下名字列随内容
+ * 各自变宽（其他头手输名字最长 130px），值列起点错位。fixed 布局 + 显式
+ * 列宽让同构的两表逐列一致，展开后字段纵向对齐。 */
+.rnc-headers-list :deep(.kv-edit-table) {
+  table-layout: fixed;
+}
+
+.rnc-headers-list :deep(td.kv-name) {
+  width: 110px;
+}
+
+/* fixed 列宽下名字不超出本列（长名字在输入框内横向滚动，整列对齐优先） */
+.rnc-headers-list :deep(.kv-name-input),
+.rnc-headers-list :deep(.chr-name) {
+  max-width: 100%;
+}
+
+/* 「其他请求头」开关（沉底 footer）：收起时贴常见头下方，展开后被行编辑区
+ * 推到列表最底。边框 / 内距对齐行编辑表的行密度（.kv-edit-table td 口径），
+ * 左缘按「拖拽列宽 + 行内距」缩进对齐名字列。 */
+.rnc-others-footer {
+  border-top: 1px solid var(--border);
+  padding: 4px 6px 4px 24px;
+}
+
+.rnc-others-footer:hover {
+  background: var(--bg-hover);
+}
+
+.rnc-others-toggle {
+  display: inline-flex;
   align-items: center;
   gap: 4px;
-  align-self: flex-start;
   border: none;
   background: transparent;
   color: var(--text-secondary);
@@ -1152,28 +1256,40 @@ function toggleScript(section: "pre" | "post"): void {
   cursor: pointer;
   padding: 0;
 }
-.rnc-script-toggle:hover {
+.rnc-others-toggle:hover {
   color: var(--text);
 }
 
-.rnc-script-caret {
+.rnc-others-caret {
   transition: transform 0.12s;
 }
-.rnc-script-caret.open {
+.rnc-others-caret.open {
   transform: rotate(0deg);
 }
-.rnc-script-caret:not(.open) {
+.rnc-others-caret:not(.open) {
   transform: rotate(-90deg);
 }
 
-.rnc-script-dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--accent);
+/* 其他请求头行编辑区的滑出容器：grid 行高 0fr → 1fr 过渡（高度自适应
+ * 内容的平滑下滑），内层裁剪溢出；与上方常见头表 0 间距续接——独立表的
+ * 首行无 border-top，展开后与开关行之间无分隔线，行样式融合为一张连续
+ * 列表。收起（0fr）时内容不可见且已 inert。 */
+.rnc-others-slide {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.18s ease;
+}
+.rnc-others-slide.open {
+  grid-template-rows: 1fr;
+}
+.rnc-others-clip {
+  min-height: 0;
+  overflow: hidden;
 }
 
-.rnc-script-body {
-  min-width: 0;
+.rnc-header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
 }
 </style>

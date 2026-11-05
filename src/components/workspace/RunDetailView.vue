@@ -1,14 +1,14 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { Io5Refresh } from "vue-icons-plus/io5";
-import { useBackend } from "../api";
-import type { FlowRunDetail, Workflow, WorkflowNode } from "../api/types";
-import { errorMessage } from "../utils/har-export";
-import { reportError } from "../stores/app";
-import { confirmDialog } from "../stores/dialog";
-import { formatDateTime } from "../utils/format";
-import RunGraphView from "../components/flow/RunGraphView.vue";
-import NodeRunPanel from "../components/flow/NodeRunPanel.vue";
+import { useBackend } from "../../api";
+import type { FlowRunDetail, Workflow, WorkflowNode } from "../../api/types";
+import { errorMessage } from "../../utils/har-export";
+import { reportError } from "../../stores/app";
+import { confirmDialog } from "../../stores/dialog";
+import { formatDateTime } from "../../utils/format";
+import RunGraphView from "../flow/RunGraphView.vue";
+import NodeRunPanel from "../flow/NodeRunPanel.vue";
 import {
   countFailedNodeRuns,
   formatRunDuration,
@@ -23,11 +23,12 @@ import {
   sortNodeRunsByExecution,
   nodeRunsToRunStates,
   type RunNodeStateMap,
-} from "../components/flow/run-view";
+} from "../flow/run-view";
 
 /**
- * 运行详情窗口（ReqFlow 复刻计划 Task 22 Step 2 / 3）：只读运行画布 + 节点
- * 快照面板。
+ * 运行详情视图（原浮窗 RunDetailWindow 内容平移，ReqFlow 复刻计划 Task 22
+ * Step 2 / 3）：只读运行画布 + 节点快照面板，由「运行记录」区块主区按
+ * runId 挂载。
  *
  * 图还原口径（快照优先三态，见 run-view.resolveRunGraph）：
  *   - run.graphSnapshot 存在 → 按运行创建时刻的快照还原（流程改 / 删不影响）；

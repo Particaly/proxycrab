@@ -57,7 +57,7 @@ test("run-trigger appends a readable hint for known failure codes", async () => 
       "--input-type=module", "-e", `
         globalThis.fetch = async () => new Response(JSON.stringify({
           ok: false,
-          error: { code: "proxy_not_running", message: "proxy is not running" },
+          error: { code: "conflict", message: "no active Session" },
         }), { status: 409 });
         process.argv = [process.execPath, ${JSON.stringify(scriptUrl)}, "--workflow-id", "wf-1",
           ${JSON.stringify(baseUrl[0])}, ${JSON.stringify(baseUrl[1])}];
@@ -68,9 +68,9 @@ test("run-trigger appends a readable hint for known failure codes", async () => 
       assert.equal(error.code, 1);
       const payload = JSON.parse(error.stderr);
       assert.equal(payload.error.type, "ApiError");
-      assert.equal(payload.error.code, "proxy_not_running");
+      assert.equal(payload.error.code, "conflict");
       assert.equal(payload.error.status, 409);
-      assert.match(payload.error.message, /start the ProxyCrab proxy/);
+      assert.match(payload.error.message, /no active Session/);
       return true;
     },
   );

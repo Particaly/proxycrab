@@ -1606,6 +1606,25 @@ default to `approval` — the desktop approval window holds the call, and CLI ta
 persisted approval as deny. Wire shapes are camelCase. Run `status`: `running | success | failed |
 cancelled | interrupted`; node checkpoint `status` follows the engine's `NodeRun` states.
 
+Node config strings (httpReplay `url`/`headers` values/`body`, setVariable values, loop items,
+header-fidelity and cookie overrides) support `{{ … }}` template expressions rendered by the
+engine right before each node executes:
+
+| Syntax | Resolves to |
+| --- | --- |
+| `{{ node.<refId>.<path> }}` | an upstream node's output at the dotted path (keyed by the node's 5-letter `refId`) |
+| `{{ input.<path> }}` / `{{ <bare.path> }}` / `{{ $json.<path> }}` | the current node's aggregated input (bare path is the shorthand) |
+| `{{ var.<name>.<path> }}` | the merged three-layer variable table (workflow < project < globals) |
+| `{{ env.<key> }}` | the active environment set's value snapshot (frozen at dispatch) |
+| `{{ fake.<name>(<args>) }}` | a built-in fake-data generator (`phone`, `name`, `address`, `email`, `idcard`, `plate`, `avatar`, `ip`, `number(min,max)`, `hex(len)`, `uuid`, `timestamp`) |
+
+Fake values re-randomize per node execution (each loop iteration gets fresh values), but stay
+consistent within one execution — the same expression in a node's URL, headers, and body yields
+one value, so `{{ fake.phone }}` in a query string and the body refer to the same generated
+number. Unknown generators or invalid arguments render as empty text with a warning on the node
+checkpoint; condition-node expressions only accept `input` / `var` roots. Missing variable /
+env / path data never fails a run: it renders as empty text with a warning.
+
 ### `POST /api/flow/runs`
 
 Body `{"workflowId":"wf-…","sessionId":123}` (`sessionId` optional — defaults to the active
@@ -1617,9 +1636,12 @@ envelope carries the reason:
 | --- | --- |
 | Workflow id unknown | `404 not_found` |
 | Target Session missing or archived | `404 not_found` |
-| Proxy stopped (replays need the proxy running) | `409 proxy_not_running` |
 | No active Session to target | `409 conflict` |
 | Graph validation failed | `422 workflow_graph_invalid`, message lists the issues |
+
+Replays run on a flow-dedicated connection generation, so the proxy does not need to be running
+to trigger a run (a stopped proxy no longer yields `409 proxy_not_running` here; the code remains
+reserved for proxy-dependent operations such as `POST /api/replay`).
 
 On success `data` is the run record: `{"id":"run-…","workflowId","workflowName","trigger":"manual",
 "status":"running","sessionId","startedAt","graphSnapshot"}` — `finishedAt`/`error` appear once the

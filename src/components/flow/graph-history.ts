@@ -1,4 +1,4 @@
-import type { WorkflowEdge, WorkflowNode } from "../../api/types";
+import type { WorkflowEdge, WorkflowNode, WorkflowNodeConfig } from "../../api/types";
 import { graphSignature } from "./graph-model";
 
 /**
@@ -30,7 +30,13 @@ export interface GraphHistoryState {
 /** 历史上限（可撤销帧数；超出时裁掉最旧帧）。 */
 export const GRAPH_HISTORY_LIMIT = 50;
 
-/** 深拷贝图快照（config 为纯 JSON 数据，structuredClone 即可独立成副本）。 */
+/**
+ * 深拷贝图快照（config 为纯 JSON 数据）。config 经 JSON 往返克隆而非
+ * structuredClone：store 下发的节点对象是 Vue reactive Proxy，structuredClone
+ * 对 Proxy 这类异质对象抛 DataCloneError（曾中断画布结构提交所在的那轮
+ * 组件更新刷新，DOM patch 打断、抽屉挂载缺失），JSON 往返经 get 陷阱读取，
+ * 不挑对象种类；functions/symbol 等非 JSON 值本就不应出现在 config 里。
+ */
 export function cloneGraphSnapshot(
   nodes: readonly WorkflowNode[],
   edges: readonly WorkflowEdge[],
@@ -39,7 +45,7 @@ export function cloneGraphSnapshot(
     nodes: nodes.map((node) => ({
       ...node,
       position: { ...node.position },
-      config: structuredClone(node.config),
+      config: JSON.parse(JSON.stringify(node.config)) as WorkflowNodeConfig,
     })),
     edges: edges.map((edge) => ({ ...edge })),
   };

@@ -207,3 +207,67 @@ export function nodeBadge(node: Pick<WorkflowNode, "type" | "config">): string |
       return undefined;
   }
 }
+
+/* ------------------ 请求重放节点卡增强字段（对齐归档卡片） ------------------ */
+
+/** 请求重放节点卡的第二行徽章字段（对齐归档 HttpReplayNode 的信息密度）。 */
+export interface ReplayCardFields {
+  /** 请求方法（override → manualRequest → 引用缺省 GET）。 */
+  method: string;
+  /** URL 摘要（override → manualRequest → 引用短码占位 → 未选择请求）。 */
+  url: string;
+  /** 失败策略文案（失败即停 / 失败继续）。 */
+  failPolicy: string;
+  /** 是否失败继续（徽章配色分档）。 */
+  failContinue: boolean;
+  /** 重放超时角标文案（undefined 不渲染）。 */
+  timeout?: string;
+  /** 输出已固定（角标渲染）。 */
+  pinned: boolean;
+}
+
+/** URL 摘要的截断上限（节点卡第二行；title 展示全文）。 */
+const REPLAY_URL_MAX = 30;
+
+/**
+ * 派生 httpReplay 节点卡的徽章字段；全部形状防御（非法配置按缺省展示，
+ * 与 nodeSummary 同口径）。非 httpReplay 节点返回 null。
+ */
+export function replayCardFields(
+  node: Pick<WorkflowNode, "type" | "config">,
+): ReplayCardFields | null {
+  if (node.type !== "httpReplay") return null;
+  const config = (node.config ?? {}) as Record<string, unknown>;
+  const override =
+    config["override"] !== null && typeof config["override"] === "object"
+      ? (config["override"] as Record<string, unknown>)
+      : undefined;
+  const manual =
+    config["manualRequest"] !== null && typeof config["manualRequest"] === "object"
+      ? (config["manualRequest"] as Record<string, unknown>)
+      : undefined;
+  const requestId = typeof config["requestId"] === "string" ? config["requestId"] : undefined;
+  const method =
+    (typeof override?.["method"] === "string" && override["method"]) ||
+    (typeof manual?.["method"] === "string" && manual["method"]) ||
+    "GET";
+  const rawUrl =
+    (typeof override?.["url"] === "string" && override["url"]) ||
+    (typeof manual?.["url"] === "string" && manual["url"]) ||
+    (requestId !== undefined ? `引用快照 #${requestId.slice(0, 8)}` : "") ||
+    "";
+  const timeoutRaw = config["timeoutMs"];
+  const timeout =
+    typeof timeoutRaw === "number" && Number.isFinite(timeoutRaw) && timeoutRaw >= 0
+      ? `${timeoutRaw}ms`
+      : undefined;
+  const pinned = config["pinnedOutput"] !== null && typeof config["pinnedOutput"] === "object";
+  return {
+    method,
+    url: truncate(rawUrl === "" ? "未选择请求" : rawUrl, REPLAY_URL_MAX),
+    failPolicy: config["failPolicy"] === "continue" ? "失败继续" : "失败即停",
+    failContinue: config["failPolicy"] === "continue",
+    ...(timeout !== undefined ? { timeout } : {}),
+    pinned,
+  };
+}
