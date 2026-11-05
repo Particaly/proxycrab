@@ -41,19 +41,19 @@
 **Files:**
 - Modify: `src-tauri/src/lib.rs`（命令 + `proxy_crab_mgr::dto` 与 `proxy_crab_mitm::flow` 类型导入 + handler 注册）
 
-- [ ] **Step 1: 项目 5 命令**：`list_flow_projects`（分页参数缺省 Default）→ trait `flow_projects(FlowListQuery)`；`create_flow_project` / `get_flow_project` / `update_flow_project` / `delete_flow_project` → trait 同名族方法（`FlowProjectCreateRequest` / `FlowProjectUpdateRequest`）。
-- [ ] **Step 2: 流程 6 命令**：`list_workflows`（`WorkflowListQuery`，含 `projectId` 必填过滤）→ `workflows`；`create_workflow` → `create_workflow(WorkflowCreateRequest)`；`get_workflow` → `workflow(id)`；`save_workflow_graph` → `update_workflow(id, WorkflowUpdateRequest)`（图整体替换语义已在 trait 内，`nodes`+`edges` 必须成对）；`delete_workflow` → `delete_workflow`；`validate_workflow` → `validate_workflow`（返回 issues 列表）。
-- [ ] **Step 3: 导入导出 2 命令**：`export_workflows(ids: Vec<String>)` → trait `export_workflows`，返回 `transfer::WorkflowExportFile` 文档本体（桌面在映射层经 `saveFile` 落盘，非 HTTP 下载）；`import_workflows(request: WorkflowImportRequest)` → trait `import_workflows`。
-- [ ] **Step 4: 返回形状原则**：Tauri 命令返回数据 DTO 本体（`Project` / `Workflow` 线格式 camelCase，与 HTTP 相同类型）；包装形状差异在前端映射层适配，不在 Rust 侧造新 DTO。
-- [ ] **Step 5: 门禁**：`cargo check --workspace` / `cargo clippy --workspace --all-targets -- -D warnings` / `cargo test --workspace` 全绿。
+- [x] **Step 1: 项目 5 命令**：`list_flow_projects`（分页参数缺省 Default）→ trait `flow_projects(FlowListQuery)`；`create_flow_project` / `get_flow_project` / `update_flow_project` / `delete_flow_project` → trait 同名族方法（`FlowProjectCreateRequest` / `FlowProjectUpdateRequest`）。
+- [x] **Step 2: 流程 6 命令**：`list_workflows`（`WorkflowListQuery`，含 `projectId` 必填过滤）→ `workflows`；`create_workflow` → `create_workflow(WorkflowCreateRequest)`；`get_workflow` → `workflow(id)`；`save_workflow_graph` → `update_workflow(id, WorkflowUpdateRequest)`（图整体替换语义已在 trait 内，`nodes`+`edges` 必须成对）；`delete_workflow` → `delete_workflow`；`validate_workflow` → `validate_workflow`（返回 issues 列表）。
+- [x] **Step 3: 导入导出 2 命令**：`export_workflows(ids: Vec<String>)` → trait `export_workflows`，返回 `transfer::WorkflowExportFile` 文档本体（桌面在映射层经 `saveFile` 落盘，非 HTTP 下载）；`import_workflows(request: WorkflowImportRequest)` → trait `import_workflows`。
+- [x] **Step 4: 返回形状原则**：Tauri 命令返回数据 DTO 本体（`Project` / `Workflow` 线格式 camelCase，与 HTTP 相同类型）；包装形状差异在前端映射层适配，不在 Rust 侧造新 DTO。
+- [x] **Step 5: 门禁**：`cargo check --workspace` / `cargo clippy --workspace --all-targets -- -D warnings` / `cargo test --workspace` 全绿。
 
 ### Task 2: 运行域命令
 
 **Files:**
 - Modify: `src-tauri/src/lib.rs`
 
-- [ ] **Step 1: 4 命令**：`list_flow_runs(query: FlowRunListQuery)` → `workflow_runs`；`get_flow_run_detail(runId)` → `workflow_run_detail`（返回 `FlowRunDetailPayload`，含逐节点 checkpoint）；`trigger_flow_run(request: FlowRunTriggerRequest)` → `trigger_workflow_run`；`cancel_flow_run(runId)` → `cancel_workflow_run`。
-- [ ] **Step 2: 错误码保真**：`RunTriggerError` 的映射已在 manager 内完成（`409 proxy_not_running` / `404 not_found` / `409 conflict` / `422 workflow_graph_invalid` /「工作流运行记录库不可用」），命令层原样透传 `ManagerError`，前端已有对应文案。
+- [x] **Step 1: 4 命令**：`list_flow_runs(query: FlowRunListQuery)` → `workflow_runs`；`get_flow_run_detail(runId)` → `workflow_run_detail`（返回 `FlowRunDetailPayload`，含逐节点 checkpoint）；`trigger_flow_run(request: FlowRunTriggerRequest)` → `trigger_workflow_run`；`cancel_flow_run(runId)` → `cancel_workflow_run`。
+- [x] **Step 2: 错误码保真**：`RunTriggerError` 的映射已在 manager 内完成（`409 proxy_not_running` / `404 not_found` / `409 conflict` / `422 workflow_graph_invalid` /「工作流运行记录库不可用」），命令层原样透传 `ManagerError`，前端已有对应文案。
 - [ ] **Step 3: 进度事件验证（预期零代码）**：桌面触发一次运行，确认运行记录列表 / 打开中的运行详情 / 画布运行锁定随 `FlowRuns` 变更事件刷新（链路：`FlowRunManager` 广播 → 管理层桥接 `HttpApiChange` → 既有 http→Tauri 桥）。
 - [ ] **Step 4: 降级登记（决策 2）**：管理 HTTP 服务启动失败时桌面桥不存在，进度不实时、列表手动刷新兜底——写入 `docs/runtime-notes.md`（Task 6 汇总落盘，此处先验证行为）。
 
@@ -62,7 +62,7 @@
 **Files:**
 - Modify: `src-tauri/src/lib.rs`
 
-- [ ] **Step 1: `flow_script_dry_run(request: FlowScriptDryRunRequest)`** → trait `flow_script_dry_run`，返回 `ScriptDryRunOutput`（`{ok,value,warnings}` / `{ok:false,error:{kind,message}}`，kind `syntax|blocked|runtime|timeout|invalid-return`）。编辑器「试跑」入口随能力位 `flowScriptDryRun` 自动出现。
+- [x] **Step 1: `flow_script_dry_run(request: FlowScriptDryRunRequest)`** → trait `flow_script_dry_run`，返回 `ScriptDryRunOutput`（`{ok,value,warnings}` / `{ok:false,error:{kind,message}}`，kind `syntax|blocked|runtime|timeout|invalid-return`）。编辑器「试跑」入口随能力位 `flowScriptDryRun` 自动出现。
 - [ ] **Step 2: 验证**：编辑器内对一个前置/后置脚本试跑成功与超时两类路径。
 
 ---
@@ -74,22 +74,22 @@
 **Files:**
 - Modify: `src/api/tauri-backend.ts`、`src/api/tauri-backend.test.mts`
 
-- [ ] **Step 1: `workflows`（9 方法）**：`listProjects` / `createProject` / `deleteProject` / `listWorkflows(projectId)` / `getWorkflow` / `createWorkflow` / `saveWorkflowGraph` / `deleteWorkflow` / `validateWorkflow` / `exportWorkflows` / `importWorkflows` 挂到 `createTauriBackend`（对照 `http-backend.ts:488-531` 的签名；`exportWorkflows` 返回信封文档本体）。
-- [ ] **Step 2: `flowRuns`（4 方法）+ `flowScriptDryRun`**：对照 `http-backend.ts:577-588`；`cancel` 吞掉成功空返回。
-- [ ] **Step 3: 包装形状前端适配**：如返回类型与 `types.ts` 既有契约存在包装差异（参照 `envSets.setActive` 先例），在映射层适配，不改 `types.ts`。
-- [ ] **Step 4: 不改入口组件**：`AppToolbar` / `launcher.ts` / 各窗口零改动；`pnpm build` 后桌面工具栏出现「工作流」「工作流导入导出」（资产菜单）、「运行记录」（资产菜单）、试跑入口。
-- [ ] **Step 5: vitest**：`tauri-backend.test.mts` 补能力位存在性与参数映射用例；`pnpm test:unit` 全绿。
+- [x] **Step 1: `workflows`（9 方法）**：`listProjects` / `createProject` / `deleteProject` / `listWorkflows(projectId)` / `getWorkflow` / `createWorkflow` / `saveWorkflowGraph` / `deleteWorkflow` / `validateWorkflow` / `exportWorkflows` / `importWorkflows` 挂到 `createTauriBackend`（对照 `http-backend.ts:488-531` 的签名；`exportWorkflows` 返回信封文档本体）。
+- [x] **Step 2: `flowRuns`（4 方法）+ `flowScriptDryRun`**：对照 `http-backend.ts:577-588`；`cancel` 吞掉成功空返回。
+- [x] **Step 3: 包装形状前端适配**：如返回类型与 `types.ts` 既有契约存在包装差异（参照 `envSets.setActive` 先例），在映射层适配，不改 `types.ts`。
+- [x] **Step 4: 不改入口组件**：`AppToolbar` / `launcher.ts` / 各窗口零改动；`pnpm build` 后桌面工具栏出现「工作流」「工作流导入导出」（资产菜单）、「运行记录」（资产菜单）、试跑入口。
+- [x] **Step 5: vitest**：`tauri-backend.test.mts` 补能力位存在性与参数映射用例；`pnpm test:unit` 全绿。
 
 ### Task 5: MCP 档位 / 审计桌面接线（决策 1 纳入）
 
 **Files:**
 - Modify: `crates/proxy-crab-mgr/src/mcp/tools.rs`（或 `manager.rs`，按最小增量落点）、`crates/proxy-crab-mgr/src/manager.rs`、`src-tauri/src/lib.rs`、`src/api/tauri-backend.ts`、`src/api/tauri-backend.test.mts`
 
-- [ ] **Step 1: mgr 工具计数**：复用/提取 `POST /mcp` `tools/list` 的档位过滤逻辑，新增 trait 方法 `mcp_tool_count() -> ManagerResult<usize>`（当前档位下 `tools/list` 会出现的工具数；唯一实现方 `MitmManager`，加方法无下游破裂面）。
-- [ ] **Step 2: 桌面命令**：`get_mcp_tiers` / `replace_mcp_tiers(tiers: McpTiers)` / `list_mcp_audit(limit)` → trait `mcp_tiers` / `replace_mcp_tiers` / `mcp_audit`（Rust 返回 `Vec<McpAuditEntry>`，前端映射层包成 `{entries}` 对齐 `McpAuditPage`）；`get_mcp_tool_count` → `mcp_tool_count`。
-- [ ] **Step 3: 前端映射**：`tauri-backend.ts` 挂 `mcpTiers`（`get` / `save` / `toolCount`）与 `mcpAudit`（`list`）；注意 CLI 的 `toolCount` 走裸 JSON-RPC fetch，桌面改为直调命令。
+- [x] **Step 1: mgr 工具计数**：复用/提取 `POST /mcp` `tools/list` 的档位过滤逻辑，新增 trait 方法 `mcp_tool_count() -> ManagerResult<usize>`（当前档位下 `tools/list` 会出现的工具数；唯一实现方 `MitmManager`，加方法无下游破裂面）。
+- [x] **Step 2: 桌面命令**：`get_mcp_tiers` / `replace_mcp_tiers(tiers: McpTiers)` / `list_mcp_audit(limit)` → trait `mcp_tiers` / `replace_mcp_tiers` / `mcp_audit`（Rust 返回 `Vec<McpAuditEntry>`，前端映射层包成 `{entries}` 对齐 `McpAuditPage`）；`get_mcp_tool_count` → `mcp_tool_count`。
+- [x] **Step 3: 前端映射**：`tauri-backend.ts` 挂 `mcpTiers`（`get` / `save` / `toolCount`）与 `mcpAudit`（`list`）；注意 CLI 的 `toolCount` 走裸 JSON-RPC fetch，桌面改为直调命令。
 - [ ] **Step 4: 验证**：设置窗口出现「MCP 暴露」（档位读写、工具数随档位变化）与「MCP 调用审计」分区；关闭执行档后工具数下降。
-- [ ] **Step 5: 门禁**：Rust + 前端门禁同 Task 1 / Task 4。
+- [x] **Step 5: 门禁**：Rust + 前端门禁同 Task 1 / Task 4。
 
 ---
 
