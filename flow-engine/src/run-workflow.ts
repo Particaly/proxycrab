@@ -18,7 +18,9 @@
  *     需要外部脚本通道的宿主可经 options.scriptPort 注入（宿主注入点）；
  *   - 运行期变量：内部持有 RunVariableStore（overlay 隔离随 store 能力生效，
  *     循环并发可用）；环境快照经供给函数逐节点下发，脚本 env 写回经
- *     onEnvWrite（宿主注入点）应用并同步到运行内快照。
+ *     onEnvWrite（宿主注入点）应用并同步到运行内快照；工作流存储以派发快照
+ *     播种镜像，脚本 host.storage 读写（实时持久层访问）由镜像包装同步，
+ *     模板 `{{ storage.* }}` 与条件表达式逐节点取到最新值。
  *
  * 取消：options.signal（CancelSignal 结构，DOM AbortSignal 兼容）；VM 级取消
  * （超限 / 中断）由 Rust 运行时负责，节点编排级取消走信号语义（与归档一致）。
@@ -42,7 +44,7 @@ import {
 } from "./logic-nodes";
 import { createAssertRunner } from "./assert-nodes";
 import { createTransformRunner } from "./transform-nodes";
-import { buildReplayRequest } from "./replay";
+import { buildReplayRequest, manualRequestToHarEntry, resolveHarEntryForNode } from "./replay";
 import type { ReplayOverride } from "./replay";
 import { detectResponseBody } from "./replay-response";
 import { HttpFailureError, ScriptExecutionError, isHttpFailure } from "./error-class";
@@ -54,14 +56,7 @@ import { RunVariableStore } from "./run-variables";
 import { encodeBase64 } from "./base64";
 import { setHostTimers, hostSetTimeout } from "./host-env";
 import type { CancelSignal } from "./cancel-signal";
-import type {
-  HarEntry,
-  ManualRequest,
-  NodeConfig,
-  RunTrigger,
-  Workflow,
-  WorkflowNode,
-} from "./types";
+import type { HarEntry, NodeConfig, RunTrigger, Workflow, WorkflowNode } from "./types";
 
 /* ------------------------------------------------------------------ *
  * 宿主桥信封（host.replay 的 JSON 载荷契约，对齐计划 Task 1/3）
@@ -92,58 +87,9 @@ export interface ReplayResponseEnvelope {
 export type ReplayTransport = (payload: Record<string, unknown>) => Promise<ReplayResponseEnvelope>;
 
 /* ------------------------------------------------------------------ *
- * 请求基线解析
+ * 请求基线解析：manualRequestToHarEntry / resolveHarEntryForNode 已下沉至
+ * replay.ts（runner 与 buildPreviewRequest 预览共用同一入口），此处导入使用。
  * ------------------------------------------------------------------ */
-
-/**
- * 把无引用节点的手动请求基线合成为 HAR 条目（buildReplayRequest 的入参形状）。
- * method / url / headers / body 逐字段映射；缺省 HTTP/1.1、空响应摘要。
- */
-function manualRequestToHarEntry(manual: ManualRequest): HarEntry {
-  return {
-    startedDateTime: new Date(0).toISOString(),
-    time: 0,
-    request: {
-      method: manual.method,
-      url: manual.url,
-      httpVersion: "HTTP/1.1",
-      headers: Object.entries(manual.headers ?? {}).map(([name, value]) => ({ name, value })),
-      queryString: [],
-      headersSize: -1,
-      bodySize: -1,
-      ...(manual.body !== undefined ? { postData: { mimeType: "", text: manual.body } } : {}),
-    },
-    response: {
-      status: 0,
-      statusText: "",
-      httpVersion: "HTTP/1.1",
-      headers: [],
-      content: { size: 0, mimeType: "" },
-      redirectURL: "",
-      headersSize: -1,
-      bodySize: -1,
-    },
-    timings: { send: 0, wait: 0, receive: 0 },
-  };
-}
-
-/**
- * 解析 httpReplay 节点的重放基线（httpReplay runner 内部步骤）：
- * deps.harEntries[config.requestId]（请求库投影）优先，无引用 / 未命中时回退
- * config.manualRequest 合成基线；两者皆缺 → undefined（节点 failed）。
- */
-function resolveHarEntryForNode(
-  node: WorkflowNode,
-  harEntries: Record<string, HarEntry> | undefined,
-): HarEntry | undefined {
-  const requestId = node.config.requestId;
-  if (typeof requestId === "string" && requestId !== "") {
-    const entry = harEntries?.[requestId];
-    if (entry !== undefined) return entry;
-  }
-  const manual = node.config.manualRequest;
-  return manual !== undefined ? manualRequestToHarEntry(manual) : undefined;
-}
 
 /* ------------------------------------------------------------------ *
  * httpReplay runner（装配面：重建请求 → host.replay → 归一化响应 → 后置脚本）
@@ -347,6 +293,12 @@ export interface RunWorkflowOptions {
   variables?: Record<string, unknown>;
   /** 环境变量快照（运行开始时定格）：注入模板 {{ env.* }} 与脚本 env 形参 */
   env?: Record<string, unknown>;
+  /**
+   * 工作流存储快照（派发时定格的种子）：注入模板 {{ storage.* }} 与条件表达式
+   * 的 storage 形参；脚本经 host.storage 的实时读写由镜像包装同步到运行内
+   * 快照（见 installStorageMirror），对后续节点 / 迭代立即可见。缺省不注入。
+   */
+  storage?: Record<string, unknown>;
   /** 取消信号（CancelSignal 结构；DOM AbortSignal 兼容）。缺省且宿主桥提供
    * host.cancelled 时自动接线轮询（见 connectHostCancelSignal）；显式传信号时
    * 以调用方信号为准、不轮询（既有行为不变）。 */
@@ -364,6 +316,8 @@ export interface RunWorkflowOptions {
    * 闭包内缺输出的上游 → 建档前整单判 failed、不执行任何节点）。
    */
   resume?: ExecutorOptions["resume"];
+  /** 入口选择（多 start 工作流，透传执行器；语义见 ExecutorOptions.entryNodeId） */
+  entryNodeId?: ExecutorOptions["entryNodeId"];
   /** runId 生成器（缺省 host-env 注入链） */
   generateId?: IdGenerator;
   /** 事件：节点开始（透传执行器；loop 循环体事件同样转发至此） */
@@ -403,6 +357,15 @@ export async function runWorkflow(
           options.onEnvWrite?.(writes);
         }
       : undefined;
+
+  // 工作流存储镜像（运行内双写）：以派发快照播种；脚本经 host.storage 的
+  // 实时读写由 installStorageMirror 同步维护镜像，使后续节点的
+  // {{ storage.* }} 与条件表达式立即可见（真源在持久层，镜像只服务模板取数）
+  const storageMirror =
+    options.storage !== undefined
+      ? new Map<string, unknown>(Object.entries(options.storage))
+      : undefined;
+  installStorageMirror(storageMirror);
 
   // 运行期变量：内部 RunVariableStore（overlay 能力 → 循环并发隔离可用）
   const variableStore = new RunVariableStore(options.variables ?? {});
@@ -449,6 +412,9 @@ export async function runWorkflow(
       getRunners: () => runners,
       getStore: () => variableStore,
       ...(envSnapshot !== undefined ? { getEnv: () => envSnapshot } : {}),
+      ...(storageMirror !== undefined
+        ? { getStorage: (): Record<string, unknown> => Object.fromEntries(storageMirror) }
+        : {}),
       ...(options.onNodeStart
         ? {
             forwardNodeStart: (node: WorkflowNode, input: unknown) =>
@@ -487,8 +453,12 @@ export async function runWorkflow(
       ? { maxNodeConcurrency: options.maxNodeConcurrency }
       : {}),
     ...(options.resume !== undefined ? { resume: options.resume } : {}),
+    ...(options.entryNodeId !== undefined ? { entryNodeId: options.entryNodeId } : {}),
     variables: () => variableStore.snapshot(),
     ...(envSnapshot !== undefined ? { env: () => envSnapshot } : {}),
+    ...(storageMirror !== undefined
+      ? { storage: (): Record<string, unknown> => Object.fromEntries(storageMirror) }
+      : {}),
     selectDownstream: createWorkflowDownstreamSelector(workflow.nodes, workflow.edges),
     nestedNodeRun: (node: WorkflowNode) => nestedRuns.get(node.id),
     pinnedOutputs,
@@ -501,6 +471,62 @@ export async function runWorkflow(
 /* ------------------------------------------------------------------ *
  * QuickJS 宿主桥自动接线（宿主注入点）
  * ------------------------------------------------------------------ */
+
+/** host.storage 工作流存储面（Rust 注册，见 runtime.rs register_host_object）：
+ * 同步函数 API——get / put / delete / keys 直接返回结果对象（脚本沙箱为同步
+ * 求值，无 await；真源在工作流持久层，每次调用即实时读写）。 */
+interface HostStorageBridge {
+  get?: (key: string) => { found: boolean; value: unknown };
+  put?: (key: string, value: unknown) => { updatedAt: number };
+  delete?: (key: string) => { deleted: boolean };
+  keys?: () => { keys: string[] };
+}
+
+/**
+ * 安装 host.storage 镜像包装（宿主注入点）：传入镜像 Map 且全局 host.storage
+ * 可用时，把 get / put / delete 包装为「宿主调用 + 镜像同步」——宿主调用是
+ * 对持久层的实时读写（同步函数，真源在 Rust 侧工作流存储文件），镜像供模板
+ * `{{ storage.* }}` 与条件表达式的 storage 形参逐节点取数（executor 的
+ * storage 供给函数）。同步约定：
+ *   - put：先宿主后镜像——持久化失败时脚本看到异常、镜像不更新（模板不展示
+ *     未落盘的写入）；
+ *   - get：宿主返回后按 found 同步镜像——读到的最新值（含并发运行 / 管理 API
+ *     的外部写入）对后续节点可见；
+ *   - delete：宿主返回后镜像同步删除（宿主侧持久化失败会抛错，镜像不动）。
+ * keys 不包装（键序以持久层为准，镜像不参与）。镜像未传（options.storage
+ * 缺省）或宿主桥缺失（Node 单测 / 旧宿主装配）时不做任何包装，行为与既有
+ * 逐字节一致。VM 随运行整体丢弃，无需还原包装。
+ */
+function installStorageMirror(mirror: Map<string, unknown> | undefined): void {
+  if (mirror === undefined) return;
+  const bridge = (globalThis as { host?: { storage?: HostStorageBridge } }).host?.storage;
+  if (bridge === undefined) return;
+  const rawGet = bridge.get;
+  const rawPut = bridge.put;
+  const rawDelete = bridge.delete;
+  if (typeof rawPut === "function") {
+    bridge.put = (key: string, value: unknown) => {
+      const result = rawPut(key, value);
+      mirror.set(key, value);
+      return result;
+    };
+  }
+  if (typeof rawGet === "function") {
+    bridge.get = (key: string) => {
+      const result = rawGet(key);
+      if (result?.found === true) mirror.set(key, result.value);
+      else mirror.delete(key);
+      return result;
+    };
+  }
+  if (typeof rawDelete === "function") {
+    bridge.delete = (key: string) => {
+      const result = rawDelete(key);
+      mirror.delete(key);
+      return result;
+    };
+  }
+}
 
 /**
  * 从全局 host 宿主桥安装宿主环境等价物（定时器）：

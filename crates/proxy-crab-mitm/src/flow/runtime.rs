@@ -239,6 +239,24 @@ impl FlowHost for GuardedHost {
     async fn cancelled(&self) -> Result<JsonValue, FlowError> {
         self.guard(self.inner.cancelled()).await
     }
+
+    // 同步工作流存储面：直接透传内层实现（同步小文件 IO，毫秒级返回，
+    // 不参与取消竞速——同步调用无法被打断，见 host.rs 同步面约定）。
+    fn storage_get(&self, key: &str) -> Result<JsonValue, FlowError> {
+        self.inner.storage_get(key)
+    }
+
+    fn storage_put(&self, key: &str, value: &JsonValue) -> Result<JsonValue, FlowError> {
+        self.inner.storage_put(key, value)
+    }
+
+    fn storage_delete(&self, key: &str) -> Result<JsonValue, FlowError> {
+        self.inner.storage_delete(key)
+    }
+
+    fn storage_keys(&self) -> Result<JsonValue, FlowError> {
+        self.inner.storage_keys()
+    }
 }
 
 /// 宿主桥的 userdata 槽位：宿主函数以泛型 fn item 注册（不能使用捕获状态的
@@ -311,6 +329,57 @@ async fn host_cancelled<'js>(ctx: Ctx<'js>) -> Result<Value<'js>, rquickjs::Erro
     host_result(&ctx, host.host.cancelled().await)
 }
 
+/* ------------------------------------------------------------------ *
+ * host.storage 同步工作流存储面：脚本沙箱为同步求值（new Function 体，
+ * 无 await），四个能力以同步函数注入——调用在 VM 执行线程内直接完成（本地
+ * 小文件 + 进程级写锁，毫秒级），不参与取消竞速（不可被打断，见 host.rs
+ * 同步面约定）。键 / 值均为显式 JS 参数，错误注入带 kind 的 JS Error。
+ * ------------------------------------------------------------------ */
+
+/// `host.storage.get(key)`：实时读取一个键，返回 `{found, value}`。
+fn host_storage_get<'js>(ctx: Ctx<'js>, key: String) -> Result<Value<'js>, rquickjs::Error> {
+    let host = host_slot(&ctx)?;
+    match host.host.storage_get(&key) {
+        Ok(payload) => json_out(&ctx, &payload),
+        Err(error) => Err(throw_flow(&ctx, error)),
+    }
+}
+
+/// `host.storage.put(key, value)`：写入并立即持久化，返回 `{updatedAt}`。
+fn host_storage_put<'js>(
+    ctx: Ctx<'js>,
+    key: String,
+    value: Value<'js>,
+) -> Result<Value<'js>, rquickjs::Error> {
+    let payload = match json_in(&ctx, value) {
+        Ok(payload) => payload,
+        Err(error) => return Err(throw_flow(&ctx, error)),
+    };
+    let host = host_slot(&ctx)?;
+    match host.host.storage_put(&key, &payload) {
+        Ok(payload) => json_out(&ctx, &payload),
+        Err(error) => Err(throw_flow(&ctx, error)),
+    }
+}
+
+/// `host.storage.delete(key)`：删除一个键，返回 `{deleted}`。
+fn host_storage_delete<'js>(ctx: Ctx<'js>, key: String) -> Result<Value<'js>, rquickjs::Error> {
+    let host = host_slot(&ctx)?;
+    match host.host.storage_delete(&key) {
+        Ok(payload) => json_out(&ctx, &payload),
+        Err(error) => Err(throw_flow(&ctx, error)),
+    }
+}
+
+/// `host.storage.keys()`：实时列出全部键名，返回 `{keys}`。
+fn host_storage_keys<'js>(ctx: Ctx<'js>) -> Result<Value<'js>, rquickjs::Error> {
+    let host = host_slot(&ctx)?;
+    match host.host.storage_keys() {
+        Ok(payload) => json_out(&ctx, &payload),
+        Err(error) => Err(throw_flow(&ctx, error)),
+    }
+}
+
 /// 取回宿主桥槽位（支持并发读）；未注册属内部错误，注入 JS 异常。
 fn host_slot<'a, 'js>(
     ctx: &'a Ctx<'js>,
@@ -318,7 +387,8 @@ fn host_slot<'a, 'js>(
     ctx.userdata::<HostSlot>().ok_or(rquickjs::Error::Unknown)
 }
 
-/// 在全局对象上注册 `host`：六个宿主函数，全部以 JSON 载荷进出；
+/// 在全局对象上注册 `host`：六个顶层宿主函数（异步）加嵌套的 `host.storage`
+/// 同步工作流存储面（get / put / delete / keys），全部以 JSON 进出；
 /// 宿主错误转成带 `kind`/`message` 属性的 JS Error 抛出，保证分类跨边界保留。
 async fn register_host_object(
     ctx: &AsyncContext,
@@ -339,6 +409,15 @@ async fn register_host_object(
             "cancelled",
             Function::new(ctx.clone(), AsyncFunc(host_cancelled))?,
         )?;
+        // 工作流存储面：嵌套在 `host.storage` 下（get / put / delete / keys），
+        // 以同步函数注入（脚本沙箱同步求值，见 host.rs 同步面约定）；键 / 值
+        // 为显式 JS 参数，错误分类与顶层能力同一约定。
+        let storage_object = Object::new(ctx.clone())?;
+        storage_object.set("get", Function::new(ctx.clone(), host_storage_get)?)?;
+        storage_object.set("put", Function::new(ctx.clone(), host_storage_put)?)?;
+        storage_object.set("delete", Function::new(ctx.clone(), host_storage_delete)?)?;
+        storage_object.set("keys", Function::new(ctx.clone(), host_storage_keys)?)?;
+        host_object.set("storage", storage_object)?;
         ctx.globals().set("host", host_object)?;
         Ok(())
     })

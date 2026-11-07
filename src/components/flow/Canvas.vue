@@ -25,6 +25,7 @@ import {
 import { WORKFLOW_NODE_META, WORKFLOW_NODE_TYPE_ORDER, getWorkflowNodeMeta } from "./node-meta";
 import NodeShell, { NODE_RENAME_KEY } from "./NodeShell.vue";
 import NodePanel, { NODE_TYPE_MIME } from "./NodePanel.vue";
+import FlowEdge from "./FlowEdge.vue";
 import { snapPosition, type AlignmentGuide } from "./alignment";
 import { autoLayout } from "./auto-layout";
 import {
@@ -51,8 +52,9 @@ import { notifyEditLocked } from "./canvas-edit-lock";
  * 真 / 假双出口、同向同出口去重、禁止自环）、拖线到空白弹添加菜单并自动
  * 连线、左键框选 + Ctrl/Meta 多选、Delete / Backspace 删除选中（节点连同
  * 相邻连线，微任务合帧避免半删中间态）、双击节点名行内重命名、复制 / 粘贴
- * （Ctrl+C / V 与工具栏）、自动布局、单节点拖动对齐吸附辅助线、小地图、
- * 滚轮缩放与视口持久化（按流程 id 存 localStorage）。
+ * （Ctrl+C / V 与工具栏）、自动布局（蛇形折行，见 auto-layout.ts）、单节点
+ * 拖动对齐吸附辅助线、按住空格左键拖拽平移画布（节点拖动临时让位）、
+ * 右 / 中键拖拽平移、小地图、滚轮缩放与视口持久化（按流程 id 存 localStorage）。
  *
  * 运行期编辑锁定（locked，来源见窗口的 flow-run store 接缝）：拦截结构性
  * 编辑（删除 / 连线 / 拖入 / 粘贴 / 布局 / 重命名 / 撤销重做）并弹单例提示；
@@ -111,6 +113,12 @@ const FLOW_NODE_TYPES: NodeTypesObject = {
   transform: markRaw(NodeShell),
   stickyNote: markRaw(NodeShell),
 };
+
+/** 缺省平移按键：中 / 右键拖拽（模块级常量保持引用稳定，见空格平移态）。 */
+const PAN_ON_DRAG_BUTTONS = [1, 2];
+
+/** 连线类型注册：floating 浮动边就近接线（toFlowEdges 对普通连线挂此类型）。 */
+const FLOW_EDGE_TYPES = { floating: markRaw(FlowEdge) };
 
 const root = ref<HTMLElement | null>(null);
 
@@ -503,6 +511,34 @@ function isEditableTarget(target: EventTarget | null): boolean {
   return target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT";
 }
 
+/* --------------------------- 按住空格平移画布 --------------------------- */
+
+/**
+ * 按住空格进入画布平移模式：pan-on-drag 临时切为全键（左键拖拽平移视口，
+ * 在节点上按下也平移而非拖节点），节点拖动同步临时禁用；松键 / 窗口失焦
+ * 兜底复位，避免 keyup 丢失后卡在平移模式。光标提示见 flow.css 的
+ * .is-space-pan。与 Vue Flow 内置 panActivationKeyCode 的差异：内置态下
+ * pan-on-drag 数组仍按鼠标键过滤（左键被框选拦截），故此处自行跟踪按键。
+ */
+const spaceHeld = ref(false);
+
+function onSpaceKeydown(event: KeyboardEvent): void {
+  if (event.key !== " " || isEditableTarget(event.target)) return;
+  // 空格让位给画布平移：阻止页面滚动 / 激活聚焦按钮
+  event.preventDefault();
+  spaceHeld.value = true;
+}
+
+function onSpaceKeyup(event: KeyboardEvent): void {
+  // keyup 无视焦点位置（按住空格时焦点可能移入输入框），一律复位
+  if (event.key !== " ") return;
+  spaceHeld.value = false;
+}
+
+function onWindowBlur(): void {
+  spaceHeld.value = false;
+}
+
 function onKeydown(event: KeyboardEvent): void {
   if (!(event.ctrlKey || event.metaKey) || event.altKey || isEditableTarget(event.target)) return;
   const key = event.key.toLowerCase();
@@ -542,8 +578,18 @@ function requestRedo(): void {
   emit("redo");
 }
 
-onMounted(() => window.addEventListener("keydown", onKeydown));
-onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
+onMounted(() => {
+  window.addEventListener("keydown", onKeydown);
+  window.addEventListener("keydown", onSpaceKeydown);
+  window.addEventListener("keyup", onSpaceKeyup);
+  window.addEventListener("blur", onWindowBlur);
+});
+onBeforeUnmount(() => {
+  window.removeEventListener("keydown", onKeydown);
+  window.removeEventListener("keydown", onSpaceKeydown);
+  window.removeEventListener("keyup", onSpaceKeyup);
+  window.removeEventListener("blur", onWindowBlur);
+});
 
 /* ----------------------- 窗口悬浮工具条的画布动作出口 ----------------------- */
 
@@ -577,16 +623,24 @@ defineExpose({
 </script>
 
 <template>
-  <div ref="root" class="flow-canvas-root" @drop="onDrop" @dragover="onDragOver">
+  <div
+    ref="root"
+    class="flow-canvas-root"
+    :class="{ 'is-space-pan': spaceHeld }"
+    @drop="onDrop"
+    @dragover="onDragOver"
+  >
     <VueFlow
       class="flow-canvas"
       :nodes="flowNodes"
       :edges="flowEdges"
       :node-types="FLOW_NODE_TYPES"
+      :edge-types="FLOW_EDGE_TYPES"
       :auto-connect="false"
       :delete-key-code="['Delete', 'Backspace']"
       :selection-key-code="true"
-      :pan-on-drag="[1, 2]"
+      :pan-on-drag="spaceHeld ? true : PAN_ON_DRAG_BUTTONS"
+      :nodes-draggable="!spaceHeld"
       :multi-selection-key-code="['Control', 'Meta']"
       :zoom-on-double-click="false"
       :min-zoom="0.2"

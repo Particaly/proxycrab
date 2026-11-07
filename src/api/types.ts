@@ -944,6 +944,11 @@ export interface FlowRunRecord {
   status: FlowRunStatus;
   /** 回放目标 Session；早期记录可能缺省。 */
   sessionId?: number;
+  /**
+   * 本次运行的入口 start 节点 id（多入口工作流的入口选择；单 start 流程解析
+   * 到唯一 start）。多入口特性之前的旧记录缺省。
+   */
+  startNodeId?: string;
   startedAt: number;
   finishedAt?: number;
   error?: string;
@@ -958,6 +963,11 @@ export interface FlowRunRecord {
 export interface FlowRunTriggerRequest {
   workflowId: string;
   sessionId?: number;
+  /**
+   * 多入口工作流的入口 start 节点 id（必须指向 start 节点）。流程有多个
+   * start 时必填——缺省触发报 422 `workflow_graph_invalid` 并列出全部入口。
+   */
+  startNodeId?: string;
 }
 
 /** 循环节点单轮迭代明细（引擎 LoopIterationRecord 同形）。 */

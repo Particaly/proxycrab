@@ -159,6 +159,9 @@ pub static API_ACTIONS: &[ApiAction] = &[
     action!("POST", "/api/session-shares", Approval),
     action!("DELETE", "/api/session-shares/{id}", Approval),
     action!("POST", "/api/logs/ids", Allow),
+    // Capture-log search reuses the ids scan path with simple predicates and
+    // returns compact summaries: pure read (`allow`), same as the ids query.
+    action!("POST", "/api/logs/search", Allow),
     action!("POST", "/api/logs/views", Allow),
     action!("GET", "/api/logs/{id}/body", Allow),
     action!("GET", "/api/logs/{id}/websocket/messages", Allow),
@@ -249,22 +252,43 @@ pub static API_ACTIONS: &[ApiAction] = &[
     action!("POST", "/api/workflows", Approval),
     action!("GET", "/api/workflows/{id}", Allow),
     action!("PUT", "/api/workflows/{id}", Approval),
+    // Incremental graph patch mutates a stored definition like PUT, but only
+    // the listed operations instead of whole-graph replacement: same
+    // `approval` default.
+    action!("PATCH", "/api/workflows/{id}", Approval),
     action!("DELETE", "/api/workflows/{id}", Approval),
     // Graph validation only reads the stored definition and runs the structural
     // validator (no mutation), so despite the POST verb it is registered as a
     // read (`allow`) — the POST is the "execute validation" semantics.
     action!("POST", "/api/workflows/{id}/validate", Allow),
+    // Deep graph validation (editor diagnostics) reads the request library and
+    // env family but writes nothing: registered as a read like the stored-graph
+    // validate above, despite the POST verb.
+    action!("POST", "/api/flow/validate", Allow),
     // Pre/post script dry-run executes user script code in the flow engine
     // payload (plan Task 18): arbitrary code execution, so it defaults to
     // `approval`; the request body is excluded from the audit preview so the
     // script content never reaches logs or the approval window.
     action!("POST", "/api/flow/script/dry-run", Approval),
+    // httpReplay node request-surface preview (template render dry-run):
+    // renders the would-be-sent request in a throwaway VM from the run-chain
+    // inputs — no user script execution (preProcess is NOT run), zero outbound
+    // traffic, nothing persisted, and secret values are masked server-side;
+    // a read despite the POST verb, like the validate routes above.
+    action!("POST", "/api/flow/render-preview", Allow),
     // Workflow import/export (plan Task 23). Export is a pure read of stored
     // definitions (`allow`); import creates new definitions and envelope
     // extension entries (never overwriting existing ones), so it defaults to
     // `approval` like the other definition writes.
     action!("GET", "/api/workflows/export", Allow),
     action!("POST", "/api/workflows/import", Approval),
+    // Workflow storage (workflow-scoped persistent key/value storage). Reads
+    // are allow; writes persist data shared with live runs, so they default to
+    // `approval` like the other definition-level writes.
+    action!("GET", "/api/workflows/{id}/storage", Allow),
+    action!("PUT", "/api/workflows/{id}/storage/{key}", Approval),
+    action!("DELETE", "/api/workflows/{id}/storage/{key}", Approval),
+    action!("DELETE", "/api/workflows/{id}/storage", Approval),
     // Workflow runs (plan Task 19): reads are allow; triggering and cancelling
     // runs execute workflow replays against real traffic, so both default to
     // `approval` (execution-class actions, tightened by default).

@@ -71,11 +71,12 @@ const share = computed(() => sessionsStore.shares[props.session.id]);
 .session-item {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 7px 10px;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
   border-radius: var(--radius-md);
   cursor: pointer;
-  margin-bottom: 2px;
+  margin-bottom: var(--space-05);
+  transition: background var(--dur-fast) ease;
 }
 .session-item-body {
   flex: 1;
@@ -148,9 +149,10 @@ const share = computed(() => sessionsStore.shares[props.session.id]);
   flex: none;
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-05);
   opacity: 0;
   pointer-events: none;
+  transition: opacity var(--dur-fast) ease;
 }
 .session-item:hover .session-item-actions,
 .session-item:focus-within .session-item-actions {

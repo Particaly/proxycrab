@@ -36,6 +36,14 @@
   cursor: grabbing;
 }
 
+/* 按住空格平移画布：整个画布区（含节点 / 连线上方）光标提示 grab，
+ * 拖动中的 grabbing 由 vue-flow 内置 .dragging 规则接管。 */
+.flow-canvas-root.is-space-pan .vue-flow__pane,
+.flow-canvas-root.is-space-pan .vue-flow__node,
+.flow-canvas-root.is-space-pan .vue-flow__edge {
+  cursor: grab;
+}
+
 /* ---------- 连线 / 连线路径 ---------- */
 
 .flow-canvas .vue-flow__edge-path,

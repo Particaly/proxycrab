@@ -619,17 +619,17 @@ onBeforeUnmount(() => {
 .settings-sidebar {
   width: 154px;
   flex: none;
-  padding: 10px 8px;
+  padding: var(--space-3) var(--space-2);
   border-right: 1px solid var(--border);
   background: var(--bg-panel);
 }
 .settings-sidebar button {
   width: 100%;
-  height: 34px;
+  height: 32px;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 10px;
+  gap: var(--space-2);
+  padding: 0 var(--space-3);
   border: 0;
   border-radius: var(--radius-md);
   background: transparent;
@@ -637,6 +637,9 @@ onBeforeUnmount(() => {
   font: inherit;
   font-size: 12px;
   cursor: pointer;
+  transition:
+    background var(--dur-fast) ease,
+    color var(--dur-fast) ease;
 }
 .settings-sidebar button:hover {
   background: var(--bg-hover);
@@ -652,14 +655,14 @@ onBeforeUnmount(() => {
   min-width: 0;
   min-height: 0;
   overflow-y: auto;
-  padding: 0 22px 24px;
+  padding: 0 var(--space-6) var(--space-6);
 }
 .page-header {
   min-height: 76px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: var(--space-4);
   border-bottom: 1px solid var(--border);
 }
 .page-header h2 {
@@ -667,13 +670,13 @@ onBeforeUnmount(() => {
   font-size: 16px;
 }
 .page-header p {
-  margin: 2px 0 0;
+  margin: var(--space-05) 0 0;
   color: var(--text-secondary);
   font-size: 11px;
 }
 .settings-section {
   max-width: 680px;
-  padding-top: 20px;
+  padding-top: var(--space-5);
 }
 .settings-section h3,
 .permission-heading h3 {
@@ -683,8 +686,8 @@ onBeforeUnmount(() => {
 .settings-field {
   display: flex;
   flex-direction: column;
-  gap: 5px;
-  margin-top: 14px;
+  gap: var(--space-1);
+  margin-top: var(--space-4);
   color: var(--text-secondary);
   font-size: 11px;
 }
@@ -709,7 +712,7 @@ onBeforeUnmount(() => {
 .service-state {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: var(--space-2);
   color: var(--success);
   font-size: 11px;
 }
@@ -730,9 +733,9 @@ onBeforeUnmount(() => {
 .service-error {
   display: flex;
   align-items: flex-start;
-  gap: 10px;
-  margin-top: 18px;
-  padding: 12px;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+  padding: var(--space-3);
   border-left: 3px solid var(--danger);
   background: color-mix(in srgb, var(--danger) 8%, transparent);
   color: var(--danger);
@@ -756,16 +759,16 @@ onBeforeUnmount(() => {
   color: var(--text-secondary);
 }
 .permission-error {
-  margin-top: 10px;
+  margin-top: var(--space-3);
 }
 .identity-section {
-  padding: 16px 0;
+  padding: var(--space-4) 0;
   border-bottom: 1px solid var(--border);
 }
 .identity-picker {
   display: flex;
   align-items: stretch;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .identity-select {
   width: min(420px, calc(100% - 82px));
@@ -774,8 +777,8 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 4px 14px;
-  margin-top: 9px;
+  gap: var(--space-1) var(--space-4);
+  margin-top: var(--space-2);
   color: var(--text-secondary);
   font-size: 10px;
 }
@@ -783,12 +786,12 @@ onBeforeUnmount(() => {
   margin-left: auto;
 }
 .identity-hint {
-  margin: 7px 0 0;
+  margin: var(--space-2) 0 0;
   color: var(--text-faint);
   font-size: 10px;
 }
 .permission-section {
-  padding-top: 14px;
+  padding-top: var(--space-4);
 }
 .permission-heading {
   position: sticky;
@@ -797,10 +800,10 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-3);
   min-height: 42px;
-  margin: -14px 0 0;
-  padding: 10px 0 7px;
+  margin: calc(-1 * var(--space-4)) 0 0;
+  padding: var(--space-2) 0;
   background: var(--bg-app);
 }
 .permission-heading > div {
@@ -821,7 +824,7 @@ onBeforeUnmount(() => {
 .dimension-btn {
   min-width: 44px;
   height: 24px;
-  padding: 0 8px;
+  padding: 0 var(--space-2);
   border: 0;
   border-radius: calc(var(--radius-md) - 2px);
   background: transparent;
@@ -829,6 +832,9 @@ onBeforeUnmount(() => {
   font: inherit;
   font-size: 11px;
   cursor: pointer;
+  transition:
+    background var(--dur-fast) ease,
+    color var(--dur-fast) ease;
 }
 .dimension-btn:hover {
   color: var(--text);
@@ -843,7 +849,7 @@ onBeforeUnmount(() => {
   font-size: 10px;
 }
 .permission-loading {
-  padding: 28px;
+  padding: var(--space-6);
   color: var(--text-faint);
   text-align: center;
 }

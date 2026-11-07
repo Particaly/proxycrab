@@ -54,12 +54,18 @@ const props = defineProps<{
   activeEnvId: string | null;
   /** 合并后的实时问题清单（徽标与下拉面板共用）。 */
   issues: ReadonlyArray<NodeIssue>;
+  /**
+   * 流程内的全部 start 节点（多入口运行按钮的数据源）：≤1 个时运行按钮
+   * 保持单击直发；多个时「运行」变下拉，条目即各入口（label 缺省「开始」）。
+   */
+  startEntries: ReadonlyArray<{ id: string; label: string }>;
 }>();
 
 const emit = defineEmits<{
   save: [];
   validate: [];
-  run: [];
+  /** 触发运行；多入口流程携带所选入口的 start 节点 id。 */
+  run: [startNodeId?: string];
   cancel: [];
   undo: [];
   redo: [];
@@ -78,6 +84,15 @@ const emit = defineEmits<{
 
 /** 校验问题下拉面板开关（点击校验按钮开合；定位条目 / 关闭按钮收起）。 */
 const issuesOpen = ref(false);
+
+/** 多入口运行下拉开关（点击「运行 ▾」开合；选中入口 / 收起后关闭）。 */
+const runEntriesOpen = ref(false);
+
+/** 选中一个入口触发运行（多入口下拉条目），并收起面板。 */
+function onRunEntry(startNodeId: string): void {
+  runEntriesOpen.value = false;
+  emit("run", startNodeId);
+}
 
 /** 问题计数按最高级别配色：error 红 → warning 琥珀 → 仅 info 蓝（语义披露）。 */
 const issueTone = computed<"error" | "warning" | "info" | null>(() => {
@@ -258,6 +273,35 @@ function onLocate(issue: NodeIssue): void {
         >
           取消运行
         </button>
+        <!-- 多入口流程：「运行」变入口选择下拉（每个 start 一个条目） -->
+        <span v-else-if="startEntries.length > 1" class="flow-topbar-run-host">
+          <button
+            class="btn primary"
+            :disabled="triggering"
+            :aria-expanded="runEntriesOpen"
+            title="选择本次运行的开始入口（每个开始节点一条运行路径）"
+            @click="runEntriesOpen = !runEntriesOpen"
+          >
+            运行 ▾
+          </button>
+          <div
+            v-if="runEntriesOpen"
+            class="flow-topbar-runs"
+            data-testid="canvas-run-entries"
+          >
+            <button
+              v-for="entry in startEntries"
+              :key="entry.id"
+              type="button"
+              class="flow-topbar-run-entry"
+              :title="`从「${entry.label}」（${entry.id}）开始运行`"
+              @click="onRunEntry(entry.id)"
+            >
+              <span class="flow-topbar-run-entry-label">{{ entry.label }}</span>
+              <span class="flow-topbar-run-entry-id">{{ entry.id }}</span>
+            </button>
+          </div>
+        </span>
         <button
           v-else
           class="btn primary"
@@ -457,5 +501,54 @@ function onLocate(issue: NodeIssue): void {
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
   line-height: 1.4;
+}
+
+/* 多入口运行下拉：宿主相对定位，面板浮层与问题面板同款视觉 */
+.flow-topbar-run-host {
+  position: relative;
+  display: inline-flex;
+}
+.flow-topbar-runs {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 20;
+  min-width: 220px;
+  max-width: min(320px, 60vw);
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-popup);
+}
+.flow-topbar-run-entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 12px;
+  border: none;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.flow-topbar-run-entry:hover {
+  background: var(--bg-hover);
+}
+.flow-topbar-run-entry-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.flow-topbar-run-entry-id {
+  flex: none;
+  color: var(--text-faint);
+  font-size: 11px;
 }
 </style>

@@ -1,9 +1,11 @@
+import type { MarkerType } from "@vue-flow/core";
 import type { WorkflowEdge, WorkflowNode, WorkflowNodeType } from "../../api/types";
 import type { NodeIssue } from "./node-issue-badge";
 
 /**
  * 工作流图模型 ⇄ Vue Flow 视图模型的纯函数转换，以及脏比较口径。
- * 模块只依赖领域类型（Vue Flow 的类型以结构兼容的最小形状表达），
+ * 模块只依赖领域类型（Vue Flow 的类型以结构兼容的最小形状表达，
+ * 仅 markerEnd 用其 MarkerType 做类型标注，无任何运行时依赖），
  * 保持可在 node 环境下直接单测。
  */
 
@@ -87,7 +89,7 @@ export function createWorkflowEdge(
   };
 }
 
-/** 新建流程的初始图：单个开始节点（结构校验要求恰好一个 start）。 */
+/** 新建流程的初始图：播种单个开始节点（多 start 合法，新流程从单入口起步）。 */
 export function starterGraph(): { nodes: WorkflowNode[]; edges: WorkflowEdge[] } {
   return {
     nodes: [
@@ -127,15 +129,40 @@ export function toFlowNodes(
   }));
 }
 
-/** 把模型连线投影为 Vue Flow 连线（条件分支的 sourceHandle 直接透传并带真 / 假标签）。 */
-export function toFlowEdges(
-  edges: WorkflowEdge[],
-): Array<{ id: string; source: string; target: string; sourceHandle?: string; label?: string }> {
+/**
+ * 连线箭头缺省定义：ArrowClosed 闭合箭头落在目标端，方向一目了然。
+ * color 用 context-stroke 继承引用边自身的描边色（常态边 / 运行态着色 /
+ * 选中高亮各自匹配），markerUnits 随描边宽度缩放。值为运行时常量，
+ * 各连线共享引用，无需每边新建。
+ */
+export const EDGE_ARROW_MARKER = {
+  type: "arrowclosed" as MarkerType,
+  width: 16,
+  height: 16,
+  color: "context-stroke",
+};
+
+/**
+ * 把模型连线投影为 Vue Flow 连线：条件分支的 sourceHandle 直接透传并带
+ * 真 / 假标签（保留内置默认边，锚在真 / 假手柄上）；其余普通连线挂
+ * floating 类型走浮动边（FlowEdge.vue 按节点相对位置就近接线，起终点
+ * 不再绕行），全部连线带指向箭头。
+ */
+export function toFlowEdges(edges: WorkflowEdge[]): Array<{
+  id: string;
+  source: string;
+  target: string;
+  markerEnd: typeof EDGE_ARROW_MARKER;
+  type?: string;
+  sourceHandle?: string;
+  label?: string;
+}> {
   return edges.map((edge) => ({
     id: edge.id,
     source: edge.source,
     target: edge.target,
-    ...(edge.sourceHandle ? { sourceHandle: edge.sourceHandle } : {}),
+    markerEnd: EDGE_ARROW_MARKER,
+    ...(edge.sourceHandle ? { sourceHandle: edge.sourceHandle } : { type: "floating" }),
     ...(edge.sourceHandle === "true" || edge.sourceHandle === "false"
       ? { label: edge.sourceHandle === "true" ? "真" : "假" }
       : {}),

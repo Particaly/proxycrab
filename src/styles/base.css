@@ -10,10 +10,22 @@
   --radius-md: 8px;
   --radius-lg: 12px;
 
+  /* 间距 4px 栅格：组件内边距/间距一律取该刻度，禁止 3/5/6/7/11px 等离栅值。 */
+  --space-05: 2px;
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
   --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+
+  /* 动效刻度：fast 用于 hover/按压等即时反馈，base 用于弹层进出，slow 用于区块切换。 */
+  --dur-fast: 120ms;
+  --dur-base: 180ms;
+  --dur-slow: 260ms;
+  --ease-out: cubic-bezier(0.2, 0.7, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.6, 0, 0.3, 1);
+  --ease-spring: cubic-bezier(0.34, 1.35, 0.5, 1);
 
   --toolbar-height: 40px;
   --statusbar-height: 28px;
@@ -41,8 +53,12 @@
   --warning: #f2994a;
   --danger: #e34d59;
   --danger-hover: #c93a46;
-  --shadow-window: 0 8px 32px rgba(0, 0, 0, 0.18), 0 2px 8px rgba(0, 0, 0, 0.1);
-  --shadow-popup: 0 4px 16px rgba(0, 0, 0, 0.12);
+  /* 阴影分层：1=卡片微浮，2=弹层，3=窗口/模态。 */
+  --shadow-1: 0 1px 2px rgba(16, 24, 40, 0.06);
+  --shadow-2: 0 1px 2px rgba(16, 24, 40, 0.05), 0 6px 16px rgba(16, 24, 40, 0.12);
+  --shadow-3: 0 2px 8px rgba(16, 24, 40, 0.08), 0 16px 48px rgba(16, 24, 40, 0.18);
+  --shadow-window: var(--shadow-3);
+  --shadow-popup: var(--shadow-2);
   --stripe: rgba(0, 0, 0, 0.022);
 }
 
@@ -67,9 +83,23 @@
   --warning: #e8a552;
   --danger: #e5636f;
   --danger-hover: #ef7a85;
-  --shadow-window: 0 8px 32px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.35);
-  --shadow-popup: 0 4px 16px rgba(0, 0, 0, 0.45);
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-2: 0 2px 4px rgba(0, 0, 0, 0.35), 0 8px 20px rgba(0, 0, 0, 0.4);
+  --shadow-3: 0 4px 12px rgba(0, 0, 0, 0.4), 0 20px 56px rgba(0, 0, 0, 0.55);
+  --shadow-window: var(--shadow-3);
+  --shadow-popup: var(--shadow-2);
   --stripe: rgba(255, 255, 255, 0.025);
+}
+
+/* 层级规范：所有浮层从该刻度取值（ FloatingWindow 的多窗叠放以 --z-window 为基底）。 */
+:root {
+  --z-toast: 100000;
+  --z-dialog: 100001;
+  --z-menu: 100002;
+  --z-popover: 100003;
+  --z-tooltip: 100004;
+  --z-select: 100006;
+  --z-dialog-top: 100007;
 }
 
 * {
@@ -116,6 +146,19 @@ body {
 
 /* ---------- shared controls ---------- */
 
+/* 键盘焦点统一外圈；鼠标点击不触发（:focus-visible），输入类控件用边框+光圈表达。 */
+:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  outline-offset: 1px;
+}
+.input:focus-visible,
+.select:focus-visible,
+textarea:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
 .btn {
   display: inline-flex;
   align-items: center;
@@ -128,13 +171,20 @@ body {
   font: inherit;
   cursor: pointer;
   white-space: nowrap;
+  box-shadow: var(--shadow-1);
   transition:
-    background 0.12s,
-    border-color 0.12s;
+    background var(--dur-fast) ease,
+    border-color var(--dur-fast) ease,
+    box-shadow var(--dur-fast) ease,
+    transform var(--dur-fast) var(--ease-out);
 }
 .btn:hover:not(:disabled) {
   background: var(--bg-hover);
   border-color: var(--border-strong);
+}
+.btn:active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow: none;
 }
 .btn:disabled {
   opacity: 0.45;
@@ -144,6 +194,9 @@ body {
   background: var(--accent);
   border-color: var(--accent);
   color: var(--accent-text);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    0 1px 2px color-mix(in srgb, var(--accent) 35%, transparent);
 }
 .btn.primary:hover:not(:disabled) {
   background: var(--accent-hover);
@@ -163,10 +216,14 @@ body {
   background: transparent;
   border-radius: var(--radius-sm);
   color: var(--text-secondary);
+  box-shadow: none;
 }
 .btn.icon:hover:not(:disabled) {
   background: var(--bg-hover);
   color: var(--text);
+}
+.btn.icon:active:not(:disabled) {
+  transform: none;
 }
 
 .input {
@@ -177,10 +234,13 @@ body {
   color: var(--text);
   font: inherit;
   outline: none;
-  transition: border-color 0.12s;
+  transition:
+    border-color var(--dur-fast) ease,
+    box-shadow var(--dur-fast) ease;
 }
 .input:focus {
   border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 .input::placeholder {
   color: var(--text-faint);
@@ -267,7 +327,9 @@ body {
   border: none;
   cursor: pointer;
   padding: 0;
-  transition: background 0.15s;
+  transition:
+    background var(--dur-base) ease,
+    box-shadow var(--dur-fast) ease;
   flex: none;
 }
 .switch::after {
@@ -279,7 +341,8 @@ body {
   height: 14px;
   border-radius: 50%;
   background: #fff;
-  transition: transform 0.15s;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  transition: transform var(--dur-base) var(--ease-spring);
 }
 .switch.on {
   background: var(--accent);

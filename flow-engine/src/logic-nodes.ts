@@ -230,12 +230,17 @@ export function isConditionBranchOutput(output: unknown): output is ConditionOut
  * 条件表达式求值上下文：input 为聚合入参，vars 为当前运行期变量表。
  * M14-T2：env 为本次运行派发时定格的环境快照（可选；缺省按空表注入——表达式
  * 内 env 恒可用，缺键读取为 undefined）。
+ * storage：工作流存储的只读快照（可选；缺省按空表注入——表达式内 storage 恒
+ * 可用，缺键读取为 undefined）。表达式对 storage 只读，写入须经脚本的
+ * host.storage（同步求值表达式内不可 await）。
  */
 export interface ConditionEvalContext {
   input: unknown;
   vars: Record<string, unknown>;
   /** 环境快照（M14-T2，可选；缺省按空表处理） */
   env?: Record<string, unknown>;
+  /** 工作流存储只读快照（可选；缺省按空表处理） */
+  storage?: Record<string, unknown>;
 }
 
 /**
@@ -253,12 +258,14 @@ const CONDITION_DEADLINE_EXCEEDED: unknown = Object.freeze({ __reqflowConditionD
 /**
  * 执行条件表达式（软超时模型与 script.ts 一致，详见其文件头【限制声明】）：
  * `"use strict"` 前缀 + new Function 编译（形参 __deadline / __checkDeadline /
- * input / vars / env），入参先净化，返回值净化后按 JS truthy 判定。
+ * input / vars / env / storage），入参先净化，返回值净化后按 JS truthy 判定。
  *
  * M14-T2 / T3：context.env 注入 env 形参（可写代理，与前置 / 后置脚本同语义）；
  * 表达式对 env 的赋值收集为 envWrites 随结果回传（成功与失败结果均携带——已
  * 提交副作用不回滚），由运行装配方（createConditionRunner 的 onEnvWrite 依赖）
  * 应用。env 缺省按空表注入（表达式内 env 恒可用）。
+ * storage 注入只读快照形参（缺省空表）：表达式对存储只读，写入须经脚本的
+ * host.storage（同步求值表达式内不可 await）。
  *
  * @param source 条件脚本文本（函数体，用 return 返回结果；空串返回 undefined → false）
  * @param context 求值上下文（input / vars 均先经 sanitizeJson 净化）
@@ -296,6 +303,17 @@ export function runConditionExpression(
       },
     };
   }
+  // storage 只读快照净化（缺省空表——表达式内 storage 恒可用）
+  const safeStorage = sanitizeJson(context.storage ?? {});
+  if (!safeStorage.ok) {
+    return {
+      ok: false,
+      error: {
+        kind: "runtime",
+        message: `条件表达式入参（storage）不是可安全传递的 JSON 数据：${safeStorage.reason}`,
+      },
+    };
+  }
 
   let factory: (
     deadline: number,
@@ -303,6 +321,7 @@ export function runConditionExpression(
     input: unknown,
     vars: unknown,
     env: unknown,
+    storage: unknown,
   ) => unknown;
   try {
     factory = new Function(
@@ -311,6 +330,7 @@ export function runConditionExpression(
       "input",
       "vars",
       SCRIPT_ENV_PARAM_NAME,
+      "storage",
       `"use strict";\n${source}`,
     ) as (
       deadline: number,
@@ -318,6 +338,7 @@ export function runConditionExpression(
       input: unknown,
       vars: unknown,
       env: unknown,
+      storage: unknown,
     ) => unknown;
   } catch (error) {
     return {
@@ -333,7 +354,14 @@ export function runConditionExpression(
   const startedAt = Date.now();
   let value: unknown;
   try {
-    value = factory(deadline, checkDeadline, safeInput.value, safeVars.value, envParam.value);
+    value = factory(
+      deadline,
+      checkDeadline,
+      safeInput.value,
+      safeVars.value,
+      envParam.value,
+      safeStorage.value,
+    );
   } catch (error) {
     // 写回在表达式实际执行后即收集（失败结果同样携带——已提交副作用不回滚）
     const envWrites = envParam.takeWrites();
@@ -432,9 +460,15 @@ export function createConditionRunner(deps?: {
     const source = typeof node.config.expression === "string" ? node.config.expression : "";
     const vars = runCtx.nodeCtx.templateContext.var ?? {};
     const env = runCtx.nodeCtx.templateContext.env;
+    const storage = runCtx.nodeCtx.templateContext.storage;
     const result = await runCondition.runCondition(
       source,
-      { input, vars, ...(env !== undefined ? { env } : {}) },
+      {
+        input,
+        vars,
+        ...(env !== undefined ? { env } : {}),
+        ...(storage !== undefined ? { storage } : {}),
+      },
       deps?.timeoutMs,
     );
     // 写回先于失败抛出应用：表达式失败的已提交写回同样生效（不回滚）
@@ -828,6 +862,13 @@ export interface LoopRunnerDeps {
    * 渲染为空、脚本 env 为空表——与 M10-T4 既有行为一致）。
    */
   getEnv?: () => Record<string, unknown>;
+  /**
+   * 工作流存储快照供给（可选）：注入循环体子运行的 ExecutorOptions.storage——
+   * 供给函数形态（每节点取当前镜像值），主链路脚本经 host.storage 的读写对
+   * 循环体内后续节点 / 迭代立即可见。缺省不注入（循环体模板 `{{ storage.* }}`
+   * 按缺省约定告警渲染为空——与 env 未注入时行为一致）。
+   */
+  getStorage?: () => Record<string, unknown>;
   /** 转发循环体子运行的节点开始事件（宿主落库 / 广播；虚拟入口不转发） */
   forwardNodeStart?: (node: WorkflowNode, input: unknown) => void;
   /** 转发循环体子运行的节点结束事件（宿主落库 / 广播；虚拟入口不转发） */
@@ -1114,6 +1155,8 @@ export function createLoopRunner(deps: LoopRunnerDeps): NodeRunner {
             : {}),
           // 环境快照供给（M14-T2）：循环体与主链路同源（供给函数形态，写回可见）
           ...(deps.getEnv ? { env: deps.getEnv } : {}),
+          // 工作流存储镜像供给：循环体与主链路同源（供给函数形态，读写可见）
+          ...(deps.getStorage ? { storage: deps.getStorage } : {}),
           selectDownstream: createWorkflowDownstreamSelector(subWorkflow.nodes, subWorkflow.edges),
           ...(deps.forwardNodeStart
             ? {

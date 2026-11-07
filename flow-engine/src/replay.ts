@@ -58,10 +58,11 @@
  * `@/engine/replay` 深路径引入。
  */
 
-import type { HarEntry, HarPostData } from "./types";
+import type { HarEntry, HarPostData, ManualRequest, WorkflowNode } from "./types";
 import { renderTemplate, renderValueDeep } from "./template";
 import type { RenderContext } from "./template";
-import { decodeBase64 } from "./base64";
+import { decodeBase64, encodeBase64 } from "./base64";
+import { resolveCookieDecision, resolveHeaderFidelityPlan } from "./header-fidelity";
 
 /* ------------------------------------------------------------------ *
  * 类型
@@ -266,6 +267,60 @@ function applyReplayOverride(target: MutableRequest, source: ReplayOverride | un
 }
 
 /* ------------------------------------------------------------------ *
+ * 请求基线解析（自 run-workflow.ts 下沉：runner 与预览共用同一入口）
+ * ------------------------------------------------------------------ */
+
+/**
+ * 把无引用节点的手动请求基线合成为 HAR 条目（buildReplayRequest 的入参形状）。
+ * method / url / headers / body 逐字段映射；缺省 HTTP/1.1、空响应摘要。
+ */
+export function manualRequestToHarEntry(manual: ManualRequest): HarEntry {
+  return {
+    startedDateTime: new Date(0).toISOString(),
+    time: 0,
+    request: {
+      method: manual.method,
+      url: manual.url,
+      httpVersion: "HTTP/1.1",
+      headers: Object.entries(manual.headers ?? {}).map(([name, value]) => ({ name, value })),
+      queryString: [],
+      headersSize: -1,
+      bodySize: -1,
+      ...(manual.body !== undefined ? { postData: { mimeType: "", text: manual.body } } : {}),
+    },
+    response: {
+      status: 0,
+      statusText: "",
+      httpVersion: "HTTP/1.1",
+      headers: [],
+      content: { size: 0, mimeType: "" },
+      redirectURL: "",
+      headersSize: -1,
+      bodySize: -1,
+    },
+    timings: { send: 0, wait: 0, receive: 0 },
+  };
+}
+
+/**
+ * 解析 httpReplay 节点的重放基线（runner 与 buildPreviewRequest 共用）：
+ * harEntries[config.requestId]（请求库投影）优先，无引用 / 未命中时回退
+ * config.manualRequest 合成基线；两者皆缺 → undefined（节点 failed / 预览报缺基线）。
+ */
+export function resolveHarEntryForNode(
+  node: WorkflowNode,
+  harEntries: Record<string, HarEntry> | undefined,
+): HarEntry | undefined {
+  const requestId = node.config.requestId;
+  if (typeof requestId === "string" && requestId !== "") {
+    const entry = harEntries?.[requestId];
+    if (entry !== undefined) return entry;
+  }
+  const manual = node.config.manualRequest;
+  return manual !== undefined ? manualRequestToHarEntry(manual) : undefined;
+}
+
+/* ------------------------------------------------------------------ *
  * 请求重建主入口
  * ------------------------------------------------------------------ */
 
@@ -281,7 +336,8 @@ function applyReplayOverride(target: MutableRequest, source: ReplayOverride | un
  *
  * 渲染警告策略：renderTemplate / renderValueDeep 渲染永不失败（缺数据按空串替换
  * 并产生 warnings），本层不透出 warnings（ReplayRequest 保持规格形状），失败策略
- * 与提示由上层（M5-T4 分类）统一处理。
+ * 与提示由上层（M5-T4 分类）统一处理。需要警告的调用方（模板渲染预览）走
+ * [`buildReplayRequestWithWarnings`] / [`buildPreviewRequest`]。
  *
  * @param params HAR 条目与两份覆盖
  * @param templateContext 模板渲染上下文（可缺省；缺省跳过渲染）
@@ -291,6 +347,23 @@ export function buildReplayRequest(
   params: BuildReplayRequestParams,
   templateContext?: RenderContext,
 ): ReplayRequest {
+  return buildReplayRequestWithWarnings(params, templateContext).request;
+}
+
+/** 重建产物 + 渲染警告（内部形态；公开的 [`buildReplayRequest`] 只取 request） */
+interface ReplayRequestWithWarnings {
+  request: ReplayRequest;
+  warnings: string[];
+}
+
+/**
+ * [`buildReplayRequest`] 的完整形态：同一管线，另透出渲染警告聚合
+ * （url / headers 值 / body 三处渲染的 warnings 依次拼接）。
+ */
+function buildReplayRequestWithWarnings(
+  params: BuildReplayRequestParams,
+  templateContext?: RenderContext,
+): ReplayRequestWithWarnings {
   const { harEntry, override, extraOverride } = params;
   const harRequest = harEntry.request;
 
@@ -317,19 +390,23 @@ export function buildReplayRequest(
   const strippedHeaders = stripBrowserOnlyHeaders(target.headers);
 
   // 5) 模板渲染（无 templateContext 时跳过，按原文透传）
+  const warnings: string[] = [];
   let finalUrl = target.url;
   let finalHeaders: Record<string, string> = strippedHeaders;
   let finalBody = target.body;
   if (templateContext) {
-    finalUrl = renderTemplate(finalUrl, templateContext).value;
+    const urlRendered = renderTemplate(finalUrl, templateContext);
+    finalUrl = urlRendered.value;
+    warnings.push(...urlRendered.warnings);
     // headers 只渲染值（renderValueDeep 不改键）；值为字符串，渲染结果仍是字符串
-    finalHeaders = renderValueDeep(strippedHeaders, templateContext).value as Record<
-      string,
-      string
-    >;
+    const headersRendered = renderValueDeep(strippedHeaders, templateContext);
+    finalHeaders = headersRendered.value as Record<string, string>;
+    warnings.push(...headersRendered.warnings);
     // 二进制 body（Uint8Array，base64 解码产物）不做模板渲染——按原始字节发送
     if (finalBody !== undefined && typeof finalBody === "string") {
-      finalBody = renderTemplate(finalBody, templateContext).value;
+      const bodyRendered = renderTemplate(finalBody, templateContext);
+      finalBody = bodyRendered.value;
+      warnings.push(...bodyRendered.warnings);
     }
   }
 
@@ -340,5 +417,129 @@ export function buildReplayRequest(
   };
   if (finalBody !== undefined) request.body = finalBody;
   if (target.timeoutMs !== undefined) request.timeoutMs = target.timeoutMs;
-  return request;
+  return { request, warnings };
+}
+
+/* ------------------------------------------------------------------ *
+ * httpReplay 节点请求面预览（模板渲染 dry-run，零出站）
+ * ------------------------------------------------------------------ */
+
+/** [`buildPreviewRequest`] 入参：预览目标节点与请求库投影 */
+export interface BuildPreviewRequestParams {
+  /** 预览目标节点（至少含 id 与 config；请求面字段仅 httpReplay 节点使用） */
+  node: Pick<WorkflowNode, "id" | "config">;
+  /** 请求库投影（requestId → HAR 条目，body blob 由宿主回填）；缺省视为空库 */
+  harEntries?: Record<string, HarEntry>;
+}
+
+/**
+ * 预览产物请求（与 httpReplay runner 出站载荷同形；body 已按类型归一）。
+ * string body / base64 二进制 body 的二选一形态与 runner 的宿主桥载荷一致。
+ */
+export interface PreviewRequest {
+  method: string;
+  url: string;
+  headers: Record<string, string>;
+  /** 文本类请求体（模板渲染后的原文；无 body 时不存在） */
+  body?: string;
+  /** 二进制请求体（HAR postData.encoding='base64' 解码产物，base64 编码；跳过模板渲染） */
+  bodyBase64?: string;
+  /** 生效的重放超时毫秒（覆盖 timeoutMs ?? config.timeoutMs；两者皆缺省时不存在） */
+  timeoutMs?: number;
+}
+
+/** [`buildPreviewRequest`] 产物 */
+export interface BuildPreviewRequestResult {
+  /** 请求基线来源：requestLibrary = config.requestId 命中投影；manual = manualRequest 合成 */
+  baseline: "requestLibrary" | "manual";
+  /** 将要发出的请求（零出站，仅渲染） */
+  request: PreviewRequest;
+  /** 渲染警告聚合（未解析引用 / 缺数据按空串替换的提示，与运行期告警口径一致） */
+  warnings: string[];
+}
+
+/**
+ * httpReplay 节点请求面预览（纯函数，零出站）：渲染「将要发出」的完整请求。
+ *
+ * 与 runner（createHttpReplayRunner）的两点差异，调用方须知：
+ *   - **不执行前置脚本**：extraOverride 恒缺省——预览覆盖不到 preProcess 的
+ *     运行期改写（节点配置 preProcess 时调用方应自行提示；脚本验证走
+ *     script_dry_run 组合）；
+ *   - **无上游数据**：`{{ node.* }}` / `{{ input.* }}`（含裸路径）引用按缺数据
+ *     渲染为空串并进 warnings——单节点预览没有上游节点输出。
+ *
+ * 其余与运行完全同口径：基线解析（[`resolveHarEntryForNode`]）、override 合并、
+ * 浏览器专属头剥离、`{{ }}` 模板渲染（同一 templateContext 内 `{{ fake.* }}`
+ * 跨 url / headers / body 取同一采样值，与单次节点执行语义一致；每次预览调用
+ * 重新采样）、头保真 / Cookie 决策并入出站头（与 runner 步骤 3 同一纯函数）、
+ * timeoutMs 兜底（覆盖 timeoutMs ?? config.timeoutMs）。
+ *
+ * @param params 预览目标节点与请求库投影
+ * @param templateContext 模板渲染上下文（可缺省；缺省跳过渲染、按原文透传）
+ * @returns 基线来源 + 预览请求 + 渲染警告
+ * @throws Error 节点无可用请求基线（requestId 未命中投影且未配置 manualRequest）
+ *         ——与 runner 的 failed 语义同源，调用方分类为 missing-baseline
+ */
+export function buildPreviewRequest(
+  params: BuildPreviewRequestParams,
+  templateContext?: RenderContext,
+): BuildPreviewRequestResult {
+  const { node, harEntries } = params;
+  const config = node.config;
+
+  // 基线来源标注：requestId 命中投影为 requestLibrary，否则（含回退 manual）为 manual
+  const requestId = config.requestId;
+  const baseline: BuildPreviewRequestResult["baseline"] =
+    typeof requestId === "string" && requestId !== "" && harEntries?.[requestId] !== undefined
+      ? "requestLibrary"
+      : "manual";
+
+  const harEntry = resolveHarEntryForNode(node, harEntries);
+  if (harEntry === undefined) {
+    throw new Error(
+      `节点 ${node.id} 无可用请求基线（config.requestId 未命中请求库且未配置 manualRequest）`,
+    );
+  }
+
+  // 请求重建 + 渲染警告收集（预览不执行前置脚本，extraOverride 恒缺省）
+  const { request, warnings } = buildReplayRequestWithWarnings(
+    { harEntry, override: config.override },
+    templateContext,
+  );
+
+  // 头保真 / Cookie 决策并入出站头（与 runner 步骤 3 同一纯函数，预览 = 将发送）
+  const removedHeaders = config.override?.removedHeaders;
+  const decisions = [
+    ...resolveHeaderFidelityPlan({
+      fidelity: config.headerFidelity,
+      harEntry,
+      templateContext,
+      removedHeaders,
+    }),
+  ];
+  const cookieDecision = resolveCookieDecision({
+    mode: config.cookieMode,
+    cookieValue: config.cookieValue,
+    harEntry,
+    templateContext,
+    removedHeaders,
+  });
+  if (cookieDecision !== undefined) decisions.push(cookieDecision);
+  const headers: Record<string, string> = { ...request.headers };
+  for (const decision of decisions) headers[decision.header] = decision.value;
+
+  // 出站载荷形状（与 runner 步骤 4 一致）：文本 body 走 body、二进制走 bodyBase64
+  const preview: PreviewRequest = {
+    method: request.method,
+    url: request.url,
+    headers,
+  };
+  if (request.body !== undefined) {
+    if (typeof request.body === "string") preview.body = request.body;
+    else preview.bodyBase64 = encodeBase64(request.body);
+  }
+  const timeoutMs = request.timeoutMs ?? config.timeoutMs;
+  if (timeoutMs !== undefined) preview.timeoutMs = timeoutMs;
+
+  return { baseline, request: preview, warnings };
 }

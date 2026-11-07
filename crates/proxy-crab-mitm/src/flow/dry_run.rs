@@ -13,10 +13,10 @@
 //! 错误分类 `syntax|blocked|runtime|timeout|invalid-return` 完整透传到响应
 //! （引擎产出的 message 面向用户可读）。
 
-use std::{sync::Arc, time::Duration};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value as JsonValue;
+use serde_json::{Value as JsonValue, json};
 
 use super::{
     bundle::FLOW_ENGINE_JS,
@@ -29,8 +29,8 @@ use super::{
 pub const DEFAULT_DRY_RUN_TIMEOUT_MS: u64 = 5_000;
 
 /// 引擎载荷一次性 eval 的预算（与载荷 smoke 测试口径一致；与脚本超时分离，
-/// 避免冷启动慢的机器上载荷加载挤占脚本预算）。
-const PAYLOAD_LOAD_BUDGET: Duration = Duration::from_secs(30);
+/// 避免冷启动慢的机器上载荷加载挤占脚本预算）。预览（render_preview）共用。
+pub(crate) const PAYLOAD_LOAD_BUDGET: Duration = Duration::from_secs(30);
 
 /// 脚本侧别：pre = 前置处理（请求前），post = 后置处理（响应后）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,7 +121,28 @@ pub struct ScriptDryRunOutput {
 
 /// 试跑宿主桥最小桩：试跑不提供任何真实宿主能力，`replay` 以环境性拒绝
 /// （blocked）驳回，保证「不发出真实出站请求」；其余能力按空实现返回。
-struct DryRunHost;
+/// 工作流存储为一次性内存桩：get/put/delete/keys 在本次试跑内生效、不落盘，
+/// 便于脚本试跑验证存储读写逻辑（键合法性沿用运行期口径，配额不生效）。
+/// 模板渲染预览（render_preview）复用同一桩：零出站口径一致。
+pub(crate) struct DryRunHost {
+    /// 一次性内存存储（按试跑实例隔离，不落盘）。
+    storage: Arc<std::sync::Mutex<BTreeMap<String, JsonValue>>>,
+}
+
+impl Default for DryRunHost {
+    fn default() -> Self {
+        Self {
+            storage: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
+        }
+    }
+}
+
+/// 校验试跑存储键名（与运行期宿主桥同口径：非法归 blocked）。
+fn dry_run_storage_key(key: &str) -> Result<String, FlowError> {
+    super::workflow_data::validate_storage_key(key)
+        .map(|()| key.to_owned())
+        .map_err(|error| FlowError::new(FlowErrorKind::Blocked, format!("{error:#}")))
+}
 
 #[async_trait::async_trait]
 impl FlowHost for DryRunHost {
@@ -157,6 +178,48 @@ impl FlowHost for DryRunHost {
     async fn cancelled(&self) -> Result<JsonValue, FlowError> {
         Ok(JsonValue::from(false))
     }
+
+    // 同步工作流存储面（内存桩）：键校验沿用运行期口径，配额不生效。
+
+    fn storage_get(&self, key: &str) -> Result<JsonValue, FlowError> {
+        let key = dry_run_storage_key(key)?;
+        let storage = self.storage.lock().expect("dry run storage poisoned");
+        Ok(match storage.get(&key) {
+            Some(value) => json!({ "found": true, "value": value }),
+            None => json!({ "found": false, "value": null }),
+        })
+    }
+
+    fn storage_put(&self, key: &str, value: &JsonValue) -> Result<JsonValue, FlowError> {
+        let key = dry_run_storage_key(key)?;
+        self.storage
+            .lock()
+            .expect("dry run storage poisoned")
+            .insert(key, value.clone());
+        Ok(json!({ "updatedAt": 0u64 }))
+    }
+
+    fn storage_delete(&self, key: &str) -> Result<JsonValue, FlowError> {
+        let key = dry_run_storage_key(key)?;
+        let deleted = self
+            .storage
+            .lock()
+            .expect("dry run storage poisoned")
+            .remove(&key)
+            .is_some();
+        Ok(json!({ "deleted": deleted }))
+    }
+
+    fn storage_keys(&self) -> Result<JsonValue, FlowError> {
+        let keys: Vec<String> = self
+            .storage
+            .lock()
+            .expect("dry run storage poisoned")
+            .keys()
+            .cloned()
+            .collect();
+        Ok(json!({ "keys": keys }))
+    }
 }
 
 /// 按默认安全口径试跑一次脚本（超时 5s + [`FlowLimits`] 现成指令/内存上限）。
@@ -188,7 +251,7 @@ pub async fn dry_run_script_with(
     limits: FlowLimits,
 ) -> Result<ScriptDryRunOutput, FlowError> {
     let cancel = FlowCancel::new();
-    let vm = FlowRuntime::new(Arc::new(DryRunHost), cancel, limits).await?;
+    let vm = FlowRuntime::new(Arc::new(DryRunHost::default()), cancel, limits).await?;
     // 载荷加载：一次性 eval，预算独立于脚本超时。
     tokio::time::timeout(PAYLOAD_LOAD_BUDGET, vm.run(FLOW_ENGINE_JS))
         .await
@@ -399,7 +462,7 @@ mod tests {
     #[tokio::test]
     async fn dry_run_host_refuses_replay() {
         // 试跑宿主桥必须拒绝重放：不发出真实出站请求（环境性拒绝，kind blocked）
-        let host = DryRunHost;
+        let host = DryRunHost::default();
         let error = host
             .replay(json!({}))
             .await

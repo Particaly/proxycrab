@@ -85,7 +85,7 @@ function fmtTime(ts: number): string {
           </div>
         </template>
       </template>
-      <div v-if="!loading && projects.length === 0" class="empty-hint">暂无项目，先新建一个</div>
+      <div v-if="!loading && projects.length === 0" class="empty-hint">暂无项目，请在上方新建</div>
     </div>
     <div class="wf-side-footer">
       <div class="wf-create">

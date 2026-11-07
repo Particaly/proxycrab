@@ -8,14 +8,16 @@
  *
  * 执行模型（就绪队列 + 拓扑序；M5-T1 为纯串行 FIFO，M15-T6 起就绪集快照批量
  * 并发，见下方「节点级并行调度」增量说明）：
- *   - 从唯一 start 节点出发，维护「当前可运行节点」先进先出队列；主循环每轮
- *     取至多 maxNodeConcurrency 个就绪节点并发执行，整批结算后再统一调度；
+ *   - 从入口 start 节点出发（entryNodeId 显式指定；未指定时图须恰有一个
+ *     start，多 start 未指定入口在建档前判 failed），维护「当前可运行节点」
+ *     先进先出队列；主循环每轮取至多 maxNodeConcurrency 个就绪节点并发执行，
+ *     整批结算后再统一调度；
  *   - 一个节点只有当其全部直接上游都结算后才可运行（join 语义，多上游聚合
  *     才有意义）；节点有多个下游时按边数组顺序逐个入队；
  *   - 每个节点在一次运行内至多执行一次（环状图不会死循环）；自环 / 环中等待
  *     自身或未执行上游的节点永远不满足可运行条件，收尾时统一标 skipped；
- *     （skipped 语义 = 因前序失败/取消而不再执行的节点，含从 start 不可达
- *     的孤立节点）。
+ *     （skipped 语义 = 因前序失败/取消而不再执行的节点，含从入口不可达的
+ *     孤立节点与未选中的其他 start 链条）。
  *
  * 汇合（join）决策记录（M15-T6）：不新增独立 merge 节点类型——任意节点有多
  * 条入边即汇合（能力内建，与 n8n Merge 节点等价）：isRunnable 要求全部直接
@@ -323,7 +325,8 @@ export class NodeStatusMachine {
 
 /**
  * 校验工作流图（执行前置检查，最小集合）：
- *   - start 节点存在且唯一；
+ *   - start 节点至少一个（多 start 已合法：多入口工作流，运行时由
+ *     entryNodeId 指定入口，歧义在 executeWorkflow 里判 failed）；
  *   - 连线引用的 source / target 节点必须存在（无未知引用连线）；
  *   - 连线不触及 stickyNote 便签节点（M13-T5：便签是纯注释卡、不可连线——
  *     UI 侧无手柄连不上，此处拦手工构造 / 污染数据，避免下游节点 join 时
@@ -364,9 +367,10 @@ export function validateWorkflowGraph(
     refKeys.add(node.refId);
   }
 
+  // 多 start 已合法（多入口工作流）：0 个仍为错误；>1 个由 executeWorkflow
+  // 按 entryNodeId 解析入口，未指定入口时在建档前判 failed（入口歧义防御）。
   const startCount = nodes.filter((node) => node.type === "start").length;
   if (startCount === 0) errors.push("缺少开始节点");
-  if (startCount > 1) errors.push(`存在多个开始节点（${startCount} 个），只能保留一个`);
 
   // M13-T5：stickyNote（便签）不入执行拓扑——触及便签的连线一律判非法
   //（与「连线引用不存在的节点」同级 error，fail-fast 暴露脏数据而非静默跳过）
@@ -423,6 +427,8 @@ export function aggregateInputs(upstreamOutputs: Record<string, unknown>): unkno
  * @param nodeOutputs 已完成节点的输出表（键为节点 id）
  * @param input 当前节点聚合后的入参
  * @param variables 运行期变量表（可选；M7-T2）
+ * @param env 环境变量快照（可选；M10-T4）
+ * @param storage 工作流存储快照（可选；`{{ storage.<key> }}` 数据源）
  * @returns RenderContext（node / var 均为浅拷贝，调用方改动不影响原表）
  */
 export function buildTemplateContext(
@@ -430,6 +436,7 @@ export function buildTemplateContext(
   input: unknown = null,
   variables?: Record<string, unknown>,
   env?: Record<string, unknown>,
+  storage?: Record<string, unknown>,
 ): RenderContext {
   const context: RenderContext = { node: { ...nodeOutputs }, input };
   if (variables !== undefined) {
@@ -439,6 +446,11 @@ export function buildTemplateContext(
   // 模板 `{{ env.<key>.<path> }}` 的数据源——运行开始时定格的环境快照）
   if (env !== undefined) {
     context.env = { ...env };
+  }
+  // 工作流存储快照存在时并入 templateContext.storage（浅拷贝；模板
+  // `{{ storage.<key>.<path> }}` 的数据源——镜像快照，host.storage 读写可见）
+  if (storage !== undefined) {
+    context.storage = { ...storage };
   }
   return context;
 }
@@ -602,6 +614,17 @@ export interface ExecutorOptions {
    */
   env?: Record<string, unknown> | (() => Record<string, unknown>);
   /**
+   * 工作流存储快照（可选）：工作流级持久化 KV 的键值表，注入每个节点的
+   * templateContext.storage 供模板 `{{ storage.<key>.<path> }}` 引用；缺省
+   * 不注入（模板上下文保持既有形状）。
+   *
+   * 形态与 env 一致（快照对象或供给函数）：runWorkflow 以「镜像快照供给函数」
+   * 注入——镜像在运行开始时以派发快照播种，脚本经 host.storage 的读写（引擎
+   * 侧包装同步维护镜像）对后续节点的模板立即可见；传普通对象时保持派发快照
+   * 语义（既有行为不变）。
+   */
+  storage?: Record<string, unknown> | (() => Record<string, unknown>);
+  /**
    * 下游选择扩展点（M7-T1，可选）：某节点结算后、调度其直接下游前调用
    * （参数为该节点与其 output；失败节点的 output 为 null）。返回 'all' 照常
    * 调度全部下游；返回 NodeId 数组只调度其中的 target（未含者保持 pending，
@@ -638,6 +661,14 @@ export interface ExecutorOptions {
     /** 上游闭包节点的执行快照（沿用源运行，保留入参 / 返回值调试信息） */
     nodeRuns: Record<NodeId, NodeRun>;
   };
+  /**
+   * 入口选择（多 start 工作流，可选）：指定从哪个 start 节点进入执行——
+   * 必须存在于图且 type 为 'start'，否则本次运行在建档前判 failed（不启动
+   * 任何节点）；未指定且图恰有一个 start 时取该 start；未指定且存在多个
+   * start 时属入口歧义，建档前判 failed（错误列出全部 start id）。未选中
+   * 的 start 链条不入队，收尾统一 skipped（与不可达节点同语义）。
+   */
+  entryNodeId?: NodeId;
   /**
    * 全局最大节点并发（M15-T6，可选）：主循环就绪集快照批量并发时，单批同时
    * 执行的节点数上限；缺省 DEFAULT_MAX_NODE_CONCURRENCY（4）。非有限值 / <1
@@ -859,9 +890,11 @@ export function computeUpstreamClosure(
 
 /**
  * 判断某节点的全部直接上游是否都已结算（join 语义门槛，M5-T4 放宽）：
- * success 照常计入；failed 上游在 continue 策略下也算已结算（下游仍执行）。
- * stop 策略下失败即停、不会再来调度，因此「已结算」与旧「全部 success」在
- * stop 路径上行为完全一致；pending / running（未结算）一律不可运行。
+ * success 照常计入；failed 上游在 continue 策略下也算已结算（下游仍执行）；
+ * skipped 上游（入口不可达提前收编 / 收尾统一跳过）同样计入——该入边在
+ * 聚合时按缺失处理（collectUpstreamOutputs 对无输出上游无键）。stop 策略下
+ * 失败即停、不会再来调度，因此「已结算」与旧「全部 success」在 stop 路径上
+ * 行为完全一致；pending / running（未结算）一律不可运行。
  */
 function isRunnable(
   nodeId: NodeId,
@@ -871,7 +904,10 @@ function isRunnable(
   for (const edge of edges) {
     if (edge.target !== nodeId) continue;
     const machine = statuses.get(edge.source);
-    if (!machine || (machine.status !== "success" && machine.status !== "failed")) return false;
+    if (!machine) return false;
+    if (machine.status !== "success" && machine.status !== "failed" && machine.status !== "skipped") {
+      return false;
+    }
   }
   return true;
 }
@@ -917,7 +953,7 @@ export async function executeWorkflow(
     return summary;
   }
 
-  /** 每个节点的状态机（图已合法，必有且唯一） */
+  /** 每个节点的状态机（图已合法：start 至少一个，入口已解析） */
   const statuses = new Map<NodeId, NodeStatusMachine>();
   /** 已完成（success / failed）与已跳过（skipped）节点的执行快照 */
   const nodeRuns = new Map<NodeId, NodeRun>();
@@ -937,10 +973,46 @@ export async function executeWorkflow(
    */
   const refKeyOf = (id: NodeId): string => nodeById.get(id)?.refId ?? id;
 
-  const startNode = workflow.nodes.find((node) => node.type === "start")!;
-  let queue: WorkflowNode[] = [startNode];
+  // 入口解析（多 start 工作流）：entryNodeId 显式指定 → 必须是图内的 start
+  // 节点；未指定时恰一个 start 取之，多个 start 属入口歧义——建档前判
+  // failed（错误列出全部 start id），不启动任何节点。未选中的 start 链条
+  // 不入队，收尾统一 skipped（与不可达节点同语义）。
+  const startNodes = workflow.nodes.filter((node) => node.type === "start");
+  let entryNode: WorkflowNode;
+  if (options.entryNodeId !== undefined) {
+    const matched = workflow.nodes.find(
+      (node) => node.id === options.entryNodeId && node.type === "start",
+    );
+    if (matched === undefined) {
+      const summary: RunSummary = {
+        runId,
+        workflowId: workflow.id,
+        status: "failed",
+        error: `入口节点不存在或不是开始节点：${options.entryNodeId}`,
+        nodeRuns: {},
+      };
+      options.onRunFinish?.(summary);
+      return summary;
+    }
+    entryNode = matched;
+  } else if (startNodes.length > 1) {
+    const summary: RunSummary = {
+      runId,
+      workflowId: workflow.id,
+      status: "failed",
+      error: `存在多个开始节点（${startNodes.length} 个），需指定入口 entryNodeId：${startNodes
+        .map((node) => node.id)
+        .join("、")}`,
+      nodeRuns: {},
+    };
+    options.onRunFinish?.(summary);
+    return summary;
+  } else {
+    entryNode = startNodes[0]!;
+  }
+  let queue: WorkflowNode[] = [entryNode];
   /** 已入队（含已执行）节点集合：保证每节点至多执行一次（环 / 重复边安全） */
-  let enqueued = new Set<NodeId>([startNode.id]);
+  let enqueued = new Set<NodeId>([entryNode.id]);
 
   /**
    * 指定节点重跑预置（M10-T5）：上游闭包不执行——以 resume.outputs 预置输出、
@@ -1001,6 +1073,39 @@ export async function executeWorkflow(
     enqueued = new Set<NodeId>([resume.fromNode, ...closure]);
   }
 
+  // 入口不可达节点提前收编（多 start 工作流的 join 解锁）：未被选中入口的
+  // 链条不再等待收尾统一 skipped，而是在调度前即标 skipped（settled）——
+  // 多入口链条汇合到同一后继时，join 节点的「全部直接上游结算」门槛才会在
+  // 单入口运行下释放（skipped 也是结算态）。resume 预置的闭包节点不在可达
+  // 集内，但已按源运行预置 success，不参与本次跳过。
+  const originId = queue[0]!.id;
+  const adjacency = new Map<NodeId, NodeId[]>();
+  for (const edge of workflow.edges) {
+    const targets = adjacency.get(edge.source);
+    if (targets) targets.push(edge.target);
+    else adjacency.set(edge.source, [edge.target]);
+  }
+  const reachable = new Set<NodeId>([originId]);
+  // for...of Set 迭代会访问遍历期间新增的项（BFS 队列语义）。
+  for (const cursor of reachable) {
+    for (const target of adjacency.get(cursor) ?? []) {
+      if (!reachable.has(target)) reachable.add(target);
+    }
+  }
+  const presetClosure =
+    resume !== undefined
+      ? computeUpstreamClosure(workflow.nodes, workflow.edges, resume.fromNode)
+      : undefined;
+  for (const node of workflow.nodes) {
+    if (reachable.has(node.id)) continue;
+    if (presetClosure !== undefined && presetClosure.includes(node.id)) continue;
+    // 便签不入执行拓扑（M13-T5）：运行记录中不出现便签条目（与收尾口径一致）。
+    if (node.type === "stickyNote") continue;
+    const machine = statuses.get(node.id) as NodeStatusMachine;
+    machine.transition("skipped");
+    nodeRuns.set(node.id, SKIPPED_NODE_RUN());
+  }
+
   /** 第一个失败节点的 run 级错误摘要（continue 策略下后续失败只记在节点快照） */
   let failureError: string | undefined;
   let cancelled = false;
@@ -1022,6 +1127,16 @@ export async function executeWorkflow(
    */
   const resolveEnv = (): Record<string, unknown> | undefined => {
     const raw = options.env;
+    return typeof raw === "function" ? raw() : raw;
+  };
+
+  /**
+   * 解析当前节点的工作流存储快照：storage 为供给函数时逐节点调用取当前值
+   * （host.storage 读写的镜像更新对后续节点立即可见）；普通对象 / 未传时
+   * 原样返回（派发快照语义 / 既有「不注入」行为不变）。
+   */
+  const resolveStorage = (): Record<string, unknown> | undefined => {
+    const raw = options.storage;
     return typeof raw === "function" ? raw() : raw;
   };
 
@@ -1191,12 +1306,14 @@ export async function executeWorkflow(
             // M7-T2：variables 存在时并入 templateContext.var（未传保持既有形状）；
             // M7-T1：variables 为供给函数时逐节点取当前值（运行期写入可见）；
             // M10-T4：env 快照存在时并入 templateContext.env（{{ env.key }} 引用）；
-            // M14-T3：env 允许供给函数形态（脚本写回的运行快照更新逐节点可见）
+            // M14-T3：env 允许供给函数形态（脚本写回的运行快照更新逐节点可见）；
+            // storage 同 env：镜像快照供给函数逐节点取当前值（host.storage 读写可见）
             templateContext: buildTemplateContext(
               nodeOutputs,
               input,
               resolveVariables(),
               resolveEnv(),
+              resolveStorage(),
             ),
             // M15-T2：runner 手持内部 id 定位输出表（setVariable from='node'）时换算
             refKeyOf,

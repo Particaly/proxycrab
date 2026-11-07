@@ -45,7 +45,7 @@
 //!   and never block the caller — environment data is a side enhancement.
 
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     fs,
     path::{Path, PathBuf},
     sync::Mutex,
@@ -189,6 +189,10 @@ pub struct EnvSnapshot {
     pub values: BTreeMap<String, String>,
     /// Values of the secret subset (substitution list for record masking).
     pub secret_values: Vec<String>,
+    /// Keys of the secret subset — the explicit per-key masked marking (the
+    /// set's secret table). Run-side write-back masking classifies by these
+    /// keys (dispatch-time frozen; no key/value pattern heuristics).
+    pub secret_keys: BTreeSet<String>,
 }
 
 /// Resolve the runtime snapshot of one active set (pure function): `None` id
@@ -210,6 +214,7 @@ pub fn resolve_active_env_snapshot(
     EnvSnapshot {
         values,
         secret_values: active.secret_values.values().cloned().collect(),
+        secret_keys: active.secret_values.keys().cloned().collect(),
     }
 }
 
@@ -692,6 +697,11 @@ mod tests {
             Some("hunter2")
         );
         assert_eq!(snapshot.secret_values, vec!["http://secret", "hunter2"]);
+        // secret 键集合（显式键级标记）随快照暴露，供写回掩码分类。
+        assert_eq!(
+            snapshot.secret_keys,
+            BTreeSet::from(["baseUrl".to_owned(), "password".to_owned()])
+        );
         // Missing id or unknown set yields the empty snapshot.
         assert_eq!(
             resolve_active_env_snapshot(&[], Some("env-dev")),

@@ -56,12 +56,13 @@ export interface TemplateRef {
    * 产生优先级歧义）；'fake' 指内置假数据生成器（fake.ts，不经 RenderContext
    * 取数，渲染时直接生成随机值）
    */
-  kind: "node" | "input" | "var" | "env" | "fake";
-  /** kind === 'node' 时的目标节点 id（'input' / 'var' / 'env' / 'fake' 引用没有该字段） */
+  kind: "node" | "input" | "var" | "env" | "storage" | "fake";
+  /** kind === 'node' 时的目标节点 id（'input' / 'var' / 'env' / 'storage' / 'fake' 引用没有该字段） */
   nodeId?: string;
   /**
-   * kind === 'var' / 'env' 时为变量名 / 环境键名；kind === 'fake' 时为假数据
-   * 生成器名（如 'phone'）（'node' / 'input' 引用没有该字段）
+   * kind === 'var' / 'env' / 'storage' 时为变量名 / 环境键名 / 存储键名；
+   * kind === 'fake' 时为假数据生成器名（如 'phone'）（'node' / 'input' 引用
+   * 没有该字段）
    */
   name?: string;
   /**
@@ -113,6 +114,14 @@ export interface RenderContext {
    * （渲染永不因缺数据失败），不做单独的「环境未激活」分支。
    */
   env?: Record<string, unknown>;
+  /**
+   * 工作流存储快照（可选）：工作流级持久化 KV 的键值快照（运行开始时以
+   * 持久层现读播种，运行内脚本经 host.storage 写入会同步更新本表——见
+   * runWorkflow 的镜像维护），`{{ storage.<key>.<path> }}` 由此取值。
+   * 缺省（undefined / 非对象）时 storage 引用一律按「存储键不存在」告警并
+   * 渲染为空串——与 var / env 的缺省值约定一致（渲染永不因缺数据失败）。
+   */
+  storage?: Record<string, unknown>;
 }
 
 /** 解析警告：未闭合的 `{{` 按字面量处理（挂在对应文本 token 上，渲染时透出） */
@@ -135,7 +144,8 @@ const ARRAY_INDEX_PATTERN = /^(0|[1-9]\d*)$/;
  * 解析表达式内容为引用。
  *
  * 语法：`input.<path>`、`node.<nodeId>.<path>`（nodeId 自身不含点）、
- * `var.<name>.<path>`（M7-T2，变量名自身不含点）或 `env.<key>.<path>`（M10-T4）；
+ * `var.<name>.<path>`（M7-T2，变量名自身不含点）、`env.<key>.<path>`（M10-T4）
+ * 或 `storage.<key>.<path>`（工作流存储，键名自身不含点）；
  * `fake.<名称>(<参数>)`（假数据生成器：名称后可带括号参数段，按逗号切分 trim，
  * 如 `fake.number(1,100)` → name='number'、args=['1','100']；括号可省略）；
  * `$json.<path>` 是 `input.<path>` 的别名（n8n 习惯，M12-T3，方便从入参取字段）。
@@ -181,6 +191,16 @@ function parseRef(content: string): TemplateRef | null {
     const name = rest.slice(0, secondDot);
     if (name === "") return null;
     return { kind: "env", name, path: rest.slice(secondDot + 1) };
+  }
+  if (root === "storage") {
+    // 工作流存储引用（语义同 var / env）：'storage' 后必须显式给出键名
+    // （'storage' 单独出现或 'storage..path' 均视为未知引用）
+    if (rest === "") return null;
+    const secondDot = rest.indexOf(".");
+    if (secondDot === -1) return { kind: "storage", name: rest, path: "" };
+    const name = rest.slice(0, secondDot);
+    if (name === "") return null;
+    return { kind: "storage", name, path: rest.slice(secondDot + 1) };
   }
   if (root === "fake") {
     // 假数据生成器：'fake' 后必须显式给出生成器名，名称后可带括号参数段
@@ -350,6 +370,19 @@ function getEnvRoot(ctx: RenderContext, name: string): { present: boolean; value
   return { present: true, value: record[name] };
 }
 
+/** 读取 storage 引用的根值，并区分「存储键不存在」与「路径缺失」两种告警 */
+function getStorageRoot(ctx: RenderContext, name: string): { present: boolean; value: unknown } {
+  const table = ctx.storage;
+  if (table === null || typeof table !== "object") {
+    return { present: false, value: undefined };
+  }
+  const record = table as Record<string, unknown>;
+  if (!Object.prototype.hasOwnProperty.call(record, name)) {
+    return { present: false, value: undefined };
+  }
+  return { present: true, value: record[name] };
+}
+
 /**
  * 假数据一致性缓存表：按 RenderContext 实例缓存「表达式原文 → 生成值」。
  *
@@ -458,6 +491,16 @@ export function renderTemplate(
         continue;
       }
       rootValue = envRoot.value;
+    } else if (ref.kind === "storage") {
+      // 工作流存储引用：键名不在 ctx.storage（表缺失 / 未定义 / 未播种）
+      // → 专属告警并渲染为空串（与 var / env 的缺省值约定一致）；其后的
+      // 路径求值与 var / env / node / input 引用共用同一套策略
+      const storageRoot = getStorageRoot(ctx, ref.name ?? "");
+      if (!storageRoot.present) {
+        warnings.push(`模板引用的存储键不存在：{{ ${token.raw} }}`);
+        continue;
+      }
+      rootValue = storageRoot.value;
     } else {
       const nodeRoot = getNodeRoot(ctx, ref.nodeId ?? "");
       if (!nodeRoot.present) {

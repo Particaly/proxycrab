@@ -6,14 +6,15 @@ import type { WorkflowEdge, WorkflowNode, WorkflowValidationIssue } from "../../
  * validate 结果合并为 error / warning / info 三级问题清单，画布节点卡按
  * 节点粒度渲染徽标，窗口校验面板展示完整清单。
  *
- *   - 本地规则（collectLocalIssues）：对齐后端 flow/validate.rs 的 error 级
- *     口径（唯一 start、边端点存在、便签不可连线），另补前端视角的
- *     warning（孤立节点）与 info（多上游汇合披露，移植归档 join-node），
- *     图一变即重算，无需请求服务端；
+ *   - 本地规则（collectLocalIssues）：对齐后端 flow/validate.rs 的阻断级
+ *     口径（缺 start、边端点存在、便签不可连线），另补前端视角的
+ *     warning（多 start 入口提示、孤立节点）与 info（多上游汇合披露，移植
+ *     归档 join-node），图一变即重算，无需请求服务端；
  *   - 服务端结果（mergeIssues）：POST /api/workflows/{id}/validate 的
- *     WorkflowValidationIssue 无级别字段，按 code 映射——后端六类规则均为
- *     阻断级（error），未知 code 回退 warning；与本地同 code 且同归属节点
- *     的问题去重（服务端为权威版本，保留其文案）；
+ *     WorkflowValidationIssue 无级别字段，按 code 映射——后端阻断级规则
+ *     （error）之外的 code（含 multiple-start 的 warning 口径）回退
+ *     warning；与本地同 code 且同归属节点的问题去重（服务端为权威版本，
+ *     保留其文案）；
  *   - 节点归属（groupIssuesByNode）：按 issue.nodeIds 归属到节点；流程级
  *     问题（nodeIds 为空，如 missing-start）不落节点表，仅面板展示。
  *
@@ -32,10 +33,9 @@ export interface NodeIssue {
   nodeIds: string[];
 }
 
-/** 后端 validate 的全部 issue code（均为阻断级，见 flow/validate.rs）。 */
+/** 后端 validate 的阻断级 issue code（warning 级的 multiple-start 不在内）。 */
 const SERVER_ERROR_CODES = new Set([
   "missing-start",
-  "multiple-start",
   "dangling-edge",
   "sticky-note-edge",
   "refid-invalid",
@@ -64,10 +64,11 @@ export function collectLocalIssues(
       nodeIds: [],
     });
   } else if (startNodes.length > 1) {
+    // 多 start 已合法（多入口工作流）：降为 warning 提示选入口，不阻断。
     issues.push({
-      level: "error",
+      level: "warning",
       code: "multiple-start",
-      message: `存在 ${startNodes.length} 个开始节点，流程只能有一个开始节点`,
+      message: `存在 ${startNodes.length} 个开始节点（多入口流程），运行时需指定开始入口`,
       nodeIds: startNodes.map((node) => node.id),
     });
   }

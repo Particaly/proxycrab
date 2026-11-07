@@ -167,11 +167,13 @@ onBeforeUnmount(() => {
             <span class="mono">{{ proxyStore.displayIp }}</span>
             <Io5ChevronDown :size="11" />
           </button>
-          <div v-if="ipMenuOpen" class="proxy-ip-menu">
-            <div v-for="ip in proxyStore.ipOptions" :key="ip" class="proxy-ip-item">
-              <span class="mono">{{ ip }}</span>
+          <Transition name="pop">
+            <div v-if="ipMenuOpen" class="proxy-ip-menu">
+              <div v-for="ip in proxyStore.ipOptions" :key="ip" class="proxy-ip-item">
+                <span class="mono">{{ ip }}</span>
+              </div>
             </div>
-          </div>
+          </Transition>
         </div>
         <div class="proxy-seg">
           <input
@@ -234,20 +236,22 @@ onBeforeUnmount(() => {
             <Io5ChevronDown :size="11" />
           </button>
         </AppTooltip>
-        <div v-if="activeMenu === 'ai'" class="tb-menu">
-          <button class="tb-menu-item" @click="runMenuAction(openAgentsPresets)">
-            <Io5DocumentText :size="14" />
-            <span>AGENTS.md 预设</span>
-          </button>
-          <button
-            v-if="backend.host?.skillManager"
-            class="tb-menu-item"
-            @click="runMenuAction(openSkillManager)"
-          >
-            <Io5Download :size="14" />
-            <span>管理 Skill</span>
-          </button>
-        </div>
+        <Transition name="pop">
+          <div v-if="activeMenu === 'ai'" class="tb-menu">
+            <button class="tb-menu-item" @click="runMenuAction(openAgentsPresets)">
+              <Io5DocumentText :size="14" />
+              <span>AGENTS.md 预设</span>
+            </button>
+            <button
+              v-if="backend.host?.skillManager"
+              class="tb-menu-item"
+              @click="runMenuAction(openSkillManager)"
+            >
+              <Io5Download :size="14" />
+              <span>管理 Skill</span>
+            </button>
+          </div>
+        </Transition>
       </div>
 
       <div class="tb-menu-wrap">
@@ -260,7 +264,8 @@ onBeforeUnmount(() => {
           资产
           <Io5ChevronDown :size="12" />
         </button>
-        <div v-if="activeMenu === 'scripts'" class="tb-menu">
+        <Transition name="pop">
+          <div v-if="activeMenu === 'scripts'" class="tb-menu">
           <button class="tb-menu-item" @click="runMenuAction(openRequestInterceptorManager)">
             <Io5ArrowDown :size="14" />
             <span>请求拦截器</span>
@@ -331,7 +336,8 @@ onBeforeUnmount(() => {
           <button class="tb-menu-item" @click="runMenuAction(openAssetManager)">
             <Io5DocumentText :size="14" /><span>工作区资源</span>
           </button>
-        </div>
+          </div>
+        </Transition>
       </div>
 
       <div class="tb-menu-wrap">
@@ -344,7 +350,8 @@ onBeforeUnmount(() => {
           小工具
           <Io5ChevronDown :size="12" />
         </button>
-        <div v-if="activeMenu === 'tools'" class="tb-menu">
+        <Transition name="pop">
+          <div v-if="activeMenu === 'tools'" class="tb-menu">
           <button class="tb-menu-item" @click="runMenuAction(openBase64)">
             <Io5Build :size="14" />
             <span>Base64 编解码</span>
@@ -377,7 +384,8 @@ onBeforeUnmount(() => {
             <Io5GitCompare :size="14" />
             <span>文本比对</span>
           </button>
-        </div>
+          </div>
+        </Transition>
       </div>
 
       <div class="tb-menu-wrap">
@@ -390,7 +398,8 @@ onBeforeUnmount(() => {
           系统
           <Io5ChevronDown :size="12" />
         </button>
-        <div v-if="activeMenu === 'system'" class="tb-menu tb-menu-system">
+        <Transition name="pop">
+          <div v-if="activeMenu === 'system'" class="tb-menu tb-menu-system">
           <button class="tb-menu-item" @click="runMenuAction(openSystemLogs)">
             <Io5Newspaper :size="14" />
             <span>系统日志</span>
@@ -419,7 +428,8 @@ onBeforeUnmount(() => {
             <span>跟随系统</span>
             <Io5Checkmark v-if="appStore.theme === 'system'" :size="14" class="tb-menu-check" />
           </button>
-        </div>
+          </div>
+        </Transition>
       </div>
     </div>
   </header>
@@ -466,10 +476,13 @@ onBeforeUnmount(() => {
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
-  transition: background 0.12s;
+  transition: background var(--dur-fast) ease;
 }
 .cert-entry-btn:hover {
   background: color-mix(in srgb, var(--warning) 88%, #000);
+}
+.cert-entry-btn:active {
+  transform: translateY(1px);
 }
 .tb-spacer {
   flex: 1;
@@ -483,9 +496,9 @@ onBeforeUnmount(() => {
   height: 24px;
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  margin-right: 3px;
-  padding: 0 7px;
+  gap: var(--space-1);
+  margin-right: var(--space-1);
+  padding: 0 var(--space-2);
   border: 0;
   border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--warning) 13%, transparent);
@@ -494,6 +507,7 @@ onBeforeUnmount(() => {
   font-size: 11px;
   font-weight: 700;
   cursor: pointer;
+  transition: background var(--dur-fast) ease;
 }
 .approval-trigger:hover {
   background: color-mix(in srgb, var(--warning) 21%, transparent);
@@ -534,8 +548,8 @@ onBeforeUnmount(() => {
   font-size: 12px;
   cursor: default;
   transition:
-    color 0.12s,
-    background 0.12s;
+    color var(--dur-fast) ease,
+    background var(--dur-fast) ease;
 }
 .tb-menu-trigger:hover,
 .tb-menu-trigger.active {
@@ -550,15 +564,16 @@ onBeforeUnmount(() => {
 }
 .tb-menu {
   position: absolute;
-  z-index: 100003;
+  z-index: var(--z-popover);
   top: calc(100% - 2px);
   right: 0;
   min-width: 168px;
-  padding: 5px;
+  padding: var(--space-1);
   background: var(--bg-elevated);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-popup);
+  transform-origin: top right;
 }
 .tb-menu-system {
   min-width: 176px;
@@ -567,8 +582,9 @@ onBeforeUnmount(() => {
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 9px;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  min-height: 28px;
   border: none;
   border-radius: var(--radius-sm);
   background: transparent;
@@ -577,6 +593,7 @@ onBeforeUnmount(() => {
   font-size: 12px;
   text-align: left;
   cursor: pointer;
+  transition: background var(--dur-fast) ease;
 }
 .tb-menu-item:hover {
   background: var(--bg-hover);
@@ -593,7 +610,7 @@ onBeforeUnmount(() => {
 }
 .tb-menu-divider {
   height: 1px;
-  margin: 5px 4px;
+  margin: var(--space-1);
   background: var(--border);
 }
 
@@ -705,23 +722,24 @@ onBeforeUnmount(() => {
 
 .proxy-ip-menu {
   position: absolute;
-  z-index: 100004;
-  top: calc(100% + 4px);
+  z-index: var(--z-tooltip);
+  top: calc(100% + var(--space-1));
   left: 0;
   min-width: 150px;
   max-height: 260px;
   overflow-y: auto;
-  padding: 5px;
+  padding: var(--space-1);
   background: var(--bg-elevated);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-popup);
+  transform-origin: top left;
 }
 .proxy-ip-item {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 5px 9px;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
   border-radius: var(--radius-sm);
   color: var(--text);
   font: inherit;

@@ -16,7 +16,10 @@ mod flow_run {
     use proxy_crab_mitm::{
         ProxyCrab,
         flow::{
-            model::{NodeConfig, Position, Workflow, WorkflowEdge, WorkflowNode, WorkflowNodeType},
+            model::{
+                AssertionRule, JsonPathAssertionRule, JsonPathOperator, NodeConfig, Position,
+                Workflow, WorkflowEdge, WorkflowNode, WorkflowNodeType,
+            },
             run::{FlowRunEvent, FlowRunManager, RunTriggerError},
             run_store::{FlowRunRecord, RunStore},
             store::{FlowStore, generate_flow_id},
@@ -24,6 +27,7 @@ mod flow_run {
         log_buffer::LogBuffer,
         model::NewSession,
     };
+    use serde_json::{Value, json};
     use tempfile::{TempDir, tempdir};
     use tokio::{sync::broadcast, time::timeout};
 
@@ -132,6 +136,97 @@ mod flow_run {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn run_storage_persists_across_runs_and_feeds_condition_snapshots() {
+        let (root, _runtime, manager, session) = setup().await;
+        // 工作流：c1 经同步 host.storage 读写持久层（自增 counter），c2 用
+        // storage 只读快照校验镜像可见性，assert 锁定 c2 命中真分支——
+        // 任何一环（播种 / 实时写 / 镜像同步 / 持久化）断裂都会让运行 failed。
+        let wf = workflow(
+            vec![
+                node("s", WorkflowNodeType::Start, NodeConfig::default()),
+                node(
+                    "c1",
+                    WorkflowNodeType::Condition,
+                    NodeConfig {
+                        expression: Some(
+                            "host.storage.put(\"counter\", host.storage.get(\"counter\").value + 1);\nreturn true;"
+                                .into(),
+                        ),
+                        ..NodeConfig::default()
+                    },
+                ),
+                node(
+                    "c2",
+                    WorkflowNodeType::Condition,
+                    NodeConfig {
+                        expression: Some("return storage.counter > 1;".into()),
+                        ..NodeConfig::default()
+                    },
+                ),
+                node(
+                    "a",
+                    WorkflowNodeType::Assert,
+                    NodeConfig {
+                        assertions: Some(vec![AssertionRule::JsonPath(JsonPathAssertionRule {
+                            path: "$.branch".into(),
+                            op: JsonPathOperator::Eq,
+                            value: Some(json!("true")),
+                        })]),
+                        ..NodeConfig::default()
+                    },
+                ),
+            ],
+            vec![edge("e1", "s", "c1"), edge("e2", "c1", "c2"), edge("e3", "c2", "a")],
+        );
+        put_workflow(root.path(), &wf);
+        // 派发前预置存储：counter = 1（跨运行共享的持久层起点）。
+        let store = FlowStore::open(root.path()).unwrap();
+        store
+            .workflow_storage_put(&wf.id, "counter", &json!(1))
+            .unwrap();
+
+        let read_counter = || -> Value {
+            FlowStore::open(root.path())
+                .unwrap()
+                .workflow_storage_get(&wf.id, "counter")
+                .unwrap()
+                .expect("counter persisted")
+                .value
+        };
+
+        // 第一次运行：c1 写入使 counter = 2（put 即落盘），c2 的 storage 快照
+        // 看到镜像更新 → 真分支 → assert 通过。
+        let record = manager.trigger(&wf.id, Some(session), None).await.unwrap();
+        let events = collect_until_finished(&mut manager.subscribe_events()).await;
+        assert_eq!(
+            events.last().map(|event| event.kind.as_str()),
+            Some("finished")
+        );
+        let detail = manager.get_run_detail(&record.id).await.unwrap().unwrap();
+        assert_eq!(
+            detail.run.status, "success",
+            "run error: {:?}",
+            detail.run.error
+        );
+        assert_eq!(read_counter(), json!(2));
+
+        // 第二次运行读到上一次持久化的值（跨运行共享同一存储），再自增到 3。
+        let record = manager.trigger(&wf.id, Some(session), None).await.unwrap();
+        let events = collect_until_finished(&mut manager.subscribe_events()).await;
+        assert_eq!(
+            events.last().map(|event| event.kind.as_str()),
+            Some("finished")
+        );
+        let detail = manager.get_run_detail(&record.id).await.unwrap().unwrap();
+        assert_eq!(
+            detail.run.status, "success",
+            "run error: {:?}",
+            detail.run.error
+        );
+        assert_eq!(read_counter(), json!(3));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn trigger_creates_run_records_checkpoints_and_finalizes() {
         let (root, _runtime, manager, session) = setup().await;
         let wf = workflow(
@@ -143,12 +238,14 @@ mod flow_run {
         );
         put_workflow(root.path(), &wf);
         let mut rx = manager.subscribe_events();
-        let record = manager.trigger(&wf.id, Some(session)).await.unwrap();
+        let record = manager.trigger(&wf.id, Some(session), None).await.unwrap();
 
-        // 建单即返回 running 记录：图快照在场、目标 Session 已绑定。
+        // 建单即返回 running 记录：图快照在场、目标 Session 已绑定、入口解析
+        // 到唯一 start。
         assert_eq!(record.status, "running");
         assert_eq!(record.trigger, "manual");
         assert_eq!(record.session_id, Some(session));
+        assert_eq!(record.start_node_id.as_deref(), Some("s"));
         let snapshot = record
             .graph_snapshot
             .clone()
@@ -216,7 +313,7 @@ mod flow_run {
         );
         put_workflow(root.path(), &wf);
         let mut rx = manager.subscribe_events();
-        let record = manager.trigger(&wf.id, Some(session)).await.unwrap();
+        let record = manager.trigger(&wf.id, Some(session), None).await.unwrap();
 
         // 等 delay 节点开始（checkpoint 已入队）后取消。
         let deadline = std::time::Instant::now() + SETTLE_TIMEOUT;
@@ -258,7 +355,7 @@ mod flow_run {
         );
         put_workflow(root.path(), &wf);
         let mut rx = manager.subscribe_events();
-        let record = manager.trigger(&wf.id, Some(session)).await.unwrap();
+        let record = manager.trigger(&wf.id, Some(session), None).await.unwrap();
 
         let events = collect_until_finished(&mut rx).await;
         assert_eq!(
@@ -290,6 +387,7 @@ mod flow_run {
             trigger: "manual".into(),
             status: "running".into(),
             session_id: None,
+            start_node_id: None,
             started_at: 1,
             finished_at: None,
             error: None,
@@ -335,12 +433,12 @@ mod flow_run {
 
         // 代理未运行且无活动 Session：明确报错且不建单（重放走流程专属连接代，
         // 代理状态不再是触发前提）。
-        let error = manager.trigger(&wf.id, None).await.unwrap_err();
+        let error = manager.trigger(&wf.id, None, None).await.unwrap_err();
         assert!(matches!(error, RunTriggerError::NoSession));
         assert_eq!(manager.list_runs(None, None, 10, 0).await.unwrap().1, 0);
 
         // 工作流不存在同样明确报错（与存储故障分开归类）。
-        let error = manager.trigger("wf-missing", None).await.unwrap_err();
+        let error = manager.trigger("wf-missing", None, None).await.unwrap_err();
         assert!(matches!(error, RunTriggerError::WorkflowNotFound(id) if id == "wf-missing"));
 
         // 图不合法（缺开始节点）：校验失败不建单。
@@ -355,7 +453,7 @@ mod flow_run {
         put_workflow(root.path(), &invalid);
         let session = runtime.create_session(NewSession::default()).unwrap();
         let error = manager
-            .trigger(&invalid.id, Some(session.id))
+            .trigger(&invalid.id, Some(session.id), None)
             .await
             .unwrap_err();
         let RunTriggerError::NotValid(message) = error else {
@@ -363,6 +461,83 @@ mod flow_run {
         };
         assert!(message.contains("开始节点"), "{message}");
         assert_eq!(manager.list_runs(None, None, 10, 0).await.unwrap().1, 0);
+    }
+
+    /// 多 start（多入口工作流）：缺省未指定入口不建单；startNodeId 必须命中
+    /// start 节点；指定后正常建单并落库入口，选中链条执行成功、另一链条 skipped。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn multi_start_entry_resolution_gates_and_persists() {
+        let root = tempdir().unwrap();
+        let runtime = ProxyCrab::open(root.path(), Arc::new(LogBuffer::default())).unwrap();
+        let manager = Arc::new(FlowRunManager::open(
+            root.path().to_path_buf(),
+            runtime.clone(),
+        ));
+        let wf = workflow(
+            vec![
+                node("s1", WorkflowNodeType::Start, NodeConfig::default()),
+                node("s2", WorkflowNodeType::Start, NodeConfig::default()),
+                node("a", WorkflowNodeType::Delay, delay_config(10)),
+                node("b", WorkflowNodeType::Delay, delay_config(10)),
+            ],
+            vec![edge("e1", "s1", "a"), edge("e2", "s2", "b")],
+        );
+        put_workflow(root.path(), &wf);
+        let session = runtime.create_session(NewSession::default()).unwrap();
+
+        // 多 start 且未指定入口：入口歧义，不建单。
+        let error = manager
+            .trigger(&wf.id, Some(session.id), None)
+            .await
+            .unwrap_err();
+        let RunTriggerError::NotValid(message) = error else {
+            panic!("expected NotValid, got {error:?}")
+        };
+        assert!(message.contains("需指定入口 startNodeId"), "{message}");
+        assert!(
+            message.contains("s1") && message.contains("s2"),
+            "{message}"
+        );
+        assert_eq!(manager.list_runs(None, None, 10, 0).await.unwrap().1, 0);
+
+        // 指定的入口不是 start 节点：同样不建单。
+        let error = manager
+            .trigger(&wf.id, Some(session.id), Some("a".into()))
+            .await
+            .unwrap_err();
+        let RunTriggerError::NotValid(message) = error else {
+            panic!("expected NotValid, got {error:?}")
+        };
+        assert!(message.contains("指定的开始节点不存在"), "{message}");
+        assert_eq!(manager.list_runs(None, None, 10, 0).await.unwrap().1, 0);
+
+        // 指定合法入口：建单成功，入口落库；选中链条执行成功，另一链条 skipped。
+        let mut rx = manager.subscribe_events();
+        let record = manager
+            .trigger(&wf.id, Some(session.id), Some("s2".into()))
+            .await
+            .unwrap();
+        assert_eq!(record.start_node_id.as_deref(), Some("s2"));
+        collect_until_finished(&mut rx).await;
+        let detail = manager.get_run_detail(&record.id).await.unwrap().unwrap();
+        assert_eq!(
+            detail.run.status, "success",
+            "run error: {:?}",
+            detail.run.error
+        );
+        let run_status = |node_id: &str| {
+            detail
+                .node_runs
+                .iter()
+                .find(|node| node.node_id == node_id)
+                .unwrap_or_else(|| panic!("node {node_id} checkpoint missing"))
+                .status
+                .clone()
+        };
+        assert_eq!(run_status("s2"), "success");
+        assert_eq!(run_status("b"), "success");
+        assert_eq!(run_status("s1"), "skipped");
+        assert_eq!(run_status("a"), "skipped");
     }
 
     /// 代理未启动也能触发并完成运行（重放走流程专属连接代，出站机制与代理
@@ -386,7 +561,10 @@ mod flow_run {
         let session = runtime.create_session(NewSession::default()).unwrap();
 
         let mut rx = manager.subscribe_events();
-        let run = manager.trigger(&wf.id, Some(session.id)).await.unwrap();
+        let run = manager
+            .trigger(&wf.id, Some(session.id), None)
+            .await
+            .unwrap();
         assert_eq!(run.status, "running");
         collect_until_finished(&mut rx).await;
         let (page, total) = manager.list_runs(None, None, 10, 0).await.unwrap();

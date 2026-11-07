@@ -143,6 +143,18 @@ onBeforeUnmount(() => {
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-window);
   overflow: hidden;
+  transform-origin: center;
+  animation: fw-open var(--dur-base) var(--ease-out);
+}
+@keyframes fw-open {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 
 .fw-titlebar {
@@ -150,7 +162,7 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   height: 34px;
-  padding: 0 6px 0 12px;
+  padding: 0 var(--space-1) 0 var(--space-3);
   background: var(--bg-panel);
   border-bottom: 1px solid var(--border);
   cursor: move;

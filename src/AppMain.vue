@@ -142,25 +142,27 @@ function onOpenSession(event: Event): void {
     <div class="app-main">
       <SessionSidebar :logs="logs" />
       <section class="app-content">
-        <!-- 手风琴当前区块对应的主内容；工作流 KeepAlive 保活编辑态 -->
-        <template v-if="workspaceStore.section === 'capture'">
-          <div class="traffic-controls">
-            <FilterBar
-              :filter="logs.appliedFilter"
-              :session-id="logs.sessionId"
-              :syncing="Boolean(backend.replaceSessionFilter)"
-              :apply-filter="(filter) => logs.applyFilter(filter)"
-            />
-            <InterceptorPipeline :logs="logs" />
+        <!-- 手风琴当前区块对应的主内容，out-in 过渡完成区块切换；工作流 KeepAlive 保活编辑态 -->
+        <Transition name="view" mode="out-in">
+          <div v-if="workspaceStore.section === 'capture'" key="capture" class="app-view">
+            <div class="traffic-controls">
+              <FilterBar
+                :filter="logs.appliedFilter"
+                :session-id="logs.sessionId"
+                :syncing="Boolean(backend.replaceSessionFilter)"
+                :apply-filter="(filter) => logs.applyFilter(filter)"
+              />
+              <InterceptorPipeline :logs="logs" />
+            </div>
+            <LogTable :logs="logs" />
           </div>
-          <LogTable :logs="logs" />
-        </template>
-        <KeepAlive v-else-if="workspaceStore.section === 'workflow'">
-          <WorkflowEditorView />
-        </KeepAlive>
-        <RequestLibraryView v-else-if="workspaceStore.section === 'library'" />
-        <EnvSetsView v-else-if="workspaceStore.section === 'env'" />
-        <RunHistoryView v-else-if="workspaceStore.section === 'runs'" />
+          <KeepAlive v-else-if="workspaceStore.section === 'workflow'" key="workflow">
+            <WorkflowEditorView />
+          </KeepAlive>
+          <RequestLibraryView v-else-if="workspaceStore.section === 'library'" key="library" />
+          <EnvSetsView v-else-if="workspaceStore.section === 'env'" key="env" />
+          <RunHistoryView v-else-if="workspaceStore.section === 'runs'" key="runs" />
+        </Transition>
       </section>
     </div>
 
@@ -193,12 +195,19 @@ function onOpenSession(event: Event): void {
   flex-direction: column;
   background: var(--bg-app);
 }
+/* 区块切换过渡的各分支容器：撑满内容区，切换时整体 fade+位移 */
+.app-view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
 .traffic-controls {
   flex: none;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 6px 8px;
+  gap: var(--space-2);
+  padding: var(--space-2);
   border-bottom: 1px solid var(--border);
   background: color-mix(in srgb, var(--bg-panel) 72%, var(--bg-app));
 }
@@ -219,14 +228,36 @@ function onOpenSession(event: Event): void {
   border: 2px dashed var(--accent);
   border-radius: var(--radius-lg);
   background: color-mix(in srgb, var(--accent) 7%, transparent);
+  animation: drop-ring var(--dur-slow) var(--ease-out);
+}
+@keyframes drop-ring {
+  from {
+    opacity: 0;
+    inset: 28px;
+  }
+  to {
+    opacity: 1;
+    inset: 10px;
+  }
 }
 .drop-hint {
   position: relative;
-  padding: 8px 16px;
+  padding: var(--space-2) var(--space-4);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
   background: var(--bg-elevated);
   box-shadow: var(--shadow-popup);
   font-size: 13px;
+  animation: drop-hint-in var(--dur-slow) var(--ease-spring);
+}
+@keyframes drop-hint-in {
+  from {
+    opacity: 0;
+    transform: scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 </style>

@@ -20,7 +20,7 @@ fn permission_catalog_contains_every_unique_route_action() {
         .map(|action| action.id)
         .collect::<BTreeSet<_>>();
 
-    assert_eq!(actions.len(), 118);
+    assert_eq!(actions.len(), 126);
     assert_eq!(ids.len(), actions.len());
     assert!(
         actions
@@ -87,9 +87,13 @@ fn permission_catalog_has_the_confirmed_default_matrix() {
         "GET /api/system-logs",
         "GET /api/workflows",
         "GET /api/workflows/{id}",
+        "GET /api/workflows/{id}/storage",
         "GET /api/workflows/export",
         "POST /api/filter-scripts/{name}/debug",
+        "POST /api/flow/validate",
+        "POST /api/flow/render-preview",
         "POST /api/logs/ids",
+        "POST /api/logs/search",
         "POST /api/logs/views",
         "POST /api/replay",
         "POST /api/workflows/{id}/validate",
@@ -135,8 +139,11 @@ fn permission_catalog_has_the_confirmed_default_matrix() {
         "PUT /api/session-view",
         "PUT /api/sessions/{id}",
         "PUT /api/sessions/{id}/filter",
+        "PUT /api/workflows/{id}/storage/{key}",
         "DELETE /api/flow-projects/{id}",
         "DELETE /api/workflows/{id}",
+        "DELETE /api/workflows/{id}/storage",
+        "DELETE /api/workflows/{id}/storage/{key}",
         "DELETE /api/request-library/{id}",
         "DELETE /api/session-shares/{id}",
         "POST /api/flow-projects",
@@ -146,6 +153,7 @@ fn permission_catalog_has_the_confirmed_default_matrix() {
         "POST /api/workflows",
         "POST /api/workflows/import",
         "PUT /api/flow-projects/{id}",
+        "PATCH /api/workflows/{id}",
         "PUT /api/workflows/{id}",
         "PUT /api/mcp-tiers",
     ]);
@@ -233,6 +241,14 @@ fn permission_lookup_uses_both_method_and_route_template() {
             .collect::<Vec<_>>(),
         vec!["POST /api/flow/script/dry-run"]
     );
+    // Render preview (template render dry-run): no user code execution, a
+    // read despite the POST verb.
+    assert_eq!(
+        find_api_action("POST", "/api/flow/render-preview")
+            .unwrap()
+            .default_mode,
+        PermissionMode::Allow
+    );
     assert_eq!(
         find_api_action("GET", "/api/flow-projects/{id}")
             .unwrap()
@@ -247,6 +263,13 @@ fn permission_lookup_uses_both_method_and_route_template() {
     );
     assert_eq!(
         find_api_action("PUT", "/api/workflows/{id}")
+            .unwrap()
+            .default_mode,
+        PermissionMode::Approval
+    );
+    // Incremental graph patch mutates a stored definition like PUT: approval.
+    assert_eq!(
+        find_api_action("PATCH", "/api/workflows/{id}")
             .unwrap()
             .default_mode,
         PermissionMode::Approval
@@ -284,7 +307,15 @@ fn permission_lookup_uses_both_method_and_route_template() {
         vec!["POST /mcp"]
     );
     assert!(find_api_action("GET", "/mcp").is_none());
-    assert!(find_api_action("PATCH", "/api/workflows/{id}").is_none());
+    // PATCH /api/workflows/{id} is the workflow_patch action (Approval);
+    // POST on the same path is unregistered — method participates in lookup.
+    assert_eq!(
+        find_api_action("PATCH", "/api/workflows/{id}")
+            .unwrap()
+            .default_mode,
+        PermissionMode::Approval
+    );
+    assert!(find_api_action("POST", "/api/workflows/{id}").is_none());
     assert!(find_api_action("DELETE", "/api/ca").is_none());
     assert!(find_api_action("GET", "/api/logs/123").is_none());
 
@@ -325,7 +356,10 @@ fn permission_lookup_uses_both_method_and_route_template() {
     let workflow_methods = api_actions_for_path("/api/workflows/wf-example")
         .map(|action| action.method)
         .collect::<BTreeSet<_>>();
-    assert_eq!(workflow_methods, BTreeSet::from(["DELETE", "GET", "PUT"]));
+    assert_eq!(
+        workflow_methods,
+        BTreeSet::from(["DELETE", "GET", "PATCH", "PUT"])
+    );
     let validate_methods = api_actions_for_path("/api/workflows/wf-example/validate")
         .map(|action| action.method)
         .collect::<BTreeSet<_>>();

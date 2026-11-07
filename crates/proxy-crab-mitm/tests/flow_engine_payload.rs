@@ -169,7 +169,7 @@ async fn engine_payload_runs_start_http_replay_assert_end() {
 
 /// 契约面对照测试：载荷加载后暴露计划 Task 2 约定的全部对表面
 /// （runWorkflow / evaluateCondition / renderTemplate / validateWorkflowGraph /
-/// buildReplayRequest / 条件编译 / 断言 / 转换 / 循环语义）。
+/// buildReplayRequest / buildPreviewRequest / 条件编译 / 断言 / 转换 / 循环语义）。
 #[tokio::test(flavor = "multi_thread")]
 async fn engine_payload_exposes_contract_surface() {
     let cancel = FlowCancel::new();
@@ -193,6 +193,7 @@ async fn engine_payload_exposes_contract_surface() {
     renderTemplate: typeof engine.renderTemplate,
     validateWorkflowGraph: typeof engine.validateWorkflowGraph,
     buildReplayRequest: typeof engine.buildReplayRequest,
+    buildPreviewRequest: typeof engine.buildPreviewRequest,
     compileConditionTree: typeof engine.compileConditionTree,
     createAssertRunner: typeof engine.createAssertRunner,
     createTransformRunner: typeof engine.createTransformRunner,
@@ -215,6 +216,7 @@ async fn engine_payload_exposes_contract_surface() {
         "renderTemplate",
         "validateWorkflowGraph",
         "buildReplayRequest",
+        "buildPreviewRequest",
         "compileConditionTree",
         "createAssertRunner",
         "createTransformRunner",

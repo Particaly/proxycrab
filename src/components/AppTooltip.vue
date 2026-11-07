@@ -71,12 +71,12 @@ onBeforeUnmount(close);
 
 .app-tooltip {
   position: fixed;
-  z-index: 100004;
+  z-index: var(--z-tooltip);
   width: 240px;
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: 7px 9px;
+  gap: var(--space-05);
+  padding: var(--space-2);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
   background: var(--bg-elevated);
@@ -100,15 +100,19 @@ onBeforeUnmount(close);
   color: var(--text-faint) !important;
 }
 
-.tooltip-enter-active,
-.tooltip-leave-active {
+.tooltip-enter-active {
   transition:
-    opacity 0.12s ease,
-    transform 0.12s ease;
+    opacity var(--dur-fast) ease,
+    transform var(--dur-fast) var(--ease-out);
 }
-.tooltip-enter-from,
-.tooltip-leave-to {
+.tooltip-leave-active {
+  transition: opacity var(--dur-fast) ease;
+}
+.tooltip-enter-from {
   opacity: 0;
   transform: translateY(-3px);
+}
+.tooltip-leave-to {
+  opacity: 0;
 }
 </style>

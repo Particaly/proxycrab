@@ -82,11 +82,15 @@ surface has no `/api/agents.md` endpoint and needs no management API key or loca
 | List enabled Session shares without tokens | `scripts/session-share-list.mjs` |
 | Enable or configure sharing, including restart persistence | `POST /api/session-shares` with optional `session_share_config`; see `references/http-api.md` |
 | Read a supplied Session sharing link | [Session sharing workflow](#read-a-session-sharing-link), then `references/http-api.md#session-share-read-api` |
-| Find existing traffic | `scripts/session-list.mjs`, then `scripts/log-query.mjs` |
+| Find existing traffic | `scripts/session-list.mjs`, then `scripts/log-search.mjs` (predicate search) or `scripts/log-query.mjs` (session filter column) |
+| Inspect or switch environment variable sets (`{{ env.* }}`) | `scripts/env-sets-get.mjs`, `scripts/env-sets-save.mjs` (secret values read back as `******`; writing `******` restores the stored plaintext), `scripts/env-sets-activate.mjs` |
+| Read or write a workflow's persistent storage (`host.storage` / `{{ storage.* }}`) | `scripts/storage-get.mjs`, `scripts/storage-put.mjs`, `scripts/storage-delete.mjs` (workflow-scoped KV, arbitrary JSON, real-time; unlike env, not activation-frozen and not shared across workflows) |
 | Intercept WebSocket messages | Request interceptor `req:on_ws_message`; see `references/lua-api.md`. Verify provenance and disposition with `websocket-messages.mjs` |
 | Inspect WebSocket messages | `scripts/websocket-messages.mjs`, then `body-get.mjs --message-id ID`; see WebSocket sections in HTTP/Lua references |
 | Inspect one capture | `scripts/log-get.mjs` |
 | Replay a request through a Session (source `ProxyCrabRequest`) | `scripts/replay-send.mjs` |
+| Trigger / observe a request workflow run | `scripts/run-trigger.mjs` (multi-start workflows need `--start-node-id`; the 422 lists every start id), `scripts/run-wait.mjs`; see `references/http-api.md#post-apiflowruns` |
+| Preview a workflow node's rendered request before triggering (verify `{{ env/var/fake.* }}` templates without burning real upstream data) | `scripts/render-preview.mjs` (httpReplay nodes; renders would-send baseline+override+templates+header-fidelity with zero outbound traffic, secrets masked; preProcess scripts are not run — pair with `scripts/script-dry-run.mjs`) |
 | Read an interceptor execution's source or entry snapshot | `scripts/interceptor-get.mjs` |
 | Save a complete request/response body | `scripts/body-get.mjs` |
 | Upload an immutable workspace Asset | `scripts/asset-upload.mjs` |
@@ -210,8 +214,23 @@ separately authorized management identity and the ordinary management workflow.
    pooled connection before returning. An existing Session can also be made active with
    `PUT {"session_id":3}` to `/api/active-session`.
 
-3. Narrow the candidate set before reading full details. Only one ProxyCrab filter option can be
-   active at a time:
+3. Narrow the candidate set before reading full details. Prefer `log-search.mjs`
+   (`POST /api/logs/search`, MCP `log_search`) — it composes host/path/method/status/keyword
+   predicates with AND semantics and returns compact match summaries (id/method/uri/code), so you
+   can locate the target requests without pulling every capture:
+
+   ```bash
+   node <skill-dir>/scripts/log-search.mjs \
+     --session-id 3 \
+     --host api.example.com \
+     --status 200 \
+     --limit 50
+   ```
+
+   When `truncated` is true, continue from `next_cursor` (`--max-id` descending default,
+   `--min-id` ascending scans). Only one ProxyCrab filter option can be active at a time; the
+   older `log-query.mjs` (`POST /api/logs/ids`) works on the session filter's single column
+   option instead:
 
    ```bash
    node <skill-dir>/scripts/log-query.mjs \
@@ -220,16 +239,20 @@ separately authorized management identity and the ordinary management workflow.
      --limit 50
    ```
 
-   The bundled query script and direct `POST /api/logs/ids` calls are always read-only. Save a
-   Session filter only when the user explicitly requests it, through
+   Both scripts and direct calls are always read-only and echo the resolved session in the
+   response. Save a Session filter only when the user explicitly requests it, through
    `PUT /api/sessions/{id}/filter`. Column matching is case-sensitive; add `--regex` to
-   `log-query.mjs` for Rust regex syntax such as anchored exact matches or inline `(?i)` flags.
+   `log-query.mjs` (or `log-search.mjs`) for Rust regex syntax such as anchored exact matches or
+   inline `(?i)` flags.
 
 4. Fetch only the candidate captures needed for diagnosis:
 
    ```bash
    node <skill-dir>/scripts/log-get.mjs --session-id 3 --log-id 1042
    ```
+
+   Pass `--max-body-length 4000` to bound large request/response bodies inside the returned
+   detail (MCP `log_detail` exposes the same `max_body_length` argument).
 
 5. Diagnose from concrete evidence:
 

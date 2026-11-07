@@ -96,6 +96,14 @@ const flowRunApi = backend.flowRuns;
 /** 环境集能力位：缺失时工具条不展示切换下拉。 */
 const hasEnvApi = backend.envSets !== undefined;
 
+/** 多入口运行：流程内的全部 start 节点（label 缺省回退「开始」）；单个时
+ * 运行按钮保持单击直发，多个时「运行」变入口选择下拉。 */
+const startEntries = computed(() =>
+  (workflow.value?.nodes ?? [])
+    .filter((node) => node.type === "start")
+    .map((node) => ({ id: node.id, label: node.label?.trim() || "开始" })),
+);
+
 const root = ref<HTMLElement | null>(null);
 
 /** 画布实例（悬浮工具条的画布动作转发出口；expose 见 Canvas.vue）。 */
@@ -340,6 +348,7 @@ onBeforeUnmount(() => {
           :env-options="envSetOptions"
           :active-env-id="activeEnvSetId"
           :issues="mergedIssues"
+          :start-entries="startEntries"
           @save="save"
           @validate="validate"
           @run="triggerRun"
@@ -584,6 +593,7 @@ onBeforeUnmount(() => {
   inset: 0;
   display: flex;
   align-items: center;
+  justify-content: center;
   pointer-events: none;
 }
 

@@ -132,36 +132,39 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", onDocumentPoin
       </span>
       <Io5ChevronDown :size="13" />
     </button>
-    <div
-      v-if="open"
-      class="select-menu"
-      :class="{ 'menu-up': placement === 'up' }"
-      role="listbox"
-      :aria-label="ariaLabel"
-    >
-      <button
-        v-for="(option, index) in options"
-        :key="option.value"
-        type="button"
-        class="select-option"
-        :class="{ active: index === activeIndex, selected: option.value === modelValue }"
-        role="option"
-        :aria-selected="option.value === modelValue"
-        :aria-disabled="option.disabled || undefined"
-        :disabled="option.disabled"
-        @pointerenter="activeIndex = index"
-        @click="choose(option)"
+    <Transition name="pop">
+      <div
+        v-if="open"
+        class="select-menu"
+        :class="{ 'menu-up': placement === 'up' }"
+        :style="{ transformOrigin: placement === 'up' ? 'bottom center' : 'top center' }"
+        role="listbox"
+        :aria-label="ariaLabel"
       >
-        <span class="select-copy">
-          <span>{{ option.label }}</span>
-          <small v-if="option.description">{{ option.description }}</small>
-        </span>
-        <Io5Checkmark v-if="option.value === modelValue" :size="14" />
-      </button>
-      <div v-if="$slots.footer" class="select-footer">
-        <slot name="footer" :close="closeList" />
+        <button
+          v-for="(option, index) in options"
+          :key="option.value"
+          type="button"
+          class="select-option"
+          :class="{ active: index === activeIndex, selected: option.value === modelValue }"
+          role="option"
+          :aria-selected="option.value === modelValue"
+          :aria-disabled="option.disabled || undefined"
+          :disabled="option.disabled"
+          @pointerenter="activeIndex = index"
+          @click="choose(option)"
+        >
+          <span class="select-copy">
+            <span>{{ option.label }}</span>
+            <small v-if="option.description">{{ option.description }}</small>
+          </span>
+          <Io5Checkmark v-if="option.value === modelValue" :size="14" />
+        </button>
+        <div v-if="$slots.footer" class="select-footer">
+          <slot name="footer" :close="closeList" />
+        </div>
       </div>
-    </div>
+    </Transition>
   </div>
 </template>
 
@@ -176,8 +179,8 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", onDocumentPoin
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  padding: 4px 8px 4px 10px;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2) var(--space-1) var(--space-3);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   background: var(--bg-panel);
@@ -186,6 +189,10 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", onDocumentPoin
   text-align: left;
   cursor: pointer;
   outline: none;
+  transition:
+    border-color var(--dur-fast) ease,
+    background var(--dur-fast) ease,
+    box-shadow var(--dur-fast) ease;
 }
 .select-trigger:hover:not(:disabled) {
   border-color: var(--border-strong);
@@ -194,11 +201,12 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", onDocumentPoin
 .select-trigger:focus-visible,
 .open .select-trigger {
   border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 .select-trigger > svg {
   flex: none;
   color: var(--text-secondary);
-  transition: transform 0.12s;
+  transition: transform var(--dur-fast) var(--ease-out);
 }
 .open .select-trigger > svg {
   transform: rotate(180deg);
@@ -225,14 +233,14 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", onDocumentPoin
 }
 .select-menu {
   position: absolute;
-  z-index: 100006;
-  top: calc(100% + 4px);
+  z-index: var(--z-select);
+  top: calc(100% + var(--space-1));
   left: 0;
   right: 0;
   min-width: 150px;
   max-height: 280px;
   overflow-y: auto;
-  padding: 4px;
+  padding: var(--space-1);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
   background: var(--bg-elevated);
@@ -240,7 +248,7 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", onDocumentPoin
 }
 .select-menu.menu-up {
   top: auto;
-  bottom: calc(100% + 4px);
+  bottom: calc(100% + var(--space-1));
 }
 .select-option {
   width: 100%;
@@ -248,8 +256,8 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", onDocumentPoin
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  padding: 5px 7px;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
   border: 0;
   border-radius: var(--radius-sm);
   background: transparent;
@@ -257,6 +265,7 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", onDocumentPoin
   font: inherit;
   text-align: left;
   cursor: pointer;
+  transition: background var(--dur-fast) ease;
 }
 .select-option.active:not(:disabled) {
   background: var(--bg-hover);

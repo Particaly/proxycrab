@@ -6,6 +6,8 @@
 //! - `flow/request-library/bodies/{id}.body` — request body blobs referenced by
 //!   `bodyRef` (created lazily; owned by [`super::request_library`])
 //! - `flow/workflows/{id}.json` — workflow definitions, one file per workflow
+//! - `flow/workflow-data/{id}.json` — workflow-scoped persistent key/value
+//!   storage, one file per workflow (owned by [`crate::flow::workflow_data`])
 //! - `flow/env-sets.json` — versioned envelope of environment variable sets
 //! - `flow/mcp-tools.json` — versioned envelope of the MCP exposure tiers
 //!   (plan Task 25 Step 2; owned by [`crate::flow::mcp_tiers`])
@@ -63,14 +65,17 @@ pub const ENV_SETS_SCHEMA_VERSION: u32 = 1;
 pub use crate::flow::request_library::{RequestLibraryEntry, RequestSource};
 
 /// Directories of the flow family under a workspace root. Shared by workspace
-/// initialization and the v3 to v4 migration; creation is idempotent.
-pub(crate) fn flow_directories(workspace_root: &Path) -> [PathBuf; 4] {
+/// initialization and the v3 to v4 migration; creation is idempotent. The
+/// workflow-data directory (workflow-scoped storage) is additive: existing v4
+/// workspaces self-heal it on the next `FlowStore::open` / workspace open.
+pub(crate) fn flow_directories(workspace_root: &Path) -> [PathBuf; 5] {
     let flow = workspace_root.join(FLOW_DIRECTORY);
     [
         flow.clone(),
         flow.join(PROJECTS_DIRECTORY),
         flow.join(REQUEST_LIBRARY_DIRECTORY),
         flow.join(WORKFLOWS_DIRECTORY),
+        flow.join(super::workflow_data::WORKFLOW_STORAGE_DIRECTORY),
     ]
 }
 
@@ -465,5 +470,6 @@ impl FlowStore {
     }
 
     // Environment variable sets, global variables and the script env
-    // write-back queue live in `env_sets.rs` (same `FlowStore` impl).
+    // write-back queue live in `env_sets.rs`; workflow-scoped key/value
+    // storage lives in `workflow_data.rs` (same `FlowStore` impl).
 }

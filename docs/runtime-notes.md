@@ -107,6 +107,20 @@ ReqFlow workflow execution embeds QuickJS through `rquickjs` in `crates/proxy-cr
   and `host.cancelled()` (poll). Every call exchanges explicit JSON payloads; host errors
   are normalized to `{kind, message}` and thrown into JS as Error objects carrying `kind`,
   so classification survives script handling and returns to Rust unchanged.
+- Workflow storage bridge: `host.storage.get(key)` / `.put(key, value)` / `.delete(key)` /
+  `.keys()` are **synchronous** functions on the nested `host.storage` object — user scripts
+  and condition expressions are compiled as plain `new Function` bodies (no `await`), so an
+  async storage surface would be unreachable from them. The sync implementations open the
+  `FlowStore` directly on the VM thread (local small file + process-wide write lock,
+  millisecond-scale; see `run.rs` `RunHost::storage_sync_op`) and do not participate in
+  cancel racing — a put returns only after the workflow-data file is durably replaced, and a
+  get re-reads the live file, so concurrent runs of the same workflow (separate VMs) share
+  one source of truth. The engine payload wraps `host.storage` at `runWorkflow` start to
+  mirror get/put/delete results into an in-run Map that feeds the per-node
+  `{{ storage.* }}` template namespace and the condition-expression `storage` parameter
+  (dispatch seed + write-through; `run-workflow.ts` `installStorageMirror`). Quota/key
+  violations classify as `blocked`, IO failures as `unknown`; script dry-runs serve storage
+  from a throwaway in-memory stub (`dry_run.rs`).
 - Limits (`FlowLimits`, all configurable): 64 MiB QuickJS heap, an instruction quota of
   100,000 interrupt-handler ticks (QuickJS polls the handler roughly every few thousand
   bytecode instructions), and a 30-second wall-clock budget measured as accumulated active
@@ -200,9 +214,13 @@ appends its node checkpoints (`nodeRuns`).
   three-layer variables, the active environment set frozen at dispatch (later
   switches do not affect a live run; script env write-backs persist to that
   frozen set), and the request-library HAR baseline (stored body blobs are
-  backfilled as base64 `postData`). Secrets from all three layers, the active
-  environment set, and script write-backs join the masking list; node snapshots
-  and error text are masked before persistence and broadcast.
+  backfilled as base64 `postData`). Secrets from all three layers and the
+  active environment set join the masking list, as do script write-backs
+  whose key is marked secret in the dispatch-time set's secret table (the
+  per-key marking is explicit — `values`/`secretValues` table membership;
+  no key/value pattern heuristics). Plain-table write-backs (business values
+  like `applyId`) stay readable in checkpoints; node snapshots and error text
+  are masked before persistence and broadcast.
 - Template rendering: node config strings (`{{ … }}`) are rendered by the
   embedded engine per node execution over the namespaces `node.<refId>.<path>` /
   `input.<path>` (bare path shorthand, `$json` alias) / `var.<name>.<path>` /

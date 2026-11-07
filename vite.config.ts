@@ -81,6 +81,15 @@ export default defineConfig({
           port: 1421,
         }
       : undefined,
+    // 浏览器直开 dev server 时把管理 API 转发给本机后端（默认 18089，可用
+    // PROXYCRAB_DEV_API 覆盖）；Tauri/CLI 内嵌模式不经此路径。dev root 是 src，
+    // 源码目录 src/api 的模块 URL（如 /api/runtime-backend.ts）与 API 前缀冲突，
+    // 故用正则 + 负向前瞻排除带源码扩展名的请求。
+    proxy: {
+      "^/ui-api/.*": process.env.PROXYCRAB_DEV_API ?? "http://127.0.0.1:18089",
+      "^/api/(?!.*\\.(?:ts|mjs|js|vue|css)$).*":
+        process.env.PROXYCRAB_DEV_API ?? "http://127.0.0.1:18089",
+    },
     watch: {
       // 3. tell Vite to ignore watching `src-tauri`
       ignored: ["**/src-tauri/**"],

@@ -1580,6 +1580,7 @@ var __flowEngine = (() => {
     buildBodyWorkflow: () => buildBodyWorkflow,
     buildDownstreamSnapshot: () => buildDownstreamSnapshot,
     buildHeaderFidelityRule: () => buildHeaderFidelityRule,
+    buildPreviewRequest: () => buildPreviewRequest,
     buildReplayRequest: () => buildReplayRequest,
     buildRunGraphSnapshot: () => buildRunGraphSnapshot,
     buildRunRecord: () => buildRunRecord,
@@ -1621,6 +1622,7 @@ var __flowEngine = (() => {
     isTruncatedSnapshot: () => isTruncatedSnapshot,
     isValidRefId: () => isValidRefId,
     jsonDeepEqual: () => jsonDeepEqual,
+    manualRequestToHarEntry: () => manualRequestToHarEntry,
     matchDownstreamUpstreams: () => matchDownstreamUpstreams,
     mergeVariableScopes: () => mergeVariableScopes,
     migrateConditionRules: () => migrateConditionRules,
@@ -1637,6 +1639,7 @@ var __flowEngine = (() => {
     resolveAssignmentValue: () => resolveAssignmentValue,
     resolveCookieDecision: () => resolveCookieDecision,
     resolveCsvDelimiter: () => resolveCsvDelimiter,
+    resolveHarEntryForNode: () => resolveHarEntryForNode,
     resolveHeaderFidelityPlan: () => resolveHeaderFidelityPlan,
     resolveLoopExecutionOptions: () => resolveLoopExecutionOptions,
     resolveLoopItems: () => resolveLoopItems,
@@ -1816,7 +1819,6 @@ var __flowEngine = (() => {
     }
     const startCount = nodes.filter((node) => node.type === "start").length;
     if (startCount === 0) errors.push("\u7F3A\u5C11\u5F00\u59CB\u8282\u70B9");
-    if (startCount > 1) errors.push(`\u5B58\u5728\u591A\u4E2A\u5F00\u59CB\u8282\u70B9\uFF08${startCount} \u4E2A\uFF09\uFF0C\u53EA\u80FD\u4FDD\u7559\u4E00\u4E2A`);
     const stickyIds = new Set(
       nodes.filter((node) => node.type === "stickyNote").map((node) => node.id)
     );
@@ -1841,13 +1843,16 @@ var __flowEngine = (() => {
     if (ids.length === 1) return upstreamOutputs[ids[0]];
     return { ...upstreamOutputs };
   }
-  function buildTemplateContext(nodeOutputs, input = null, variables, env) {
+  function buildTemplateContext(nodeOutputs, input = null, variables, env, storage) {
     const context = { node: { ...nodeOutputs }, input };
     if (variables !== void 0) {
       context.var = { ...variables };
     }
     if (env !== void 0) {
       context.env = { ...env };
+    }
+    if (storage !== void 0) {
+      context.storage = { ...storage };
     }
     return context;
   }
@@ -1961,7 +1966,10 @@ var __flowEngine = (() => {
     for (const edge of edges) {
       if (edge.target !== nodeId) continue;
       const machine = statuses.get(edge.source);
-      if (!machine || machine.status !== "success" && machine.status !== "failed") return false;
+      if (!machine) return false;
+      if (machine.status !== "success" && machine.status !== "failed" && machine.status !== "skipped") {
+        return false;
+      }
     }
     return true;
   }
@@ -1996,9 +2004,39 @@ var __flowEngine = (() => {
       nodeById.set(node.id, node);
     }
     const refKeyOf = (id) => nodeById.get(id)?.refId ?? id;
-    const startNode = workflow.nodes.find((node) => node.type === "start");
-    let queue = [startNode];
-    let enqueued = /* @__PURE__ */ new Set([startNode.id]);
+    const startNodes = workflow.nodes.filter((node) => node.type === "start");
+    let entryNode;
+    if (options.entryNodeId !== void 0) {
+      const matched = workflow.nodes.find(
+        (node) => node.id === options.entryNodeId && node.type === "start"
+      );
+      if (matched === void 0) {
+        const summary2 = {
+          runId,
+          workflowId: workflow.id,
+          status: "failed",
+          error: `\u5165\u53E3\u8282\u70B9\u4E0D\u5B58\u5728\u6216\u4E0D\u662F\u5F00\u59CB\u8282\u70B9\uFF1A${options.entryNodeId}`,
+          nodeRuns: {}
+        };
+        options.onRunFinish?.(summary2);
+        return summary2;
+      }
+      entryNode = matched;
+    } else if (startNodes.length > 1) {
+      const summary2 = {
+        runId,
+        workflowId: workflow.id,
+        status: "failed",
+        error: `\u5B58\u5728\u591A\u4E2A\u5F00\u59CB\u8282\u70B9\uFF08${startNodes.length} \u4E2A\uFF09\uFF0C\u9700\u6307\u5B9A\u5165\u53E3 entryNodeId\uFF1A${startNodes.map((node) => node.id).join("\u3001")}`,
+        nodeRuns: {}
+      };
+      options.onRunFinish?.(summary2);
+      return summary2;
+    } else {
+      entryNode = startNodes[0];
+    }
+    let queue = [entryNode];
+    let enqueued = /* @__PURE__ */ new Set([entryNode.id]);
     const resume = options.resume;
     if (resume !== void 0) {
       const fromNode = workflow.nodes.find((node) => node.id === resume.fromNode);
@@ -2049,6 +2087,28 @@ var __flowEngine = (() => {
       queue = [fromNode];
       enqueued = /* @__PURE__ */ new Set([resume.fromNode, ...closure]);
     }
+    const originId = queue[0].id;
+    const adjacency = /* @__PURE__ */ new Map();
+    for (const edge of workflow.edges) {
+      const targets = adjacency.get(edge.source);
+      if (targets) targets.push(edge.target);
+      else adjacency.set(edge.source, [edge.target]);
+    }
+    const reachable = /* @__PURE__ */ new Set([originId]);
+    for (const cursor of reachable) {
+      for (const target of adjacency.get(cursor) ?? []) {
+        if (!reachable.has(target)) reachable.add(target);
+      }
+    }
+    const presetClosure = resume !== void 0 ? computeUpstreamClosure(workflow.nodes, workflow.edges, resume.fromNode) : void 0;
+    for (const node of workflow.nodes) {
+      if (reachable.has(node.id)) continue;
+      if (presetClosure !== void 0 && presetClosure.includes(node.id)) continue;
+      if (node.type === "stickyNote") continue;
+      const machine = statuses.get(node.id);
+      machine.transition("skipped");
+      nodeRuns.set(node.id, SKIPPED_NODE_RUN());
+    }
     let failureError;
     let cancelled = false;
     const resolveVariables = () => {
@@ -2057,6 +2117,10 @@ var __flowEngine = (() => {
     };
     const resolveEnv = () => {
       const raw = options.env;
+      return typeof raw === "function" ? raw() : raw;
+    };
+    const resolveStorage = () => {
+      const raw = options.storage;
       return typeof raw === "function" ? raw() : raw;
     };
     const scheduleDownstream = (sourceNode, sourceOutput) => {
@@ -2176,12 +2240,14 @@ var __flowEngine = (() => {
               // M7-T2：variables 存在时并入 templateContext.var（未传保持既有形状）；
               // M7-T1：variables 为供给函数时逐节点取当前值（运行期写入可见）；
               // M10-T4：env 快照存在时并入 templateContext.env（{{ env.key }} 引用）；
-              // M14-T3：env 允许供给函数形态（脚本写回的运行快照更新逐节点可见）
+              // M14-T3：env 允许供给函数形态（脚本写回的运行快照更新逐节点可见）；
+              // storage 同 env：镜像快照供给函数逐节点取当前值（host.storage 读写可见）
               templateContext: buildTemplateContext(
                 nodeOutputs,
                 input,
                 resolveVariables(),
-                resolveEnv()
+                resolveEnv(),
+                resolveStorage()
               ),
               // M15-T2：runner 手持内部 id 定位输出表（setVariable from='node'）时换算
               refKeyOf
@@ -3111,6 +3177,14 @@ ${source}`
       if (name === "") return null;
       return { kind: "env", name, path: rest.slice(secondDot + 1) };
     }
+    if (root === "storage") {
+      if (rest === "") return null;
+      const secondDot = rest.indexOf(".");
+      if (secondDot === -1) return { kind: "storage", name: rest, path: "" };
+      const name = rest.slice(0, secondDot);
+      if (name === "") return null;
+      return { kind: "storage", name, path: rest.slice(secondDot + 1) };
+    }
     if (root === "fake") {
       if (rest === "") return null;
       const match = /^([A-Za-z][\w-]*)(?:\(([^)]*)\))?$/.exec(rest);
@@ -3224,6 +3298,17 @@ ${source}`
     }
     return { present: true, value: record[name] };
   }
+  function getStorageRoot(ctx, name) {
+    const table = ctx.storage;
+    if (table === null || typeof table !== "object") {
+      return { present: false, value: void 0 };
+    }
+    const record = table;
+    if (!Object.prototype.hasOwnProperty.call(record, name)) {
+      return { present: false, value: void 0 };
+    }
+    return { present: true, value: record[name] };
+  }
   var FAKE_RENDER_CACHES = /* @__PURE__ */ new WeakMap();
   function fakeCacheFor(ctx) {
     let cache = FAKE_RENDER_CACHES.get(ctx);
@@ -3280,6 +3365,13 @@ ${source}`
           continue;
         }
         rootValue = envRoot.value;
+      } else if (ref.kind === "storage") {
+        const storageRoot = getStorageRoot(ctx, ref.name ?? "");
+        if (!storageRoot.present) {
+          warnings.push(`\u6A21\u677F\u5F15\u7528\u7684\u5B58\u50A8\u952E\u4E0D\u5B58\u5728\uFF1A{{ ${token.raw} }}`);
+          continue;
+        }
+        rootValue = storageRoot.value;
       } else {
         const nodeRoot = getNodeRoot(ctx, ref.nodeId ?? "");
         if (!nodeRoot.present) {
@@ -3684,6 +3776,16 @@ ${source}`
         }
       };
     }
+    const safeStorage = sanitizeJson(context.storage ?? {});
+    if (!safeStorage.ok) {
+      return {
+        ok: false,
+        error: {
+          kind: "runtime",
+          message: `\u6761\u4EF6\u8868\u8FBE\u5F0F\u5165\u53C2\uFF08storage\uFF09\u4E0D\u662F\u53EF\u5B89\u5168\u4F20\u9012\u7684 JSON \u6570\u636E\uFF1A${safeStorage.reason}`
+        }
+      };
+    }
     let factory;
     try {
       factory = new Function(
@@ -3692,6 +3794,7 @@ ${source}`
         "input",
         "vars",
         SCRIPT_ENV_PARAM_NAME,
+        "storage",
         `"use strict";
 ${source}`
       );
@@ -3708,7 +3811,14 @@ ${source}`
     const startedAt = Date.now();
     let value;
     try {
-      value = factory(deadline, checkDeadline, safeInput.value, safeVars.value, envParam.value);
+      value = factory(
+        deadline,
+        checkDeadline,
+        safeInput.value,
+        safeVars.value,
+        envParam.value,
+        safeStorage.value
+      );
     } catch (error) {
       const envWrites2 = envParam.takeWrites();
       if (error === CONDITION_DEADLINE_EXCEEDED) {
@@ -3770,9 +3880,15 @@ ${source}`
       const source = typeof node.config.expression === "string" ? node.config.expression : "";
       const vars = runCtx.nodeCtx.templateContext.var ?? {};
       const env = runCtx.nodeCtx.templateContext.env;
+      const storage = runCtx.nodeCtx.templateContext.storage;
       const result = await runCondition.runCondition(
         source,
-        { input, vars, ...env !== void 0 ? { env } : {} },
+        {
+          input,
+          vars,
+          ...env !== void 0 ? { env } : {},
+          ...storage !== void 0 ? { storage } : {}
+        },
         deps?.timeoutMs
       );
       if (result.envWrites !== void 0) deps?.onEnvWrite?.(result.envWrites);
@@ -4126,6 +4242,8 @@ ${source}`
             ...effectiveStore !== void 0 ? { variables: () => effectiveStore.snapshot() } : {},
             // 环境快照供给（M14-T2）：循环体与主链路同源（供给函数形态，写回可见）
             ...deps.getEnv ? { env: deps.getEnv } : {},
+            // 工作流存储镜像供给：循环体与主链路同源（供给函数形态，读写可见）
+            ...deps.getStorage ? { storage: deps.getStorage } : {},
             selectDownstream: createWorkflowDownstreamSelector(subWorkflow.nodes, subWorkflow.edges),
             ...deps.forwardNodeStart ? {
               onNodeStart: (bodyNode, bodyInput) => {
@@ -4324,6 +4442,270 @@ ${source}`
     return out;
   }
 
+  // flow-engine/src/url-lite.ts
+  var DEFAULT_PORTS = {
+    "http:": "80",
+    "https:": "443",
+    "ws:": "80",
+    "wss:": "443",
+    "ftp:": "21"
+  };
+  var SPECIAL_SCHEMES = /* @__PURE__ */ new Set(["http:", "https:", "ws:", "wss:"]);
+  function urlDecodePercent(text) {
+    if (!text.includes("%") && !text.includes("+")) return text;
+    let out = "";
+    let utf8Buffer = [];
+    const flushUtf8 = () => {
+      if (utf8Buffer.length === 0) return;
+      const buffer = utf8Buffer;
+      utf8Buffer = [];
+      let index = 0;
+      while (index < buffer.length) {
+        const byte = buffer[index];
+        let code;
+        let length;
+        if (byte < 128) {
+          code = byte;
+          length = 1;
+        } else if ((byte & 224) === 192 && index + 1 < buffer.length && (buffer[index + 1] & 192) === 128) {
+          code = (byte & 31) << 6 | buffer[index + 1] & 63;
+          length = 2;
+        } else if ((byte & 240) === 224 && index + 2 < buffer.length && (buffer[index + 1] & 192) === 128 && (buffer[index + 2] & 192) === 128) {
+          code = (byte & 15) << 12 | (buffer[index + 1] & 63) << 6 | buffer[index + 2] & 63;
+          length = 3;
+        } else if ((byte & 248) === 240 && index + 3 < buffer.length && (buffer[index + 1] & 192) === 128 && (buffer[index + 2] & 192) === 128 && (buffer[index + 3] & 192) === 128) {
+          code = (byte & 7) << 18 | (buffer[index + 1] & 63) << 12 | (buffer[index + 2] & 63) << 6 | buffer[index + 3] & 63;
+          length = 4;
+        } else {
+          code = 65533;
+          length = 1;
+        }
+        if (code >= 65536) {
+          const offset = code - 65536;
+          out += String.fromCharCode(55296 + (offset >> 10), 56320 + (offset & 1023));
+        } else {
+          out += String.fromCharCode(code);
+        }
+        index += length;
+      }
+    };
+    for (let index = 0; index < text.length; index++) {
+      const char = text[index];
+      if (char === "+") {
+        flushUtf8();
+        out += " ";
+      } else if (char === "%") {
+        const hex = text.slice(index + 1, index + 3);
+        if (/^[0-9A-Fa-f]{2}$/.test(hex)) {
+          utf8Buffer.push(Number.parseInt(hex, 16));
+          index += 2;
+        } else {
+          flushUtf8();
+          out += "%";
+        }
+      } else {
+        flushUtf8();
+        out += char;
+      }
+    }
+    flushUtf8();
+    return out;
+  }
+  function parseUrl(raw) {
+    const text = raw.replace(/^[\u0000-\u0020]+/, "").replace(/[\u0000-\u0020]+$/, "").replace(/[\t\n\r]/g, "");
+    const schemeMatch = /^([A-Za-z][A-Za-z0-9+.-]*):\/\//.exec(text);
+    if (schemeMatch === null) return null;
+    const protocol = `${schemeMatch[1].toLowerCase()}:`;
+    const isSpecial = SPECIAL_SCHEMES.has(protocol);
+    let authorityEnd = text.length;
+    for (let index = schemeMatch[0].length; index < text.length; index++) {
+      const char = text[index];
+      if (char === "/" || char === "?" || char === "#") {
+        authorityEnd = index;
+        break;
+      }
+    }
+    let authority = text.slice(schemeMatch[0].length, authorityEnd);
+    const rest = text.slice(authorityEnd);
+    const hashAt = rest.indexOf("#");
+    const hash = hashAt === -1 ? "" : rest.slice(hashAt);
+    const beforeHash = hashAt === -1 ? rest : rest.slice(0, hashAt);
+    const searchAt = beforeHash.indexOf("?");
+    const search = searchAt === -1 ? "" : beforeHash.slice(searchAt);
+    const rawPathname = searchAt === -1 ? beforeHash : beforeHash.slice(0, searchAt);
+    const pathname = rawPathname === "" ? "/" : rawPathname;
+    const userinfoAt = authority.lastIndexOf("@");
+    if (userinfoAt !== -1) authority = authority.slice(userinfoAt + 1);
+    let hostname = "";
+    let port = "";
+    if (authority.startsWith("[")) {
+      const close = authority.indexOf("]");
+      if (close === -1) return null;
+      hostname = authority.slice(0, close + 1);
+      const remainder = authority.slice(close + 1);
+      if (remainder !== "") {
+        if (!remainder.startsWith(":")) return null;
+        port = remainder.slice(1);
+      }
+    } else {
+      const colonAt = authority.lastIndexOf(":");
+      if (colonAt === -1) {
+        hostname = authority;
+      } else {
+        hostname = authority.slice(0, colonAt);
+        port = authority.slice(colonAt + 1);
+      }
+    }
+    if (hostname === "") return null;
+    hostname = hostname.toLowerCase();
+    if (port !== "") {
+      if (!/^\d+$/.test(port)) return null;
+      const numeric = Number.parseInt(port, 10);
+      if (numeric > 65535) return null;
+      port = String(numeric);
+    }
+    const defaultPort = DEFAULT_PORTS[protocol];
+    const effectivePort = port !== "" && port !== defaultPort ? port : "";
+    const origin = isSpecial ? `${protocol}//${hostname}${effectivePort !== "" ? `:${effectivePort}` : ""}` : "null";
+    const entries = [];
+    if (search.length > 1) {
+      for (const pair of search.slice(1).split("&")) {
+        if (pair === "") continue;
+        const eq = pair.indexOf("=");
+        if (eq === -1) {
+          entries.push([urlDecodePercent(pair), ""]);
+        } else {
+          entries.push([urlDecodePercent(pair.slice(0, eq)), urlDecodePercent(pair.slice(eq + 1))]);
+        }
+      }
+    }
+    const searchParams = {
+      entries() {
+        return entries[Symbol.iterator]();
+      },
+      get(name) {
+        return entries.find(([entryName]) => entryName === name)?.[1];
+      }
+    };
+    return {
+      protocol,
+      host: `${hostname}${effectivePort !== "" ? `:${effectivePort}` : ""}`,
+      hostname,
+      port: effectivePort,
+      origin,
+      pathname,
+      search,
+      hash,
+      searchParams
+    };
+  }
+
+  // flow-engine/src/header-fidelity.ts
+  var HEADER_FIDELITY_TARGETS = {
+    origin: "Origin",
+    referer: "Referer",
+    userAgent: "User-Agent"
+  };
+  function findCapturedHeader(harEntry, headerName) {
+    const lowered = headerName.toLowerCase();
+    for (const header of harEntry.request.headers) {
+      if (header.name.toLowerCase() === lowered) return header.value;
+    }
+    return void 0;
+  }
+  function resolveDecision(key, item, harEntry, templateContext) {
+    const header = HEADER_FIDELITY_TARGETS[key];
+    if (item.source === "fromCapture") {
+      const captured = findCapturedHeader(harEntry, header);
+      if (captured === void 0) return void 0;
+      return { key, header, value: captured, source: "fromCapture" };
+    }
+    const raw = typeof item.value === "string" ? item.value : "";
+    const rendered = templateContext ? renderTemplate(raw, templateContext).value : raw;
+    if (rendered.trim() === "") return void 0;
+    return { key, header, value: rendered, source: "static" };
+  }
+  function resolveHeaderFidelityPlan(params) {
+    const { fidelity, harEntry, templateContext } = params;
+    const removed = new Set((params.removedHeaders ?? []).map((name) => name.trim().toLowerCase()));
+    const decisions = [];
+    for (const key of Object.keys(HEADER_FIDELITY_TARGETS)) {
+      const header = HEADER_FIDELITY_TARGETS[key];
+      if (removed.has(header.toLowerCase())) continue;
+      const item = fidelity?.[key] ?? { source: "fromCapture" };
+      const decision = resolveDecision(key, item, harEntry, templateContext);
+      if (decision) decisions.push(decision);
+    }
+    return decisions;
+  }
+  var COOKIE_HEADER_NAME = "Cookie";
+  function extractSnapshotCookie(harEntry) {
+    const cookies = harEntry.request.cookies;
+    if (Array.isArray(cookies)) {
+      const parts = [];
+      for (const cookie of cookies) {
+        if (typeof cookie?.name !== "string" || cookie.name === "") continue;
+        parts.push(`${cookie.name}=${typeof cookie.value === "string" ? cookie.value : ""}`);
+      }
+      if (parts.length > 0) return parts.join("; ");
+    }
+    const header = harEntry.request.headers.find(
+      (item) => item.name.toLowerCase() === COOKIE_HEADER_NAME.toLowerCase()
+    )?.value;
+    if (typeof header === "string" && header.trim() !== "") return header.trim();
+    return void 0;
+  }
+  function resolveCookieDecision(params) {
+    const { mode, cookieValue, harEntry, templateContext } = params;
+    const removed = (params.removedHeaders ?? []).some(
+      (name) => name.trim().toLowerCase() === COOKIE_HEADER_NAME.toLowerCase()
+    );
+    if (removed) return void 0;
+    if (mode === "custom") {
+      const raw = typeof cookieValue === "string" ? cookieValue : "";
+      const rendered2 = templateContext ? renderTemplate(raw, templateContext).value : raw;
+      if (rendered2.trim() === "") return void 0;
+      return { key: "cookie", header: COOKIE_HEADER_NAME, value: rendered2, source: "static" };
+    }
+    const captured = extractSnapshotCookie(harEntry);
+    if (captured === void 0) return void 0;
+    const rendered = templateContext ? renderTemplate(captured, templateContext).value : captured;
+    if (rendered.trim() === "") return void 0;
+    return { key: "cookie", header: COOKIE_HEADER_NAME, value: rendered, source: "snapshot" };
+  }
+  function escapeRegExp2(text) {
+    return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+  function buildOriginRegexFilter(url) {
+    const parsed = parseUrl(url);
+    if (parsed === null) return null;
+    const origin = parsed.origin;
+    if (origin === "" || origin === "null") return null;
+    return `^${escapeRegExp2(origin)}/`;
+  }
+  function buildHeaderFidelityRule(params) {
+    const { targetUrl, decisions } = params;
+    if (decisions.length === 0) return null;
+    const regexFilter = buildOriginRegexFilter(targetUrl);
+    if (regexFilter === null) return null;
+    return {
+      priority: 1,
+      condition: {
+        regexFilter,
+        // [-1]：仅匹配扩展自身发起（不关联 tab）的请求，页面流量不受影响
+        tabIds: [-1]
+      },
+      action: {
+        type: "modifyHeaders",
+        requestHeaders: decisions.map((decision) => ({
+          header: decision.header,
+          operation: "set",
+          value: decision.value
+        }))
+      }
+    };
+  }
+
   // flow-engine/src/replay.ts
   var HEADERS_POLICY = {
     /** 一律剥离的请求头名（小写精确匹配） */
@@ -4391,7 +4773,46 @@ ${source}`
       target.timeoutMs = source.timeoutMs;
     }
   }
+  function manualRequestToHarEntry(manual) {
+    return {
+      startedDateTime: (/* @__PURE__ */ new Date(0)).toISOString(),
+      time: 0,
+      request: {
+        method: manual.method,
+        url: manual.url,
+        httpVersion: "HTTP/1.1",
+        headers: Object.entries(manual.headers ?? {}).map(([name, value]) => ({ name, value })),
+        queryString: [],
+        headersSize: -1,
+        bodySize: -1,
+        ...manual.body !== void 0 ? { postData: { mimeType: "", text: manual.body } } : {}
+      },
+      response: {
+        status: 0,
+        statusText: "",
+        httpVersion: "HTTP/1.1",
+        headers: [],
+        content: { size: 0, mimeType: "" },
+        redirectURL: "",
+        headersSize: -1,
+        bodySize: -1
+      },
+      timings: { send: 0, wait: 0, receive: 0 }
+    };
+  }
+  function resolveHarEntryForNode(node, harEntries) {
+    const requestId = node.config.requestId;
+    if (typeof requestId === "string" && requestId !== "") {
+      const entry = harEntries?.[requestId];
+      if (entry !== void 0) return entry;
+    }
+    const manual = node.config.manualRequest;
+    return manual !== void 0 ? manualRequestToHarEntry(manual) : void 0;
+  }
   function buildReplayRequest(params, templateContext) {
+    return buildReplayRequestWithWarnings(params, templateContext).request;
+  }
+  function buildReplayRequestWithWarnings(params, templateContext) {
     const { harEntry, override, extraOverride } = params;
     const harRequest = harEntry.request;
     const headers = {};
@@ -4409,14 +4830,21 @@ ${source}`
     applyReplayOverride(target, override);
     applyReplayOverride(target, extraOverride);
     const strippedHeaders = stripBrowserOnlyHeaders(target.headers);
+    const warnings = [];
     let finalUrl = target.url;
     let finalHeaders = strippedHeaders;
     let finalBody = target.body;
     if (templateContext) {
-      finalUrl = renderTemplate(finalUrl, templateContext).value;
-      finalHeaders = renderValueDeep(strippedHeaders, templateContext).value;
+      const urlRendered = renderTemplate(finalUrl, templateContext);
+      finalUrl = urlRendered.value;
+      warnings.push(...urlRendered.warnings);
+      const headersRendered = renderValueDeep(strippedHeaders, templateContext);
+      finalHeaders = headersRendered.value;
+      warnings.push(...headersRendered.warnings);
       if (finalBody !== void 0 && typeof finalBody === "string") {
-        finalBody = renderTemplate(finalBody, templateContext).value;
+        const bodyRendered = renderTemplate(finalBody, templateContext);
+        finalBody = bodyRendered.value;
+        warnings.push(...bodyRendered.warnings);
       }
     }
     const request = {
@@ -4426,7 +4854,54 @@ ${source}`
     };
     if (finalBody !== void 0) request.body = finalBody;
     if (target.timeoutMs !== void 0) request.timeoutMs = target.timeoutMs;
-    return request;
+    return { request, warnings };
+  }
+  function buildPreviewRequest(params, templateContext) {
+    const { node, harEntries } = params;
+    const config = node.config;
+    const requestId = config.requestId;
+    const baseline = typeof requestId === "string" && requestId !== "" && harEntries?.[requestId] !== void 0 ? "requestLibrary" : "manual";
+    const harEntry = resolveHarEntryForNode(node, harEntries);
+    if (harEntry === void 0) {
+      throw new Error(
+        `\u8282\u70B9 ${node.id} \u65E0\u53EF\u7528\u8BF7\u6C42\u57FA\u7EBF\uFF08config.requestId \u672A\u547D\u4E2D\u8BF7\u6C42\u5E93\u4E14\u672A\u914D\u7F6E manualRequest\uFF09`
+      );
+    }
+    const { request, warnings } = buildReplayRequestWithWarnings(
+      { harEntry, override: config.override },
+      templateContext
+    );
+    const removedHeaders = config.override?.removedHeaders;
+    const decisions = [
+      ...resolveHeaderFidelityPlan({
+        fidelity: config.headerFidelity,
+        harEntry,
+        templateContext,
+        removedHeaders
+      })
+    ];
+    const cookieDecision = resolveCookieDecision({
+      mode: config.cookieMode,
+      cookieValue: config.cookieValue,
+      harEntry,
+      templateContext,
+      removedHeaders
+    });
+    if (cookieDecision !== void 0) decisions.push(cookieDecision);
+    const headers = { ...request.headers };
+    for (const decision of decisions) headers[decision.header] = decision.value;
+    const preview = {
+      method: request.method,
+      url: request.url,
+      headers
+    };
+    if (request.body !== void 0) {
+      if (typeof request.body === "string") preview.body = request.body;
+      else preview.bodyBase64 = encodeBase64(request.body);
+    }
+    const timeoutMs = request.timeoutMs ?? config.timeoutMs;
+    if (timeoutMs !== void 0) preview.timeoutMs = timeoutMs;
+    return { baseline, request: preview, warnings };
   }
 
   // flow-engine/src/cancel-signal.ts
@@ -5015,270 +5490,6 @@ ${lines.join("\n")}`;
     }
   }
 
-  // flow-engine/src/url-lite.ts
-  var DEFAULT_PORTS = {
-    "http:": "80",
-    "https:": "443",
-    "ws:": "80",
-    "wss:": "443",
-    "ftp:": "21"
-  };
-  var SPECIAL_SCHEMES = /* @__PURE__ */ new Set(["http:", "https:", "ws:", "wss:"]);
-  function urlDecodePercent(text) {
-    if (!text.includes("%") && !text.includes("+")) return text;
-    let out = "";
-    let utf8Buffer = [];
-    const flushUtf8 = () => {
-      if (utf8Buffer.length === 0) return;
-      const buffer = utf8Buffer;
-      utf8Buffer = [];
-      let index = 0;
-      while (index < buffer.length) {
-        const byte = buffer[index];
-        let code;
-        let length;
-        if (byte < 128) {
-          code = byte;
-          length = 1;
-        } else if ((byte & 224) === 192 && index + 1 < buffer.length && (buffer[index + 1] & 192) === 128) {
-          code = (byte & 31) << 6 | buffer[index + 1] & 63;
-          length = 2;
-        } else if ((byte & 240) === 224 && index + 2 < buffer.length && (buffer[index + 1] & 192) === 128 && (buffer[index + 2] & 192) === 128) {
-          code = (byte & 15) << 12 | (buffer[index + 1] & 63) << 6 | buffer[index + 2] & 63;
-          length = 3;
-        } else if ((byte & 248) === 240 && index + 3 < buffer.length && (buffer[index + 1] & 192) === 128 && (buffer[index + 2] & 192) === 128 && (buffer[index + 3] & 192) === 128) {
-          code = (byte & 7) << 18 | (buffer[index + 1] & 63) << 12 | (buffer[index + 2] & 63) << 6 | buffer[index + 3] & 63;
-          length = 4;
-        } else {
-          code = 65533;
-          length = 1;
-        }
-        if (code >= 65536) {
-          const offset = code - 65536;
-          out += String.fromCharCode(55296 + (offset >> 10), 56320 + (offset & 1023));
-        } else {
-          out += String.fromCharCode(code);
-        }
-        index += length;
-      }
-    };
-    for (let index = 0; index < text.length; index++) {
-      const char = text[index];
-      if (char === "+") {
-        flushUtf8();
-        out += " ";
-      } else if (char === "%") {
-        const hex = text.slice(index + 1, index + 3);
-        if (/^[0-9A-Fa-f]{2}$/.test(hex)) {
-          utf8Buffer.push(Number.parseInt(hex, 16));
-          index += 2;
-        } else {
-          flushUtf8();
-          out += "%";
-        }
-      } else {
-        flushUtf8();
-        out += char;
-      }
-    }
-    flushUtf8();
-    return out;
-  }
-  function parseUrl(raw) {
-    const text = raw.replace(/^[\u0000-\u0020]+/, "").replace(/[\u0000-\u0020]+$/, "").replace(/[\t\n\r]/g, "");
-    const schemeMatch = /^([A-Za-z][A-Za-z0-9+.-]*):\/\//.exec(text);
-    if (schemeMatch === null) return null;
-    const protocol = `${schemeMatch[1].toLowerCase()}:`;
-    const isSpecial = SPECIAL_SCHEMES.has(protocol);
-    let authorityEnd = text.length;
-    for (let index = schemeMatch[0].length; index < text.length; index++) {
-      const char = text[index];
-      if (char === "/" || char === "?" || char === "#") {
-        authorityEnd = index;
-        break;
-      }
-    }
-    let authority = text.slice(schemeMatch[0].length, authorityEnd);
-    const rest = text.slice(authorityEnd);
-    const hashAt = rest.indexOf("#");
-    const hash = hashAt === -1 ? "" : rest.slice(hashAt);
-    const beforeHash = hashAt === -1 ? rest : rest.slice(0, hashAt);
-    const searchAt = beforeHash.indexOf("?");
-    const search = searchAt === -1 ? "" : beforeHash.slice(searchAt);
-    const rawPathname = searchAt === -1 ? beforeHash : beforeHash.slice(0, searchAt);
-    const pathname = rawPathname === "" ? "/" : rawPathname;
-    const userinfoAt = authority.lastIndexOf("@");
-    if (userinfoAt !== -1) authority = authority.slice(userinfoAt + 1);
-    let hostname = "";
-    let port = "";
-    if (authority.startsWith("[")) {
-      const close = authority.indexOf("]");
-      if (close === -1) return null;
-      hostname = authority.slice(0, close + 1);
-      const remainder = authority.slice(close + 1);
-      if (remainder !== "") {
-        if (!remainder.startsWith(":")) return null;
-        port = remainder.slice(1);
-      }
-    } else {
-      const colonAt = authority.lastIndexOf(":");
-      if (colonAt === -1) {
-        hostname = authority;
-      } else {
-        hostname = authority.slice(0, colonAt);
-        port = authority.slice(colonAt + 1);
-      }
-    }
-    if (hostname === "") return null;
-    hostname = hostname.toLowerCase();
-    if (port !== "") {
-      if (!/^\d+$/.test(port)) return null;
-      const numeric = Number.parseInt(port, 10);
-      if (numeric > 65535) return null;
-      port = String(numeric);
-    }
-    const defaultPort = DEFAULT_PORTS[protocol];
-    const effectivePort = port !== "" && port !== defaultPort ? port : "";
-    const origin = isSpecial ? `${protocol}//${hostname}${effectivePort !== "" ? `:${effectivePort}` : ""}` : "null";
-    const entries = [];
-    if (search.length > 1) {
-      for (const pair of search.slice(1).split("&")) {
-        if (pair === "") continue;
-        const eq = pair.indexOf("=");
-        if (eq === -1) {
-          entries.push([urlDecodePercent(pair), ""]);
-        } else {
-          entries.push([urlDecodePercent(pair.slice(0, eq)), urlDecodePercent(pair.slice(eq + 1))]);
-        }
-      }
-    }
-    const searchParams = {
-      entries() {
-        return entries[Symbol.iterator]();
-      },
-      get(name) {
-        return entries.find(([entryName]) => entryName === name)?.[1];
-      }
-    };
-    return {
-      protocol,
-      host: `${hostname}${effectivePort !== "" ? `:${effectivePort}` : ""}`,
-      hostname,
-      port: effectivePort,
-      origin,
-      pathname,
-      search,
-      hash,
-      searchParams
-    };
-  }
-
-  // flow-engine/src/header-fidelity.ts
-  var HEADER_FIDELITY_TARGETS = {
-    origin: "Origin",
-    referer: "Referer",
-    userAgent: "User-Agent"
-  };
-  function findCapturedHeader(harEntry, headerName) {
-    const lowered = headerName.toLowerCase();
-    for (const header of harEntry.request.headers) {
-      if (header.name.toLowerCase() === lowered) return header.value;
-    }
-    return void 0;
-  }
-  function resolveDecision(key, item, harEntry, templateContext) {
-    const header = HEADER_FIDELITY_TARGETS[key];
-    if (item.source === "fromCapture") {
-      const captured = findCapturedHeader(harEntry, header);
-      if (captured === void 0) return void 0;
-      return { key, header, value: captured, source: "fromCapture" };
-    }
-    const raw = typeof item.value === "string" ? item.value : "";
-    const rendered = templateContext ? renderTemplate(raw, templateContext).value : raw;
-    if (rendered.trim() === "") return void 0;
-    return { key, header, value: rendered, source: "static" };
-  }
-  function resolveHeaderFidelityPlan(params) {
-    const { fidelity, harEntry, templateContext } = params;
-    const removed = new Set((params.removedHeaders ?? []).map((name) => name.trim().toLowerCase()));
-    const decisions = [];
-    for (const key of Object.keys(HEADER_FIDELITY_TARGETS)) {
-      const header = HEADER_FIDELITY_TARGETS[key];
-      if (removed.has(header.toLowerCase())) continue;
-      const item = fidelity?.[key] ?? { source: "fromCapture" };
-      const decision = resolveDecision(key, item, harEntry, templateContext);
-      if (decision) decisions.push(decision);
-    }
-    return decisions;
-  }
-  var COOKIE_HEADER_NAME = "Cookie";
-  function extractSnapshotCookie(harEntry) {
-    const cookies = harEntry.request.cookies;
-    if (Array.isArray(cookies)) {
-      const parts = [];
-      for (const cookie of cookies) {
-        if (typeof cookie?.name !== "string" || cookie.name === "") continue;
-        parts.push(`${cookie.name}=${typeof cookie.value === "string" ? cookie.value : ""}`);
-      }
-      if (parts.length > 0) return parts.join("; ");
-    }
-    const header = harEntry.request.headers.find(
-      (item) => item.name.toLowerCase() === COOKIE_HEADER_NAME.toLowerCase()
-    )?.value;
-    if (typeof header === "string" && header.trim() !== "") return header.trim();
-    return void 0;
-  }
-  function resolveCookieDecision(params) {
-    const { mode, cookieValue, harEntry, templateContext } = params;
-    const removed = (params.removedHeaders ?? []).some(
-      (name) => name.trim().toLowerCase() === COOKIE_HEADER_NAME.toLowerCase()
-    );
-    if (removed) return void 0;
-    if (mode === "custom") {
-      const raw = typeof cookieValue === "string" ? cookieValue : "";
-      const rendered2 = templateContext ? renderTemplate(raw, templateContext).value : raw;
-      if (rendered2.trim() === "") return void 0;
-      return { key: "cookie", header: COOKIE_HEADER_NAME, value: rendered2, source: "static" };
-    }
-    const captured = extractSnapshotCookie(harEntry);
-    if (captured === void 0) return void 0;
-    const rendered = templateContext ? renderTemplate(captured, templateContext).value : captured;
-    if (rendered.trim() === "") return void 0;
-    return { key: "cookie", header: COOKIE_HEADER_NAME, value: rendered, source: "snapshot" };
-  }
-  function escapeRegExp2(text) {
-    return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  }
-  function buildOriginRegexFilter(url) {
-    const parsed = parseUrl(url);
-    if (parsed === null) return null;
-    const origin = parsed.origin;
-    if (origin === "" || origin === "null") return null;
-    return `^${escapeRegExp2(origin)}/`;
-  }
-  function buildHeaderFidelityRule(params) {
-    const { targetUrl, decisions } = params;
-    if (decisions.length === 0) return null;
-    const regexFilter = buildOriginRegexFilter(targetUrl);
-    if (regexFilter === null) return null;
-    return {
-      priority: 1,
-      condition: {
-        regexFilter,
-        // [-1]：仅匹配扩展自身发起（不关联 tab）的请求，页面流量不受影响
-        tabIds: [-1]
-      },
-      action: {
-        type: "modifyHeaders",
-        requestHeaders: decisions.map((decision) => ({
-          header: decision.header,
-          operation: "set",
-          value: decision.value
-        }))
-      }
-    };
-  }
-
   // flow-engine/src/run-variables.ts
   function mergeVariableScopes(scopes) {
     const merged = {};
@@ -5400,42 +5611,6 @@ ${lines.join("\n")}`;
   };
 
   // flow-engine/src/run-workflow.ts
-  function manualRequestToHarEntry(manual) {
-    return {
-      startedDateTime: (/* @__PURE__ */ new Date(0)).toISOString(),
-      time: 0,
-      request: {
-        method: manual.method,
-        url: manual.url,
-        httpVersion: "HTTP/1.1",
-        headers: Object.entries(manual.headers ?? {}).map(([name, value]) => ({ name, value })),
-        queryString: [],
-        headersSize: -1,
-        bodySize: -1,
-        ...manual.body !== void 0 ? { postData: { mimeType: "", text: manual.body } } : {}
-      },
-      response: {
-        status: 0,
-        statusText: "",
-        httpVersion: "HTTP/1.1",
-        headers: [],
-        content: { size: 0, mimeType: "" },
-        redirectURL: "",
-        headersSize: -1,
-        bodySize: -1
-      },
-      timings: { send: 0, wait: 0, receive: 0 }
-    };
-  }
-  function resolveHarEntryForNode(node, harEntries) {
-    const requestId = node.config.requestId;
-    if (typeof requestId === "string" && requestId !== "") {
-      const entry = harEntries?.[requestId];
-      if (entry !== void 0) return entry;
-    }
-    const manual = node.config.manualRequest;
-    return manual !== void 0 ? manualRequestToHarEntry(manual) : void 0;
-  }
   function createHttpReplayRunner(deps) {
     const port = deps?.scriptPort ?? createLocalScriptPort();
     const transport = deps?.replay ?? defaultReplayTransport;
@@ -5557,6 +5732,8 @@ ${lines.join("\n")}`;
       Object.assign(envSnapshot, writes);
       options.onEnvWrite?.(writes);
     } : void 0;
+    const storageMirror = options.storage !== void 0 ? new Map(Object.entries(options.storage)) : void 0;
+    installStorageMirror(storageMirror);
     const variableStore = new RunVariableStore(options.variables ?? {});
     const bodyPlanCache = /* @__PURE__ */ new Map();
     const getBodyPlan = (loopNodeId) => {
@@ -5593,6 +5770,7 @@ ${lines.join("\n")}`;
         getRunners: () => runners,
         getStore: () => variableStore,
         ...envSnapshot !== void 0 ? { getEnv: () => envSnapshot } : {},
+        ...storageMirror !== void 0 ? { getStorage: () => Object.fromEntries(storageMirror) } : {},
         ...options.onNodeStart ? {
           forwardNodeStart: (node, input) => options.onNodeStart?.(node, input)
         } : {},
@@ -5616,8 +5794,10 @@ ${lines.join("\n")}`;
       ...options.defaultFailPolicy !== void 0 ? { defaultFailPolicy: options.defaultFailPolicy } : {},
       ...options.maxNodeConcurrency !== void 0 ? { maxNodeConcurrency: options.maxNodeConcurrency } : {},
       ...options.resume !== void 0 ? { resume: options.resume } : {},
+      ...options.entryNodeId !== void 0 ? { entryNodeId: options.entryNodeId } : {},
       variables: () => variableStore.snapshot(),
       ...envSnapshot !== void 0 ? { env: () => envSnapshot } : {},
+      ...storageMirror !== void 0 ? { storage: () => Object.fromEntries(storageMirror) } : {},
       selectDownstream: createWorkflowDownstreamSelector(workflow.nodes, workflow.edges),
       nestedNodeRun: (node) => nestedRuns.get(node.id),
       pinnedOutputs,
@@ -5625,6 +5805,36 @@ ${lines.join("\n")}`;
       ...options.onNodeFinish !== void 0 ? { onNodeFinish: options.onNodeFinish } : {},
       ...options.onRunFinish !== void 0 ? { onRunFinish: options.onRunFinish } : {}
     });
+  }
+  function installStorageMirror(mirror) {
+    if (mirror === void 0) return;
+    const bridge = globalThis.host?.storage;
+    if (bridge === void 0) return;
+    const rawGet = bridge.get;
+    const rawPut = bridge.put;
+    const rawDelete = bridge.delete;
+    if (typeof rawPut === "function") {
+      bridge.put = (key, value) => {
+        const result = rawPut(key, value);
+        mirror.set(key, value);
+        return result;
+      };
+    }
+    if (typeof rawGet === "function") {
+      bridge.get = (key) => {
+        const result = rawGet(key);
+        if (result?.found === true) mirror.set(key, result.value);
+        else mirror.delete(key);
+        return result;
+      };
+    }
+    if (typeof rawDelete === "function") {
+      bridge.delete = (key) => {
+        const result = rawDelete(key);
+        mirror.delete(key);
+        return result;
+      };
+    }
   }
   function installHostBridgeFromGlobalHost() {
     const bridge = globalThis.host;

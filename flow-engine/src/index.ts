@@ -8,6 +8,7 @@
  *   - renderTemplate         参数模板渲染（{{ node / input / var / env / $json }}）；
  *   - validateWorkflowGraph  图校验；
  *   - buildReplayRequest     HAR 基线 → 重放请求重建；
+ *   - buildPreviewRequest    httpReplay 节点请求面预览（模板渲染 dry-run，零出站）；
  *   - 条件编译 / 断言 / 转换 / 循环语义  condition-builder 与三类逻辑节点 runner。
  *
  * 载荷运行环境：QuickJS（rquickjs）——仅纯 JS + 全局 host 宿主桥对象
@@ -38,6 +39,8 @@ export { renderTemplate } from "./template";
 export { validateWorkflowGraph } from "./executor";
 /** HAR 基线 + 覆盖 → 重放请求重建 */
 export { buildReplayRequest } from "./replay";
+/** httpReplay 节点请求面预览（模板渲染 dry-run，零出站；见 replay.ts） */
+export { buildPreviewRequest } from "./replay";
 
 /* ---- 条件编译（M13-T3 / M16-T2 可视化构建器，纯函数） ---- */
 export {
@@ -119,7 +122,13 @@ export type {
   WorkflowNodeType,
 } from "./types";
 export type { ExecutorOptions, NodeRunner, NodeRunContext, RunSummary } from "./executor";
-export type { ReplayOverride, ReplayRequest } from "./replay";
+export type {
+  BuildPreviewRequestParams,
+  BuildPreviewRequestResult,
+  PreviewRequest,
+  ReplayOverride,
+  ReplayRequest,
+} from "./replay";
 export type { RenderContext, TemplateRef } from "./template";
 export type { ScriptExecPort } from "./script-port";
 export type { CancelSignal } from "./cancel-signal";

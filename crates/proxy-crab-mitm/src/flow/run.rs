@@ -4,10 +4,11 @@
 //! 职责：把引擎载荷（`runWorkflow`）、QuickJS 宿主运行时、`replay_await`
 //! 重放与 runs.db 落库组装成完整的运行链路——
 //!
-//!   trigger(workflowId, sessionId?)：
-//!     前提校验（目标 Session 存在 / 图合法，不满足明确报错不建单；重放走
-//!     流程专属连接代，不要求代理运行中）
-//!     → 建单（`running` + 图快照，落库失败即失败）
+//!   trigger(workflowId, sessionId?, startNodeId?)：
+//!     前提校验（目标 Session 存在 / 图无 error 级问题，不满足明确报错不建单；
+//!     重放走流程专属连接代，不要求代理运行中）+ 入口解析（多 start 工作流
+//!     必须指定 startNodeId 且命中 start 节点，缺省取唯一 start）
+//!     → 建单（`running` + 图快照 + 入口，落库失败即失败）
 //!     → spawn 编排任务（VM + 写队列消费者），立即返回 run 记录。
 //!
 //!   运行期（单消费者写队列，Step 4）：
@@ -34,7 +35,7 @@
 //! 写回链路的运行侧接线。
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     future::Future,
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -52,7 +53,7 @@ use crate::{
         bundle::FLOW_ENGINE_JS,
         env_sets::{mask_secrets_deep, mask_secrets_in_text},
         host::{FlowCancel, FlowError, FlowErrorKind, FlowHost},
-        model::Workflow,
+        model::{Workflow, WorkflowNodeType},
         run_record::{
             DEGRADED_SNAPSHOT_BYTES, RUN_RECORD_MAX_BYTES, SNAPSHOT_MAX_BYTES,
             cap_node_runs_for_record,
@@ -60,7 +61,7 @@ use crate::{
         run_store::{FlowNodeRunRecord, FlowRunRecord, RunStore},
         runtime::{FlowLimits, FlowRuntime},
         store::FlowStore,
-        validate::validate_workflow_graph,
+        validate::{ValidationSeverity, has_blocking_issues, validate_workflow_graph},
     },
     proxy::replay::{REPLAY_DEFAULT_TIMEOUT, ReplayAwaitError, ReplayBody, ReplayRequest},
     workspace::now_millis,
@@ -87,17 +88,24 @@ const RUN_STORE_UNAVAILABLE: &str = "工作流运行记录库不可用";
 const RESTART_INTERRUPTED_ERROR: &str = "进程重启：运行中断";
 
 /// 一次工作流运行携带的引擎输入（派发时定格的快照）。
-struct RunInputs {
+/// 模板渲染预览（render_preview）复用同一装配（`build_run_inputs`）。
+pub(crate) struct RunInputs {
     /// 三层变量合并表（全局 < 项目 < 流程，secret 同层覆盖普通值）。
-    variables: JsonValue,
+    pub(crate) variables: JsonValue,
     /// 激活环境集合快照（`{{ env.* }}` 命名空间）。
-    env: JsonValue,
+    pub(crate) env: JsonValue,
+    /// 工作流存储快照（`{{ storage.* }}` 命名空间的派发种子；运行期经
+    /// `host.storage` 实时读写持久层，写回同步更新引擎侧镜像）。
+    pub(crate) storage: JsonValue,
     /// 请求库 HAR 基线（`requestId` → 单条 entry；body blob 已回填）。
-    har_entries: JsonValue,
+    pub(crate) har_entries: JsonValue,
     /// 派发时定格的激活集合 id（脚本 env 写回的落库目标）。
-    active_set_id: Option<String>,
+    pub(crate) active_set_id: Option<String>,
+    /// 激活集合 secret 键集合（派发时定格；写回掩码分类的唯一显式依据，
+    /// 见 [`Self::secrets`] 与 `consume_run_events` 的 `EnvWrite` 臂）。
+    pub(crate) secret_keys: BTreeSet<String>,
     /// 记录侧脱敏清单（可被脚本写回动态扩充）。
-    secrets: Arc<Mutex<Vec<String>>>,
+    pub(crate) secrets: Arc<Mutex<Vec<String>>>,
 }
 
 /// 触发失败（前提校验不通过 / 存储失败），管理层逐类映射 HTTP 语义。
@@ -229,12 +237,15 @@ impl FlowRunManager {
     }
 
     /// 触发一次工作流运行（trigger = `manual`）：前提校验（目标 Session 存在 /
-    /// 图合法；重放走流程专属连接代，不要求代理运行中）→ 建单（`running`
-    /// + 图快照）→ 派发。前提不满足时不建单，返回明确错误。
+    /// 图无 error 级问题；重放走流程专属连接代，不要求代理运行中）+ 入口解析
+    /// （`start_node_id` 必须命中 start 节点；缺省时恰一个 start 取之，多个
+    /// start 属入口歧义）→ 建单（`running` + 图快照 + 入口）→ 派发。
+    /// 前提不满足时不建单，返回明确错误。
     pub async fn trigger(
         self: &Arc<Self>,
         workflow_id: &str,
         session_id: Option<u64>,
+        start_node_id: Option<String>,
     ) -> std::result::Result<FlowRunRecord, RunTriggerError> {
         // 图定义与运行输入读取走阻塞线程（小 JSON 文件）。
         let root = self.workspace_root.clone();
@@ -260,11 +271,45 @@ impl FlowRunManager {
         {
             return Err(RunTriggerError::SessionMissing(session_id));
         }
+        // 图门禁只看 error 级问题（multiple-start 降为 warning：多入口流程
+        // 合法，入口歧义在下方入口解析把关）。
         let issues = validate_workflow_graph(&workflow.nodes, &workflow.edges);
-        if !issues.is_empty() {
-            let messages: Vec<String> = issues.iter().map(|issue| issue.message.clone()).collect();
+        if has_blocking_issues(&issues) {
+            let messages: Vec<String> = issues
+                .iter()
+                .filter(|issue| issue.severity == ValidationSeverity::Error)
+                .map(|issue| issue.message.clone())
+                .collect();
             return Err(RunTriggerError::NotValid(messages.join("；")));
         }
+
+        // 入口解析（多 start 工作流）：显式 startNodeId 必须命中 start 节点；
+        // 缺省时恰一个 start 取之，多个 start 未指定入口 → 不建单。
+        let start_node_id = start_node_id.filter(|value| !value.trim().is_empty());
+        let start_ids: Vec<&str> = workflow
+            .nodes
+            .iter()
+            .filter(|node| node.node_type == WorkflowNodeType::Start)
+            .map(|node| node.id.as_str())
+            .collect();
+        let start_node_id = match start_node_id.as_deref() {
+            Some(id) => {
+                if !start_ids.contains(&id) {
+                    return Err(RunTriggerError::NotValid(format!(
+                        "指定的开始节点不存在或不是开始节点：{id}"
+                    )));
+                }
+                Some(id.to_owned())
+            }
+            None if start_ids.len() > 1 => {
+                return Err(RunTriggerError::NotValid(format!(
+                    "存在 {} 个开始节点（多入口流程），需指定入口 startNodeId：{}",
+                    start_ids.len(),
+                    start_ids.join("、")
+                )));
+            }
+            None => start_ids.first().map(|id| (*id).to_owned()),
+        };
 
         // 建单（Step 1）：`running` + 图快照；落库失败即失败（不派发）。
         let record = FlowRunRecord {
@@ -274,6 +319,7 @@ impl FlowRunManager {
             trigger: "manual".into(),
             status: "running".into(),
             session_id: Some(session_id),
+            start_node_id,
             started_at: now_millis(),
             finished_at: None,
             error: None,
@@ -379,6 +425,7 @@ impl FlowRunManager {
             cancel.clone(),
             inputs.secrets.clone(),
             inputs.active_set_id.clone(),
+            inputs.secret_keys.clone(),
             rx,
         ));
         // 引擎参数引导：JSON 字面量一次性注入 globalThis（防注入，模板不含
@@ -386,10 +433,12 @@ impl FlowRunManager {
         let host = Arc::new(RunHost {
             runtime: self.runtime.clone(),
             session_id,
+            workspace_root: self.workspace_root.clone(),
+            workflow_id: run.workflow_id.clone(),
             events: tx.clone(),
             cancel: cancel.clone(),
         });
-        let outcome = match build_args_bootstrap(&workflow, &inputs) {
+        let outcome = match build_args_bootstrap(&workflow, &inputs, run.start_node_id.as_deref()) {
             Ok(bootstrap) => drive_vm(host, cancel.clone(), bootstrap).await,
             Err(error) => Err(FlowError::unknown(format!("引擎参数不可序列化：{error:#}"))),
         };
@@ -413,6 +462,7 @@ impl FlowRunManager {
         cancel: FlowCancel,
         secrets: Arc<Mutex<Vec<String>>>,
         active_set_id: Option<String>,
+        secret_keys: BTreeSet<String>,
         mut rx: mpsc::UnboundedReceiver<RunEvent>,
     ) {
         let mut finalized = false;
@@ -450,15 +500,13 @@ impl FlowRunManager {
                 }
                 RunEvent::EnvWrite { writes } => {
                     if let Some(table) = env_write_table(&writes) {
-                        // 写回值并入脱敏清单（记录侧不落 secret 明文；对齐
-                        // 上游 onSecretWrite 的保守口径：写回值视为潜在 secret）。
+                        // 写回值按显式 secret 标记并入脱敏清单：键在派发时
+                        // 定格的激活集合 secret 表（secret_keys）内才掩码，
+                        // 普通键与动态新键的写回在记录侧保持明文可查（无
+                        // 键名/值模式匹配；落库侧 apply_env_write_back 同
+                        // 口径双表路由）。
                         if let Ok(mut secrets) = secrets.lock() {
-                            for value in table.values() {
-                                secrets.push(match value.as_str() {
-                                    Some(text) => text.to_owned(),
-                                    None => value.to_string(),
-                                });
-                            }
+                            secrets.extend(write_back_secret_values(&table, &secret_keys));
                         }
                         // 落库到派发时定格的激活集合（快照语义）。提交即入队
                         // （已提交批次不因后续失败撤回），持久化失败只告警。
@@ -650,7 +698,9 @@ const RUN_DRIVER_JS: &str = r"(async () => {
     const summary = await engine.runWorkflow(args.workflow, {
       variables: args.variables,
       env: args.env,
+      storage: args.storage,
       harEntries: args.harEntries,
+      entryNodeId: args.entryNodeId ?? undefined,
       signal,
       onNodeStart: (node, input) => emit({ type: 'node-start', nodeId: node.id, input }),
       onNodeFinish: (node, nodeRun) => emit({ type: 'node-finish', nodeId: node.id, nodeRun }),
@@ -668,10 +718,15 @@ const RUN_DRIVER_JS: &str = r"(async () => {
 /// 运行宿主桥：把引擎的宿主调用接到真实运行时——重放走
 /// [`ProxyCrab::replay_await_flow`]（流程专属连接代，不要求代理运行中；错误按
 /// `[kind]` 前缀约定归一，引擎按前缀分类），事件经 mpsc 交付本运行的写队列
-/// 消费者，取消轮询读取共享 [`FlowCancel`]。
+/// 消费者，取消轮询读取共享 [`FlowCancel`]；工作流存储按 `workflow_id` 直连
+/// 持久层（实时读写，put 即落盘）。
 struct RunHost {
     runtime: Arc<crate::runtime::ProxyCrab>,
     session_id: u64,
+    /// 工作流存储的落盘根（`<workspace>/flow/workflow-data/` 的父目录）。
+    workspace_root: std::path::PathBuf,
+    /// 存储作用域：本次运行的工作流 id（跨运行共享同一份存储的隔离键）。
+    workflow_id: String,
     events: mpsc::UnboundedSender<RunEvent>,
     cancel: FlowCancel,
 }
@@ -796,6 +851,88 @@ impl FlowHost for RunHost {
     async fn cancelled(&self) -> Result<JsonValue, FlowError> {
         Ok(JsonValue::from(self.cancel.is_cancelled()))
     }
+
+    // ------------------------------------------------------------------
+    // 同步工作流存储面：本地小文件 IO 直接在 VM 执行线程完成（毫秒级，见
+    // host.rs 同步面约定），不经 spawn_blocking / 取消竞速。
+    // ------------------------------------------------------------------
+
+    fn storage_get(&self, key: &str) -> Result<JsonValue, FlowError> {
+        let workflow_id = self.workflow_id.clone();
+        self.storage_sync_op("读取", move |store| {
+            Ok(match store.workflow_storage_get(&workflow_id, key)? {
+                Some(entry) => json!({ "found": true, "value": entry.value }),
+                None => json!({ "found": false, "value": null }),
+            })
+        })
+    }
+
+    fn storage_put(&self, key: &str, value: &JsonValue) -> Result<JsonValue, FlowError> {
+        let workflow_id = self.workflow_id.clone();
+        self.storage_sync_op("写入", move |store| {
+            let entry = store.workflow_storage_put(&workflow_id, key, value)?;
+            Ok(json!({ "updatedAt": entry.updated_at }))
+        })
+    }
+
+    fn storage_delete(&self, key: &str) -> Result<JsonValue, FlowError> {
+        let workflow_id = self.workflow_id.clone();
+        self.storage_sync_op("删除", move |store| {
+            // 键不存在按成功处理（deleted=false），与宿主桥契约一致；
+            // 持久层以 FlowEntityNotFound 表达缺失，在此归一。
+            match store.workflow_storage_delete(&workflow_id, key) {
+                Ok(()) => Ok(json!({ "deleted": true })),
+                Err(error)
+                    if matches!(
+                        error.downcast_ref::<crate::error::Error>(),
+                        Some(crate::error::Error::FlowEntityNotFound(_, _))
+                    ) =>
+                {
+                    Ok(json!({ "deleted": false }))
+                }
+                Err(error) => Err(error),
+            }
+        })
+    }
+
+    fn storage_keys(&self) -> Result<JsonValue, FlowError> {
+        self.storage_sync_op("列举", |store| {
+            let keys: Vec<String> = store
+                .workflow_storage_entries(&self.workflow_id)?
+                .into_keys()
+                .collect();
+            Ok(json!({ "keys": keys }))
+        })
+    }
+}
+
+/// 从脚本存储参数提取键名；空键由持久层校验（InvalidArgument → blocked）。
+fn storage_flow_error(error: &anyhow::Error) -> FlowError {
+    // 键 / 配额类参数拒绝是运行环境拒绝（blocked），其余（IO 故障等）归 unknown。
+    if matches!(
+        error.downcast_ref::<crate::error::Error>(),
+        Some(crate::error::Error::InvalidArgument(_))
+    ) {
+        FlowError::new(FlowErrorKind::Blocked, format!("{error:#}"))
+    } else {
+        FlowError::unknown(format!("工作流存储操作失败：{error:#}"))
+    }
+}
+
+impl RunHost {
+    /// 同步执行一次工作流存储操作：开 [`FlowStore`] 直连持久层（实时落盘
+    /// 语义：put 返回即持久化完成），并统一错误分类（blocked / unknown）。
+    fn storage_sync_op<T>(
+        &self,
+        label: &str,
+        op: impl FnOnce(&FlowStore) -> Result<T>,
+    ) -> Result<T, FlowError> {
+        let outcome = (|| {
+            let store = FlowStore::open(&self.workspace_root)?;
+            op(&store).map_err(|error| anyhow::anyhow!("工作流存储{label}失败：{error:#}"))
+        })();
+        outcome.map_err(|error| storage_flow_error(&error))
+    }
 }
 
 /// 驱动一次运行的 VM：装配 [`FlowRuntime`]（独立上下文，运行结束整体
@@ -817,12 +954,19 @@ async fn drive_vm(
 
 /// 引擎参数引导：把工作流定义与运行输入以 JSON 字面量一次性注入
 /// `globalThis.__runArgs`（数据不进模板源码，防注入；驱动脚本保持静态常量）。
-fn build_args_bootstrap(workflow: &Workflow, inputs: &RunInputs) -> Result<String> {
+/// `start_node_id` 为多 start 工作流的入口（None 时引擎按唯一 start 解析）。
+fn build_args_bootstrap(
+    workflow: &Workflow,
+    inputs: &RunInputs,
+    start_node_id: Option<&str>,
+) -> Result<String> {
     let args = json!({
         "workflow": workflow,
         "variables": inputs.variables,
         "env": inputs.env,
+        "storage": inputs.storage,
         "harEntries": inputs.har_entries,
+        "entryNodeId": start_node_id,
     });
     let text =
         serde_json::to_string(&args).map_err(|error| anyhow!("运行参数不可序列化: {error}"))?;
@@ -952,6 +1096,25 @@ fn env_write_table(writes: &JsonValue) -> Option<BTreeMap<String, JsonValue>> {
     )
 }
 
+/// 写回值按显式 secret 标记筛选（纯函数）：只有键落在派发时定格的激活
+/// 集合 secret 表（[`crate::flow::env_sets::EnvSnapshot::secret_keys`]）
+/// 的写回值并入运行脱敏清单；普通键与动态新键不掩码——标记一律显式，
+/// 不做键名/值模式匹配（用户口径：规则匹配徒增心智负担）。非字符串值
+/// 取字符串化形态（与既有掩码口径一致）。
+fn write_back_secret_values(
+    table: &BTreeMap<String, JsonValue>,
+    secret_keys: &BTreeSet<String>,
+) -> Vec<String> {
+    table
+        .iter()
+        .filter(|(key, _)| secret_keys.contains(key.as_str()))
+        .map(|(_, value)| match value.as_str() {
+            Some(text) => text.to_owned(),
+            None => value.to_string(),
+        })
+        .collect()
+}
+
 /// 阻塞加载工作流定义与运行输入（变量三层合并、环境快照、HAR 基线、
 /// 脱敏清单）。工作流不存在是明确的触发前提失败（[`RunTriggerError::
 /// WorkflowNotFound`]），与存储故障分开归类。
@@ -969,7 +1132,8 @@ fn load_run_inputs(
 }
 
 /// 装配一次运行的引擎输入快照（变量三层合并、环境快照、HAR 基线、脱敏清单）。
-fn build_run_inputs(store: &FlowStore, workflow: &Workflow) -> Result<RunInputs> {
+/// 模板渲染预览（render_preview）复用同一装配，保证预览与运行的输入口径一致。
+pub(crate) fn build_run_inputs(store: &FlowStore, workflow: &Workflow) -> Result<RunInputs> {
     let globals = store.env_globals().unwrap_or_default();
     let mut variables = globals.values.clone();
     // 同层 secret 覆盖同名普通值（对齐环境集合的合并口径）。
@@ -999,13 +1163,25 @@ fn build_run_inputs(store: &FlowStore, workflow: &Workflow) -> Result<RunInputs>
     secrets.extend(workflow.secret_variables.values().cloned());
 
     // 环境快照（派发时定格；读取失败按空环境降级，不阻断运行）。
-    let (env, active_set_id) = match (store.active_env_set_id(), store.active_env_snapshot()) {
-        (Ok(id), Ok(snapshot)) => {
-            secrets.extend(snapshot.secret_values.iter().cloned());
-            (snapshot.values, id)
-        }
-        _ => (BTreeMap::new(), None),
-    };
+    // secret_keys 随快照一并定格：脚本写回只有命中这些键才并入掩码清单。
+    let (env, active_set_id, secret_keys) =
+        match (store.active_env_set_id(), store.active_env_snapshot()) {
+            (Ok(id), Ok(snapshot)) => {
+                secrets.extend(snapshot.secret_values.iter().cloned());
+                (snapshot.values, id, snapshot.secret_keys)
+            }
+            _ => (BTreeMap::new(), None, BTreeSet::new()),
+        };
+
+    // 工作流存储快照（派发时定格的模板种子；读取失败按空表降级，不阻断
+    // 运行——运行期脚本仍可经 host.storage 实时读写持久层）。
+    let storage = store
+        .workflow_storage_snapshot(&workflow.id)
+        .map(|snapshot| JsonValue::Object(snapshot.into_iter().collect()))
+        .unwrap_or_else(|error| {
+            tracing::warn!("degrading workflow storage snapshot to empty: {error:#}");
+            JsonValue::Object(serde_json::Map::new())
+        });
 
     // HAR 基线：requestId → 单条 entry；body blob 回填为 base64 postData
     //（引擎 decodeBaselinePostData 还原为字节）。库读取失败按空表降级。
@@ -1045,8 +1221,10 @@ fn build_run_inputs(store: &FlowStore, workflow: &Workflow) -> Result<RunInputs>
     Ok(RunInputs {
         variables: json!(variables),
         env: json!(env),
+        storage,
         har_entries: JsonValue::Object(har_entries),
         active_set_id,
+        secret_keys,
         secrets: Arc::new(Mutex::new(secrets)),
     })
 }
@@ -1111,15 +1289,21 @@ mod tests {
         let inputs = RunInputs {
             variables: json!({ "a": 1 }),
             env: json!({}),
+            storage: json!({}),
             har_entries: json!({}),
             active_set_id: None,
+            secret_keys: BTreeSet::new(),
             secrets: Arc::new(Mutex::new(Vec::new())),
         };
-        let bootstrap = build_args_bootstrap(&workflow, &inputs).unwrap();
+        let bootstrap = build_args_bootstrap(&workflow, &inputs, None).unwrap();
         assert!(bootstrap.starts_with("globalThis.__runArgs = "));
-        // 工作流定义以 JSON 字面量注入（数据不进模板源码）。
+        // 工作流定义以 JSON 字面量注入（数据不进模板源码）；入口缺省注入 null。
         assert!(bootstrap.contains("\"wf-1\""));
+        assert!(bootstrap.contains("\"entryNodeId\":null"));
         assert!(bootstrap.ends_with(';'));
+
+        let with_entry = build_args_bootstrap(&workflow, &inputs, Some("s2")).unwrap();
+        assert!(with_entry.contains("\"entryNodeId\":\"s2\""));
     }
 
     #[test]
@@ -1195,6 +1379,27 @@ mod tests {
         assert_eq!(table["token"], json!("abc"));
         assert!(env_write_table(&json!([1, 2])).is_none());
         assert!(env_write_table(&Value::Null).is_none());
+    }
+
+    #[test]
+    fn write_back_secret_values_follows_the_explicit_key_marking() {
+        // 只有键在激活集合 secret 表（显式标记）内的写回值入清单：secret
+        // 键（含非字符串值的字符串化形态）掩码，业务键保持明文可查。
+        let secret_keys: BTreeSet<String> = ["token".to_owned(), "secretBlob".to_owned()]
+            .into_iter()
+            .collect();
+        let table = env_write_table(&json!({
+            "token": "t-2",
+            "applyId": "A2024-001",
+            "secretBlob": { "id": 7 },
+        }))
+        .unwrap();
+        let mut masked = write_back_secret_values(&table, &secret_keys);
+        masked.sort();
+        assert_eq!(masked, vec!["t-2".to_owned(), "{\"id\":7}".to_owned()]);
+        assert!(masked.iter().all(|value| !value.contains("A2024-001")));
+        // 无 secret 键的集合不掩码任何写回值。
+        assert!(write_back_secret_values(&table, &BTreeSet::new()).is_empty());
     }
 
     #[test]

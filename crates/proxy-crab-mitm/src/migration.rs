@@ -480,7 +480,7 @@ fn table_exists(connection: &Connection, table: &str) -> Result<bool> {
     )?)
 }
 
-fn table_has_column(connection: &Connection, table: &str, column: &str) -> Result<bool> {
+pub(crate) fn table_has_column(connection: &Connection, table: &str, column: &str) -> Result<bool> {
     let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
     let names = statement
         .query_map([], |row| row.get::<_, String>(1))?

@@ -598,14 +598,18 @@ async function save(options: { silent?: boolean } = {}): Promise<void> {
 
 /**
  * 触发一次运行（按最近保存的流程定义；后端做前置校验并回错误码）。
- * 启动成功立即对账一次，让画布锁定与取消按钮马上生效。
+ * `startNodeId` 为多入口工作流的入口选择（多 start 流程必填，缺省后端报
+ * 422）。启动成功立即对账一次，让画布锁定与取消按钮马上生效。
  */
-async function triggerRun(): Promise<void> {
+async function triggerRun(startNodeId?: string): Promise<void> {
   const flowRunApi = getBackend().flowRuns;
   if (!workflow.value || runLocked.value || !flowRunApi || triggering.value) return;
   triggering.value = true;
   try {
-    const run = await flowRunApi.trigger({ workflowId: workflow.value.id });
+    const run = await flowRunApi.trigger({
+      workflowId: workflow.value.id,
+      ...(startNodeId ? { startNodeId } : {}),
+    });
     await refreshFlowRuns();
     appStore.toast(`运行已启动（${run.id}）`, "success");
   } catch (error) {

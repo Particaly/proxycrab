@@ -367,7 +367,8 @@ onBeforeUnmount(() => {
         <Io5ChevronDown :size="12" />
       </button>
 
-      <div v-if="menuOpen" class="fb-menu">
+      <Transition name="pop">
+        <div v-if="menuOpen" class="fb-menu">
         <button class="fb-option" :class="{ selected: !draft.option }" @click="selectNone">
           <span>未选择</span>
           <Io5Checkmark v-if="!draft.option" :size="13" />
@@ -441,7 +442,8 @@ onBeforeUnmount(() => {
             />
           </button>
         </div>
-      </div>
+        </div>
+      </Transition>
     </div>
 
     <div v-if="draft.option?.kind === 'column'" class="fb-group">
@@ -532,8 +534,8 @@ onBeforeUnmount(() => {
   background: var(--bg-panel);
   flex: none;
   transition:
-    background 0.12s,
-    border-color 0.12s;
+    background var(--dur-fast) ease,
+    border-color var(--dur-fast) ease;
 }
 .filter-bar.empty {
   border-style: dashed;
@@ -578,29 +580,31 @@ onBeforeUnmount(() => {
 .fb-menu {
   position: absolute;
   left: 0;
-  top: calc(100% + 4px);
+  top: calc(100% + var(--space-1));
   width: 300px;
   max-height: min(460px, calc(100vh - 170px));
   overflow-y: auto;
-  padding: 4px;
+  padding: var(--space-1);
   background: var(--bg-elevated);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-popup);
+  transform-origin: top left;
+  /* 行内下拉保持在全局浮层（菜单/对话框）之下 */
   z-index: 1000;
 }
 .fb-section {
   border-top: 1px solid var(--border);
-  margin-top: 4px;
-  padding-top: 4px;
+  margin-top: var(--space-1);
+  padding-top: var(--space-1);
 }
 .fb-section-heading {
   min-height: 28px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  padding: 3px 8px;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
   color: var(--text-faint);
   font-size: 11px;
   font-weight: 600;
@@ -608,7 +612,7 @@ onBeforeUnmount(() => {
 .fb-regex {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: var(--space-1);
   color: var(--text-secondary);
   font-weight: 400;
   cursor: pointer;
@@ -621,8 +625,8 @@ onBeforeUnmount(() => {
   min-height: 30px;
   display: flex;
   align-items: center;
-  gap: 7px;
-  padding: 4px 8px;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
   border: 0;
   border-radius: var(--radius-sm);
   background: transparent;
@@ -630,6 +634,7 @@ onBeforeUnmount(() => {
   font: inherit;
   text-align: left;
   cursor: pointer;
+  transition: background var(--dur-fast) ease;
 }
 .fb-option:hover {
   background: var(--bg-hover);
@@ -653,7 +658,7 @@ onBeforeUnmount(() => {
   margin-left: auto;
 }
 .fb-empty {
-  padding: 6px 8px;
+  padding: var(--space-1) var(--space-2);
   color: var(--text-faint);
   font-size: 11px;
 }
@@ -700,17 +705,17 @@ button.fb-group-trigger.active {
   border-color: transparent;
 }
 .fb-input.dirty {
-  padding-left: 31px;
+  padding-left: 30px;
 }
 .fb-input.invalid {
-  padding-left: 31px;
+  padding-left: 30px;
 }
 .fb-input.active {
   background: transparent;
 }
 .fb-enter-hint {
   position: absolute;
-  left: 9px;
+  left: var(--space-2);
   top: 50%;
   z-index: 1;
   color: var(--accent);
@@ -719,7 +724,7 @@ button.fb-group-trigger.active {
 }
 .fb-regex-error {
   position: absolute;
-  left: 9px;
+  left: var(--space-2);
   top: 50%;
   z-index: 1;
   transform: translateY(-50%);
@@ -727,7 +732,7 @@ button.fb-group-trigger.active {
 }
 .fb-loading {
   position: absolute;
-  left: 9px;
+  left: var(--space-2);
   top: 50%;
   z-index: 1;
   transform: translateY(-50%);
@@ -753,7 +758,7 @@ button.fb-group-trigger.active {
 }
 .fb-clear {
   position: absolute;
-  right: 4px;
+  right: var(--space-1);
   top: 50%;
   transform: translateY(-50%);
 }
@@ -762,7 +767,7 @@ button.fb-group-trigger.active {
   flex: none;
   display: inline-flex;
   align-items: center;
-  padding: 0 8px 0 4px;
+  padding: 0 var(--space-2) 0 var(--space-1);
   align-self: stretch;
   color: var(--text-faint);
 }

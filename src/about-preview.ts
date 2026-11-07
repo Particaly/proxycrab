@@ -1,4 +1,5 @@
 import "./styles/base.css";
+import "./styles/motion.css";
 import { createApp, h } from "vue";
 import AboutWindow from "./windows/AboutWindow.vue";
 

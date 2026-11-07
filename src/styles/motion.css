@@ -1,0 +1,114 @@
+/*
+ * 全局动效原语：供 Vue <Transition>（类名组）与纯 CSS 进场动画共用。
+ *
+ * 约定：
+ * - 时长/缓动一律取 base.css 的 --dur-* / --ease-* token；
+ * - `pop` 组用于菜单/下拉/对话框等弹层，进场形态可用 CSS 变量微调：
+ *   --pop-scale-from（初始缩放）、--pop-shift-from（初始位移）、--pop-scale-leave（离场缩放）；
+ * - transform-origin 由组件按出现位置自行内联（右键菜单跟随点击点）。
+ */
+
+/* ---------- fade：遮罩/普通淡入淡出 ---------- */
+.fade-enter-active,
+.fade-appear-active {
+  transition: opacity var(--dur-base) var(--ease-out);
+}
+.fade-leave-active {
+  transition: opacity var(--dur-fast) ease;
+}
+.fade-enter-from,
+.fade-appear-from,
+.fade-leave-to {
+  opacity: 0;
+}
+
+/* ---------- pop：弹层缩放淡入（菜单从触发器方向出现） ---------- */
+.pop-enter-active,
+.pop-appear-active {
+  transition:
+    opacity var(--dur-base) var(--ease-out),
+    transform var(--dur-base) var(--ease-out);
+}
+.pop-leave-active {
+  transition:
+    opacity var(--dur-fast) ease,
+    transform var(--dur-fast) ease;
+}
+.pop-enter-from,
+.pop-appear-from {
+  opacity: 0;
+  transform: scale(var(--pop-scale-from, 0.96)) translateY(var(--pop-shift-from, 0px));
+}
+.pop-leave-to {
+  opacity: 0;
+  transform: scale(var(--pop-scale-leave, 0.98));
+}
+
+/* ---------- view：主内容区区块切换（out-in 编排） ---------- */
+.view-enter-active {
+  transition:
+    opacity var(--dur-slow) var(--ease-out),
+    transform var(--dur-slow) var(--ease-out);
+}
+.view-leave-active {
+  transition: opacity var(--dur-fast) ease;
+}
+.view-enter-from {
+  opacity: 0;
+  transform: translateY(6px);
+}
+.view-leave-to {
+  opacity: 0;
+}
+
+/* ---------- acc：侧栏手风琴体内容切换 ---------- */
+.acc-enter-active {
+  transition:
+    opacity var(--dur-base) var(--ease-out),
+    transform var(--dur-base) var(--ease-out);
+}
+.acc-leave-active {
+  transition: opacity var(--dur-fast) ease;
+}
+.acc-enter-from {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+.acc-leave-to {
+  opacity: 0;
+}
+
+/* ---------- toast：通知进出场 + 列表重排 ---------- */
+.toast-enter-active {
+  transition:
+    opacity var(--dur-base) var(--ease-spring),
+    transform var(--dur-base) var(--ease-spring);
+}
+.toast-leave-active {
+  transition:
+    opacity var(--dur-base) ease,
+    transform var(--dur-base) ease;
+}
+.toast-enter-from {
+  opacity: 0;
+  transform: translateY(-10px) scale(0.98);
+}
+.toast-leave-to {
+  opacity: 0;
+  transform: translateY(-6px);
+}
+.toast-move {
+  transition: transform var(--dur-base) var(--ease-out);
+}
+
+/* ---------- 无障碍：系统请求减少动效时全关（保留终态） ---------- */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
+}

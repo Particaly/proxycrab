@@ -51,6 +51,28 @@ test("run-trigger omits sessionId and lets the server fall back to the active Se
   assert.deepEqual(JSON.parse(stdout), { id: "run-2", status: "running" });
 });
 
+test("run-trigger posts startNodeId for multi-start entry selection and omits it when unset", async () => {
+  const record = { id: "run-3", workflowId: "wf-1", status: "running", startNodeId: "s2" };
+  const { stdout, stderr } = await execFileAsync(process.execPath, [
+    "--input-type=module", "-e", `
+      const record = ${JSON.stringify(record)};
+      globalThis.fetch = async (url, init) => {
+        const body = JSON.parse(init.body);
+        const expected = ${JSON.stringify({ workflowId: "wf-1", sessionId: 3, startNodeId: "s2" })};
+        if (JSON.stringify(body) !== JSON.stringify(expected)) {
+          throw new Error("Unexpected body: " + init.body);
+        }
+        return new Response(JSON.stringify({ ok: true, data: record }));
+      };
+      process.argv = [process.execPath, ${JSON.stringify(scriptUrl)}, "--workflow-id", "wf-1",
+        "--session-id", "3", "--start-node-id", "s2", ${JSON.stringify(baseUrl[0])}, ${JSON.stringify(baseUrl[1])}];
+      await import(${JSON.stringify(scriptUrl)});
+    `,
+  ]);
+  assert.equal(stderr, "");
+  assert.deepEqual(JSON.parse(stdout), record);
+});
+
 test("run-trigger appends a readable hint for known failure codes", async () => {
   await assert.rejects(
     execFileAsync(process.execPath, [

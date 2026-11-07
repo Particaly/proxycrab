@@ -292,7 +292,7 @@ function urlParts(entry: RequestLibraryEntry): { host: string; path: string } {
           {{
             total > 0
               ? "当前过滤条件下没有命中任何请求，试试更换关键字或清空筛选。"
-              : "在日志详情或日志表右键选择「存入请求库」，或点上方「导入」从 cURL / HAR / Postman 汇入请求。"
+              : "在日志详情右键「存入请求库」，或点上方「导入」从 cURL / HAR / Postman 汇入。"
           }}
         </p>
         <button

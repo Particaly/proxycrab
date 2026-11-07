@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, markRaw } from "vue";
 import { VueFlow, useVueFlow } from "@vue-flow/core";
-import type { NodeTypesObject } from "@vue-flow/core";
+import type { NodeTypesObject, EdgeTypesObject } from "@vue-flow/core";
 import { MiniMap } from "@vue-flow/minimap";
 import type { WorkflowEdge, WorkflowNode } from "../../api/types";
 import { toFlowEdges, toFlowNodes } from "./graph-model";
 import NodeShell from "./NodeShell.vue";
+import FlowEdge from "./FlowEdge.vue";
 import { getWorkflowNodeMeta } from "./node-meta";
 import { withEdgeRunClasses } from "./run-view";
 import type { RunNodeStateMap } from "./run-view";
@@ -51,6 +52,9 @@ const FLOW_NODE_TYPES: NodeTypesObject = {
   stickyNote: markRaw(NodeShell),
 };
 
+/** 连线类型注册：floating 浮动边就近接线（与编辑器画布同一出口）。 */
+const FLOW_EDGE_TYPES: EdgeTypesObject = { floating: markRaw(FlowEdge) };
+
 /** 展示节点：领域图投影 + 运行态旁路注入 + 受控选中标记。 */
 const flowNodes = computed(() =>
   toFlowNodes(props.nodes).map((node) => ({
@@ -82,6 +86,7 @@ function minimapColor(node: { type?: string }): string {
       :nodes="flowNodes"
       :edges="flowEdges"
       :node-types="FLOW_NODE_TYPES"
+      :edge-types="FLOW_EDGE_TYPES"
       :auto-connect="false"
       :delete-key-code="null"
       :nodes-draggable="false"

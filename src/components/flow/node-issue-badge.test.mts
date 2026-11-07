@@ -36,13 +36,13 @@ describe("collectLocalIssues：结构规则（error，对齐后端口径）", ()
     expect(issues[0]?.nodeIds).toEqual([]);
   });
 
-  it("多个开始节点：multiple-start，nodeIds 列出全部开始节点", () => {
+  it("多个开始节点：multiple-start（warning，多入口合法），nodeIds 列出全部开始节点", () => {
     const issues = collectLocalIssues(
       [node("s1", "start"), node("s2", "start"), node("a", "httpReplay")],
       [],
     );
     const issue = issues.find((item) => item.code === "multiple-start");
-    expect(issue?.level).toBe("error");
+    expect(issue?.level).toBe("warning");
     expect(issue?.nodeIds.sort()).toEqual(["s1", "s2"]);
   });
 

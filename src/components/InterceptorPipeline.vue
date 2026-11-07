@@ -516,7 +516,7 @@ onBeforeUnmount(() => {
 .pipeline-empty {
   display: flex;
   align-items: center;
-  padding: 0 11px;
+  padding: 0 var(--space-3);
   color: var(--text-faint);
   font-size: 11px;
 }
@@ -533,7 +533,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   padding: 0 1px;
-  transition: opacity 0.14s ease;
+  transition: opacity var(--dur-fast) ease;
 }
 .pipeline-track.saving {
   opacity: 0.72;
@@ -542,16 +542,19 @@ onBeforeUnmount(() => {
   flex: none;
   width: 24px;
   height: 24px;
-  margin-left: 4px;
+  margin-left: var(--space-1);
   padding: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border: 0;
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-secondary);
   cursor: pointer;
+  transition:
+    background var(--dur-fast) ease,
+    color var(--dur-fast) ease;
 }
 .pipeline-sweep:hover:not(:disabled) {
   background: var(--bg-hover);
@@ -575,10 +578,13 @@ onBeforeUnmount(() => {
   width: 24px;
   height: 24px;
   padding: 0;
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-secondary);
   cursor: default;
+  transition:
+    background var(--dur-fast) ease,
+    color var(--dur-fast) ease;
 }
 .pipeline-endpoint:hover {
   color: var(--accent);
@@ -591,14 +597,14 @@ onBeforeUnmount(() => {
   flex: none;
   color: var(--text-faint);
   transition:
-    color 0.14s ease,
-    transform 0.14s ease;
+    color var(--dur-fast) ease,
+    transform var(--dur-fast) ease;
 }
 .pipeline-arrow-action {
   width: 21px;
   height: 24px;
   padding: 0;
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-faint);
 }
@@ -620,10 +626,10 @@ onBeforeUnmount(() => {
   padding: 0;
   border-radius: 50%;
   transition:
-    transform 0.14s ease,
-    background 0.14s ease,
-    box-shadow 0.14s ease,
-    opacity 0.14s ease;
+    transform var(--dur-fast) ease,
+    background var(--dur-fast) ease,
+    box-shadow var(--dur-fast) ease,
+    opacity var(--dur-fast) ease;
 }
 .pipeline-node[aria-disabled="true"] {
   cursor: default;

@@ -220,10 +220,9 @@ describe("validateWorkflowGraph", () => {
     expect(errors[0]).toContain("缺少开始节点");
   });
 
-  it("多个开始节点", () => {
+  it("多个开始节点（多入口工作流合法：校验层不再报错）", () => {
     const errors = validateWorkflowGraph([makeNode("s1", "start"), makeNode("s2", "start")], []);
-    expect(errors).toHaveLength(1);
-    expect(errors[0]).toContain("存在多个开始节点");
+    expect(errors).toEqual([]);
   });
 
   it("连线引用不存在的节点", () => {
@@ -627,6 +626,100 @@ describe("executeWorkflow：图不合法", () => {
     expect(summary.status).toBe("failed");
     expect(summary.error).toContain("ghost");
     expect(Object.keys(summary.nodeRuns)).toEqual([]);
+  });
+});
+
+describe("executeWorkflow：多 start 入口选择", () => {
+  const multiStartWorkflow = () =>
+    makeWorkflow(
+      [makeNode("s1", "start"), makeNode("a"), makeNode("s2", "start"), makeNode("b")],
+      [makeEdge("s1", "a"), makeEdge("s2", "b")],
+    );
+
+  it("未指定 entryNodeId → 入口歧义 failed，错误列出全部 start id，不执行任何节点", async () => {
+    const onNodeStart = vi.fn();
+    const summary = await executeWorkflow(multiStartWorkflow(), {
+      runners: { httpReplay: okRunner("x") },
+      onNodeStart,
+    });
+    expect(summary.status).toBe("failed");
+    expect(summary.error).toContain("存在多个开始节点");
+    expect(summary.error).toContain("s1");
+    expect(summary.error).toContain("s2");
+    expect(summary.error).toContain("entryNodeId");
+    expect(summary.nodeRuns).toEqual({});
+    expect(onNodeStart).not.toHaveBeenCalled();
+  });
+
+  it("指定 entryNodeId → 只执行选中入口链条，另一 start 链条收尾 skipped", async () => {
+    const summary = await executeWorkflow(multiStartWorkflow(), {
+      runners: { httpReplay: okRunner("x") },
+      entryNodeId: asNodeId("s2"),
+    });
+    expect(summary.status).toBe("success");
+    expect(runOf(summary, "s2").status).toBe("success");
+    expect(runOf(summary, "b").status).toBe("success");
+    expect(runOf(summary, "s1").status).toBe("skipped");
+    expect(runOf(summary, "a").status).toBe("skipped");
+    expect(runOf(summary, "s1").input).toBeNull();
+    expect(runOf(summary, "a").output).toBeNull();
+  });
+
+  it("entryNodeId 指向不存在的节点 → 建档前 failed", async () => {
+    const workflow = makeWorkflow([makeNode("s", "start"), makeNode("a")], [makeEdge("s", "a")]);
+    const summary = await executeWorkflow(workflow, {
+      runners: { httpReplay: okRunner("x") },
+      entryNodeId: asNodeId("ghost"),
+    });
+    expect(summary.status).toBe("failed");
+    expect(summary.error).toContain("入口节点不存在");
+    expect(summary.nodeRuns).toEqual({});
+  });
+
+  it("entryNodeId 指向非 start 节点 → 建档前 failed", async () => {
+    const workflow = makeWorkflow([makeNode("s", "start"), makeNode("a")], [makeEdge("s", "a")]);
+    const summary = await executeWorkflow(workflow, {
+      runners: { httpReplay: okRunner("x") },
+      entryNodeId: asNodeId("a"),
+    });
+    expect(summary.status).toBe("failed");
+    expect(summary.error).toContain("不是开始节点");
+    expect(summary.nodeRuns).toEqual({});
+  });
+
+  it("单 start 图显式传 entryNodeId → 与缺省行为一致", async () => {
+    const workflow = makeWorkflow([makeNode("s", "start"), makeNode("a")], [makeEdge("s", "a")]);
+    const summary = await executeWorkflow(workflow, {
+      runners: { httpReplay: okRunner("x") },
+      entryNodeId: asNodeId("s"),
+    });
+    expect(summary.status).toBe("success");
+    expect(runOf(summary, "s").status).toBe("success");
+    expect(runOf(summary, "a").status).toBe("success");
+  });
+
+  it("双入口汇合同一后继（join）：单入口运行时未选链条提前 skipped，join 正常释放", async () => {
+    // j 汇聚两条入口链（s1→a→j、s2→b→j）：join 门槛要求全部直接上游结算，
+    // 未选入口的链条必须在调度前标 skipped，否则 j 永不释放（多入口核心回归）。
+    const workflow = makeWorkflow(
+      [
+        makeNode("s1", "start"),
+        makeNode("a"),
+        makeNode("s2", "start"),
+        makeNode("b"),
+        makeNode("j"),
+      ],
+      [makeEdge("s1", "a"), makeEdge("a", "j"), makeEdge("s2", "b"), makeEdge("b", "j")],
+    );
+    const summary = await executeWorkflow(workflow, {
+      runners: { httpReplay: okRunner("x") },
+      entryNodeId: asNodeId("s1"),
+    });
+    expect(summary.status).toBe("success");
+    expect(runOf(summary, "a").status).toBe("success");
+    expect(runOf(summary, "j").status).toBe("success");
+    expect(runOf(summary, "s2").status).toBe("skipped");
+    expect(runOf(summary, "b").status).toBe("skipped");
   });
 });
 

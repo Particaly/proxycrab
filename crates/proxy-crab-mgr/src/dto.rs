@@ -333,8 +333,68 @@ pub struct LogIdsRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogIdsPayload {
+    /// Session the ids were read from (resolved active session when the
+    /// request omitted `session_id`); echoed so callers never have to guess
+    /// which session a result belongs to. `default` keeps old payloads
+    /// deserializable.
+    #[serde(default)]
+    pub session_id: u64,
     pub matched_ids: Vec<u64>,
     pub in_progress_ids: Vec<u64>,
+}
+
+/// Search request for capture logs (mirrored by the MCP `log_search` tool).
+/// Every provided field composes with AND semantics; absent fields are
+/// ignored. `host`, `path` and `keyword` substring-match the capture URI
+/// (works for both origin-form and absolute-form URIs), `method` compares
+/// case-insensitively, and `status` compares against the response status code
+/// (`"..."` while the response is still pending). With `regex = true` the
+/// `host`/`path`/`keyword`/`status` patterns switch to Rust regex.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LogSearchRequest {
+    pub session_id: Option<u64>,
+    #[serde(default)]
+    pub host: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub method: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub keyword: Option<String>,
+    #[serde(default)]
+    pub regex: bool,
+    pub min_id: Option<u64>,
+    pub max_id: Option<u64>,
+    pub limit: Option<usize>,
+}
+
+/// One compact search hit: enough context to decide which logs to open next
+/// without pulling every detail.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LogSearchMatch {
+    pub id: u64,
+    /// True while the capture has no final response yet (`code` is `"..."`).
+    pub in_progress: bool,
+    pub method: String,
+    pub uri: String,
+    pub code: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogSearchPayload {
+    /// Session the search ran against (resolved active session when the
+    /// request omitted `session_id`).
+    pub session_id: u64,
+    pub matches: Vec<LogSearchMatch>,
+    /// True when `limit` cut the scan short; continue from `next_cursor`.
+    pub truncated: bool,
+    /// Id of the last examined capture when `truncated` is true. Pass it as
+    /// `max_id` (descending default) or `min_id` (when scanning ascending
+    /// with only `min_id` set) to fetch the next page.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -530,7 +590,10 @@ pub struct CreateEnvSetRequest {
 }
 
 /// Replace one set's editable fields (id and createdAt are bound to the path
-/// and the stored document).
+/// and the stored document). `secret_values` absent = keep the stored secret
+/// table untouched (plain clients and MCP calls that omit the field must not
+/// be able to wipe secrets by omission); provided = whole-table replacement
+/// with `******` entries restoring stored plaintext and omitted keys removed.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SaveEnvSetRequest {
@@ -538,7 +601,7 @@ pub struct SaveEnvSetRequest {
     #[serde(default)]
     pub values: BTreeMap<String, String>,
     #[serde(default)]
-    pub secret_values: BTreeMap<String, String>,
+    pub secret_values: Option<BTreeMap<String, String>>,
 }
 
 /// Switch the activated set; `None` clears the preference.
@@ -556,6 +619,35 @@ pub struct ReplaceEnvGlobalsRequest {
     pub values: BTreeMap<String, String>,
     #[serde(default)]
     pub secret_values: BTreeMap<String, String>,
+}
+
+// Workflow storage (workflow-scoped persistent key/value storage, owned by
+// `proxy_crab_mitm::flow::workflow_data`). Values are arbitrary JSON (unlike
+// the string tables of the env family); every write persists immediately.
+
+/// One stored key/value pair with its last-write timestamp (read response
+/// element; wire format camelCase mirroring the Rust type).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowStorageEntryDto {
+    pub key: String,
+    pub value: serde_json::Value,
+    pub updated_at: u64,
+}
+
+/// Whole storage snapshot of one workflow: entries sorted by key.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowStoragePayload {
+    pub workflow_id: String,
+    pub entries: Vec<WorkflowStorageEntryDto>,
+}
+
+/// Upsert one key with an arbitrary JSON value.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkflowStoragePutRequest {
+    pub value: serde_json::Value,
 }
 
 /// One script env write-back batch targeting the dispatch-time active set.
@@ -682,6 +774,7 @@ pub enum HttpApiResource {
     RequestLibrary,
     EnvSets,
     FlowRuns,
+    WorkflowStorage,
     All,
 }
 
@@ -735,6 +828,44 @@ pub enum ReplayBodyPayload {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ReplayResult {
     pub log_id: u64,
+}
+
+/// Envelope of `POST /api/replay` (and the MCP `replay_once` tool). Exactly one
+/// request source must be present: `library_id` replays a request-library
+/// entry (its first HAR request, blob-backed bodies inlined), or `method` +
+/// `url` send a raw request. Top-level `headers`/`body` belong to the raw
+/// source only; `override` applies on top of either source.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ReplayHttpRequest {
+    /// Session to replay into; defaults to the active session.
+    pub session_id: Option<u64>,
+    #[serde(default)]
+    pub library_id: Option<String>,
+    #[serde(default, rename = "override")]
+    pub override_: Option<ReplayOverridePayload>,
+    pub method: Option<String>,
+    pub url: Option<String>,
+    #[serde(default)]
+    pub headers: Option<Vec<(String, String)>>,
+    #[serde(default)]
+    pub body: Option<ReplayBodyPayload>,
+}
+
+/// Overrides applied on top of the resolved replay baseline (request-library
+/// entry or raw request): `headers` replace-or-add by header name,
+/// `removed_headers` drop names before `headers` are applied, and `body`
+/// replaces the body text (charset stays UTF-8).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReplayOverridePayload {
+    pub method: Option<String>,
+    pub url: Option<String>,
+    #[serde(default)]
+    pub headers: Vec<(String, String)>,
+    #[serde(default)]
+    pub removed_headers: Vec<String>,
+    #[serde(default)]
+    pub body: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -806,6 +937,52 @@ pub struct WorkflowUpdateRequest {
     pub secret_variables: Option<BTreeMap<String, String>>,
 }
 
+/// Patch one workflow graph incrementally (large-graph editing without
+/// resending the whole definition). Every list is applied by id:
+/// - `addNodes`/`addEdges` insert complete documents and reject duplicate ids;
+/// - `updateNodes`/`updateEdges` carry raw objects with a required `id` —
+///   present fields replace, explicit `null` clears optional fields, and
+///   `updateNodes[].config` follows JSON Merge Patch (RFC 7386: objects merge
+///   recursively, `null` deletes a key, arrays/scalars replace) so one body
+///   tweak needs only the changed fragment;
+/// - `removeNodes` cascade-deletes the incident edges.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowPatchRequest {
+    #[serde(default)]
+    pub add_nodes: Vec<WorkflowNode>,
+    #[serde(default)]
+    pub update_nodes: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub remove_nodes: Vec<String>,
+    #[serde(default)]
+    pub add_edges: Vec<WorkflowEdge>,
+    #[serde(default)]
+    pub update_edges: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub remove_edges: Vec<String>,
+}
+
+/// Compact result of one workflow graph patch: the lists name exactly the ids
+/// touched by the request (the caller already knows what it sent — the server
+/// confirms what actually landed, in application order). The full updated
+/// document stays available via `GET /api/workflows/{id}`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowPatchResult {
+    pub id: String,
+    pub project_id: String,
+    pub name: String,
+    pub node_count: usize,
+    pub edge_count: usize,
+    pub added_node_ids: Vec<String>,
+    pub updated_node_ids: Vec<String>,
+    pub removed_node_ids: Vec<String>,
+    pub added_edge_ids: Vec<String>,
+    pub updated_edge_ids: Vec<String>,
+    pub removed_edge_ids: Vec<String>,
+}
+
 /// Shared pagination parameters for flow entity lists: `limit` omitted returns
 /// every entity, `offset` skips the first entries of the deterministic
 /// (createdAt, id) order.
@@ -838,16 +1015,39 @@ pub struct WorkflowPage {
 }
 
 /// One workflow-graph validation issue (`flow::validate::ValidationIssue`
-/// shaped for the wire; every issue is blocking for runs, none for saves).
+/// shaped for the wire). Structural issues are `error` severity (blocking for
+/// runs); deep-validation issues may also be `warning` (advisory only, they
+/// never gate saves or runs).
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowValidationIssue {
     /// Stable kebab-case issue code (`missing-start`, `dangling-edge`, …).
     pub code: String,
+    /// `error` (structural, run-blocking) or `warning` (deep-pass advisory).
+    pub severity: String,
     /// Human-readable message (already localized by the validator).
     pub message: String,
     /// Node ids for locating the problem; empty for workflow-level issues.
     pub node_ids: Vec<String>,
+}
+
+/// Deep-validate one workflow graph (`POST /api/flow/validate`): either `id`
+/// (deep-check the stored definition) or the inline `nodes` + `edges` graph
+/// unit (draft check, same whole-replacement semantics as saves). Inline
+/// `nodes`/`edges` stay raw JSON so per-node `config` unknown keys can be
+/// flagged; malformed node/edge shapes are rejected at the manager boundary.
+/// Structural checks always run; the deep pass adds request-library, template
+/// and assertion rules whose issues never gate saves or runs.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowDeepValidateRequest {
+    pub id: Option<String>,
+    pub nodes: Option<Vec<serde_json::Value>>,
+    pub edges: Option<Vec<serde_json::Value>>,
+    #[serde(default)]
+    pub variables: BTreeMap<String, String>,
+    #[serde(default)]
+    pub secret_variables: BTreeMap<String, String>,
 }
 
 /// Dry-run one pre/post script against a sample payload (plan Task 18): the
@@ -865,6 +1065,24 @@ pub struct FlowScriptDryRunRequest {
     /// Sample for `post` scripts: the raw response envelope (any JSON).
     #[serde(default)]
     pub sample_response: Option<serde_json::Value>,
+}
+
+/// Preview the rendered request of one httpReplay node (template render
+/// dry-run): assembles the run-chain inputs (3-layer variables, active env
+/// set, workflow storage, request-library projection), then renders the exact
+/// outgoing request in a throwaway VM — zero outbound traffic, nothing
+/// persisted, preProcess scripts are NOT executed.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FlowRenderPreviewRequest {
+    /// Owning workflow id (stored workflows only; drafts are not previewable).
+    pub workflow_id: String,
+    /// Target httpReplay node id.
+    pub node_id: String,
+    /// Optional `var.*` sample values (highest precedence) — e.g. sample
+    /// values for setVariable-declared runtime variables.
+    #[serde(default)]
+    pub variable_overrides: Option<BTreeMap<String, serde_json::Value>>,
 }
 
 /* ---- Workflow transfer (plan Task 23: import/export) ---- */
@@ -958,13 +1176,18 @@ pub const FLOW_RUN_DEFAULT_LIMIT: usize = 200;
 pub const FLOW_RUN_MAX_LIMIT: usize = 1000;
 
 /// Trigger one workflow run (plan Task 19): the workflow is addressed by the
-/// body; the target Session defaults to the active one.
+/// body; the target Session defaults to the active one. `startNodeId` selects
+/// the entry start node of a multi-start workflow; it must reference an
+/// existing `start` node and is required (non-empty or defaulted) whenever the
+/// stored graph has more than one start node.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FlowRunTriggerRequest {
     pub workflow_id: String,
     #[serde(default)]
     pub session_id: Option<u64>,
+    #[serde(default)]
+    pub start_node_id: Option<String>,
 }
 
 /// Workflow run list query: filters by workflow/status before paginating.
@@ -993,4 +1216,44 @@ pub struct FlowRunDetailPayload {
     #[serde(flatten)]
     pub run: FlowRunRecord,
     pub node_runs: Vec<FlowNodeRunRecord>,
+}
+
+/// Compact digest of one node checkpoint for `workflow_run_wait`: the status
+/// fields only — no `input`/`output`/`iterations` payloads (the heavy detail
+/// stays behind `workflow_run_detail`).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FlowNodeRunDigest {
+    pub node_id: String,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// `workflow_run_wait` payload (MCP-only): the run record fields plus the
+/// per-node digest, mirroring the `run-wait.mjs` summary shape. `settled` is
+/// `false` when the wait deadline passed before the run reached a terminal
+/// state — `status`/`nodes` then reflect the latest observed progress and the
+/// caller may wait again or give up.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FlowRunWaitPayload {
+    pub id: String,
+    pub workflow_id: String,
+    pub workflow_name: String,
+    pub trigger: String,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_node_id: Option<String>,
+    pub started_at: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    pub settled: bool,
+    pub nodes: Vec<FlowNodeRunDigest>,
 }

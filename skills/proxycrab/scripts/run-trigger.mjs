@@ -30,34 +30,42 @@ function rethrowWithHint(error) {
 
 run(async () => {
   const args = parseArgs();
-  assertAllowedArgs(args, ["workflow-id", "session-id"]);
+  assertAllowedArgs(args, ["workflow-id", "session-id", "start-node-id"]);
   if (args.help) {
     printHelp(`
-Usage: node run-trigger.mjs --workflow-id ID [--session-id ID] [--base-url URL]
+Usage: node run-trigger.mjs --workflow-id ID [--session-id ID] [--start-node-id ID] [--base-url URL]
 
 Trigger one workflow run through the target Session's pipeline and print the run record
-(id "run-…", status "running", graph snapshot captured at dispatch). The proxy does not need
-to be running (replays use a flow-dedicated connection generation). The endpoint defaults to
-the approval permission tier.
+(id "run-…", status "running", resolved "startNodeId", graph snapshot captured at dispatch).
+The proxy does not need to be running (replays use a flow-dedicated connection generation).
+The endpoint defaults to the approval permission tier.
 
   --workflow-id ID       Stored workflow definition to execute (required)
   --session-id ID        Target Session; defaults to the active Session
+  --start-node-id ID     Entry start node for multi-start workflows; required when the
+                         workflow has more than one start node (the 422 message lists
+                         every start id; unchosen start chains settle as "skipped")
 
 Known failure codes are re-emitted with a readable hint appended to the server message:
   404 not_found               The given --session-id is missing or archived
   409 conflict                No active Session (when --session-id is omitted)
-  422 workflow_graph_invalid  The stored graph failed validation before the run row was created
+  422 workflow_graph_invalid  The stored graph failed error-level validation before the run
+                              row was created — including entry errors: a multi-start
+                              workflow triggered without --start-node-id, or a
+                              --start-node-id that is not an existing start node
   403 permission_denied / approval_timeout  Desktop approval was denied or timed out
 `);
     return;
   }
   const workflowId = requiredString(args, "workflow-id");
   const sessionId = optionalInteger(args, "session-id", { min: 1 });
+  const startNodeId = args["start-node-id"] === undefined ? undefined : requiredString(args, "start-node-id");
   const record = await apiRequest(args, "/api/flow/runs", {
     method: "POST",
     body: {
       workflowId,
       ...(sessionId === undefined ? {} : { sessionId }),
+      ...(startNodeId === undefined ? {} : { startNodeId }),
     },
   }).catch(rethrowWithHint);
   printJson(record);

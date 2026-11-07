@@ -302,8 +302,10 @@ browser UI.
 | `/api/env-write-back` | `POST` script env write-back batches into a set (default: `approval`) |
 | `/api/system-logs` | `GET`, `DELETE` |
 | `/api/flow-projects`, `/api/flow-projects/{id}` | workflow project CRUD (`GET` default: `allow`; `POST`/`PUT`/`DELETE` default: `approval`) |
-| `/api/workflows`, `/api/workflows/{id}` | workflow definition CRUD with whole-graph save (`GET` default: `allow`; `POST`/`PUT`/`DELETE` default: `approval`) |
+| `/api/workflows`, `/api/workflows/{id}` | workflow definition CRUD with whole-graph save (`GET` default: `allow`; `POST`/`PUT`/`DELETE` default: `approval`); `PATCH /api/workflows/{id}` applies an incremental graph patch by id (`addNodes`/`updateNodes`/`removeNodes`/`addEdges`/`updateEdges`/`removeEdges`, default: `approval`) |
 | `/api/workflows/{id}/validate` | `POST` run the structural graph validator (default: `allow`; read-only despite the POST verb) |
+| `/api/workflows/{id}/storage` | `GET` read a workflow's persistent KV storage (default: `allow`); `DELETE` clear it (default: `approval`) |
+| `/api/workflows/{id}/storage/{key}` | `PUT` upsert one arbitrary-JSON value; `DELETE` remove one key (both default: `approval`) |
 | `/api/workflows/export` | `GET` workflow export envelope as a JSON download (default: `allow`) |
 | `/api/workflows/import` | `POST` import one export envelope; confirm-scripts semantics, existing entries are never overwritten (default: `approval`) |
 | `/api/request-library` | `GET` filtered page, `POST` manual entry (both default: `allow`/`approval`) |
@@ -311,6 +313,7 @@ browser UI.
 | `/api/request-library/from-capture` | `POST` ingest one capture (default: `approval`) |
 | `/api/request-library/{id}/body` | `GET` raw stored request body (default: `allow`) |
 | `/api/flow/script/dry-run` | `POST` dry-run one pre/post script against a sample payload in a throwaway flow VM (default: `approval`; request body is excluded from the audit preview) |
+| `/api/flow/render-preview` | `POST` preview the rendered request of one httpReplay node in a throwaway flow VM (default: `allow`; zero outbound traffic, preProcess scripts are not executed) |
 | `/api/flow/runs`, `/api/flow/runs/{id}` | workflow run list/detail (`GET` default: `allow`) |
 | `/api/flow/runs` | `POST` trigger one run (default: `approval`) |
 | `/api/flow/runs/{id}/cancel` | `POST` request cancellation (default: `approval`) |
@@ -531,6 +534,7 @@ When only `min_id` is supplied, the database scans toward newer IDs. When `max_i
 
 ```json
 {
+  "session_id": 1,
   "matched_ids": [9999, 9998],
   "in_progress_ids": [9999]
 }
@@ -544,6 +548,53 @@ queries, the server scans until it has collected `limit` matches or exhausted th
 therefore clients can paginate with the smallest returned match as the next exclusive `max_id` and
 stop when a page contains fewer than `limit` matches. When an ID leaves `in_progress_ids`, clients
 perform one final explicit-ID evaluation and use its final `matched_ids` membership.
+
+### Search capture logs
+
+`POST /api/logs/search` (registered as a read) composes simple predicates with AND semantics and
+returns compact match summaries, so callers can locate requests without pulling every detail:
+
+```json
+{
+  "session_id": 1,
+  "host": "api.example.com",
+  "path": "/v1/login",
+  "method": "POST",
+  "status": "200",
+  "keyword": "login",
+  "regex": false,
+  "min_id": null,
+  "max_id": null,
+  "limit": 200
+}
+```
+
+Every field is optional; absent (or empty) fields are ignored — unlike the session filter, a bare
+or empty `keyword` never degrades to "match everything". `host`, `path` and `keyword`
+substring-match the request URI (works for both origin-form and absolute-form URIs); `method`
+compares case-insensitively; `status` compares exactly against the response status code
+(`"..."` matches captures that have no response yet). With `regex: true`, the
+`host`/`path`/`keyword`/`status` patterns switch to Rust `regex` syntax (`400 bad_request` on an
+invalid pattern). The same exclusive `min_id`/`max_id` bounds and scan direction as
+`POST /api/logs/ids` apply (`min_id` alone scans ascending). `limit` defaults to 200 and is capped
+at 10,000. Redaction-bound readers see the redacted URI in both matching and output.
+
+The response echoes the resolved Session and, when `limit` cut the scan short, a cursor:
+
+```json
+{
+  "session_id": 1,
+  "matches": [
+    { "id": 9999, "in_progress": false, "method": "POST", "uri": "https://api.example.com/v1/login", "code": "200" }
+  ],
+  "truncated": true,
+  "next_cursor": 9998
+}
+```
+
+Continue from `next_cursor` by passing it as the exclusive `max_id` (descending default) or
+`min_id` (ascending scans); a page that is not `truncated` ends the scan. `in_progress` marks
+captures without a final response yet.
 
 ### Batch-render log views
 
@@ -727,14 +778,29 @@ remain browser-dependent. Preview fetches remain unchanged; small generated expo
 
 ### Replay a request
 
-`POST /api/replay?session=1` sends a fully specified request through the target Session's
-interceptor pipeline and outbound chain, recording it as a normal capture whose source is
-`ProxyCrabRequest`. The proxy must be running (`proxy_not_running` otherwise). The response
-`{ "log_id": 12 }` returns as soon as the capture is created, without waiting for the upstream
-exchange. Request body: `method`, absolute `url`, ordered `headers` pairs (sent as-is, including
-`content-length`), and an optional `body` of `{ "type": "text", "text", "charset": "utf8" }`,
-`{ "type": "body_ref", "session_id", "log_id", "side": "request" | "response" }` (reuse a
-stored capture blob body), or `{ "type": "asset", "asset_id" }` (reuse a workspace Asset).
+`POST /api/replay` sends one request through the target Session's interceptor pipeline and
+outbound chain, recording it as a normal capture whose source is `ProxyCrabRequest`. The proxy
+must be running (`proxy_not_running` otherwise). The response `{ "log_id": 12 }` returns as soon
+as the capture is created, without waiting for the upstream exchange.
+
+The Session is selected by the `?session=` query when present, otherwise by the body's
+`session_id`, otherwise by the active Session (`409 conflict` when none is active) — the same
+resolution as every other session-scoped endpoint. Exactly one request source must be present:
+
+- **Raw request** — `method`, absolute `url`, ordered `headers` pairs (sent as-is, including
+  `content-length`), and an optional `body` of `{ "type": "text", "text", "charset": "utf8" }`,
+  `{ "type": "body_ref", "session_id", "log_id", "side": "request" | "response" }` (reuse a
+  stored capture blob body), or `{ "type": "asset", "asset_id" }` (reuse a workspace Asset).
+- **Request library entry** — `library_id` names one entry: the first HAR request becomes the
+  baseline, blob-backed bodies are read back in (UTF-8 lossy, mirroring the flow engine's
+  baseline convention). Top-level `headers`/`body` belong to the raw source only; combining
+  `library_id` with `method`/`url` or `headers`/`body` returns `400 bad_request`.
+
+An optional `override` applies on top of either baseline: `{method?, url?, headers?: [[name,
+value], …], removed_headers?: [name, …], body?: "text"}` — headers replace-or-add by
+case-insensitive name after `removed_headers` are dropped, and `body` replaces the body text
+(charset stays UTF-8). A missing library entry is `404 not_found`.
+
 The read-only share surface has no replay route, and the UI only offers replay entries when the
 Backend implements `replay`.
 
@@ -1100,9 +1166,12 @@ camelCase and identical to the stored documents (`Project` / `Workflow` with `no
 | `POST /api/workflows` | `approval` | body `{projectId,name,description?,nodes?,edges?,variables?,secretVariables?}`; id (`wf-…`) and timestamps are server-generated; `projectId` must be non-empty but is not checked for existence (deletions never cascade, so orphan definitions are legal) |
 | `GET /api/workflows/{id}` | `allow` | one `Workflow` (read-time schema migration applies) |
 | `PUT /api/workflows/{id}` | `approval` | partial update; `nodes`+`edges` form one graph unit and must be sent together (whole replacement) — sending only one returns `400 bad_request` |
+| `PATCH /api/workflows/{id}` | `approval` | incremental graph patch (mirrors workflow_patch); operations apply by id: `addNodes` (new ids only), `updateNodes` (JSON Merge Patch on `config`, replaces `position`/`label`/`refId`, `null` clears), `removeNodes` (cascade-deletes touching edges; `removeEdges` on a cascaded edge is idempotent), `addEdges` (may reuse a just-cascaded edge id to rewire), `updateEdges` (surviving edges only), `removeEdges` (unknown-but-cascaded ok, truly missing ids rejected). Any id conflict/missing/invalid field rejects the whole patch with `400 bad_request`; the response is a compact applied summary (node/edge counts plus per-operation id lists), not the whole graph |
 | `DELETE /api/workflows/{id}` | `approval` | deletes the definition |
-| `POST /api/workflows/{id}/validate` | `allow` | runs `validate_workflow_graph` on the stored definition and returns `{issues:[{code,message,nodeIds}]}`; an empty list means the graph is valid. Registered as a read (`allow`) because the operation is read-only despite the POST verb (POST = "execute validation") |
+| `POST /api/workflows/{id}/validate` | `allow` | runs `validate_workflow_graph` on the stored definition and returns `{issues:[{severity,code,message,nodeIds}]}`; an empty list means the graph is valid. Structural issues carry `severity:"error"` (blocking for runs) except `multiple-start`, which is `severity:"warning"` — multi-start (multi-entry) workflows are legal; triggering them requires `startNodeId`. Registered as a read (`allow`) because the operation is read-only despite the POST verb (POST = "execute validation") |
+| `POST /api/flow/validate` | `allow` | deep-validate a workflow graph (editor diagnostics). Body: either `{id}` (deep-check the stored definition) or the inline draft `{nodes,edges,variables?,secretVariables?}` (`nodes`/`edges` stay raw JSON so unknown config keys stay visible; exactly one form, otherwise `400 bad_request`). Runs the structural checks plus deep rules: `request-id-missing` (error; httpReplay `requestId` not in the request library), `manual-request-missing-url` (error), `template-syntax` (error; unclosed `{{`, empty expressions, unknown roots, missing node/var/env/fake names), `fake-generator-unknown` / `node-ref-missing` / `env-key-unknown` / `var-key-unknown` (warnings; resolvability against the active env set and the global/project/workflow variable tables), `assertion-invalid` (error; empty jsonPath, comparison/regex assertions without a value, status `eq` without an expectation, non-object schema), and `config-unknown-field` (warning; inline mode only — stored documents drop unknown keys at the store read boundary). Storage read failures degrade to empty data instead of fabricating issues. Returns `{issues:[{severity,code,message,nodeIds}]}`; deep issues never gate saves or runs (the run gate stays structural-only) |
 | `POST /api/flow/script/dry-run` | `approval` | dry-run one pre/post script against a sample payload (plan Task 18); body `{side:"pre"\|"post",script,sampleInput?,sampleResponse?}`. The script executes in the flow engine payload inside a throwaway VM with a 5s timeout plus the runtime instruction/memory limits. Returns `{ok,value,warnings}` on success or `{ok:false,error:{kind,message}}` with kind `syntax\|blocked\|runtime\|timeout\|invalid-return`. Nothing is created, persisted, broadcast, or replayed, and the request body is excluded from the permission audit preview so script content never reaches logs or the approval window |
+| `POST /api/flow/render-preview` | `allow` | preview the rendered request of one httpReplay node (template render dry-run); body `{workflowId,nodeId,variableOverrides?}`. Assembles the run-chain inputs (3-layer variable table + `variableOverrides` on top, active env set, workflow storage, request-library projection with body-blob backfill), then renders the exact outgoing request in a throwaway VM with a 5s timeout: baseline (request library or `manualRequest`) + node `override`, browser-only header stripping, `{{ }}` templates, header-fidelity/cookie decisions merged — preview equals would-send. `{{ node.* }}`/`{{ input.* }}` refs render empty (no upstream in a single-node preview) and are reported in `warnings`; `{{ fake.* }}` samples once consistently per preview (same value across url/headers/body, re-rolled per call). preProcess scripts are NOT executed (a warning says so; pair with the script dry-run). Returns `{ok,baseline:"requestLibrary"\|"manual",request:{method,url,headers,body?,bodyBase64?,timeoutMs?},warnings}` or `{ok:false,error:{kind,message}}` with kind `missing-baseline\|engine\|timeout`; unknown workflow/node are `404`, a non-httpReplay node or a missing baseline is `422 workflow_graph_invalid`. Nothing is created, persisted, broadcast, or replayed; secret values (env secrets + 3-layer secret variables) are masked to `******` in the rendered request and warnings |
 | `GET /api/workflows/export` | `allow` | workflow export envelope (plan Task 23); `ids` is a required comma-separated list (`?ids=wf-a,wf-b`), unknown ids resolve to `404 not_found`, duplicate ids are carried once. The response body is the raw export document itself (`{format:"reqflow-workflow",version,exportedAt,workflows,requests?,envSets?}`) with `Content-Disposition: attachment` — not the management `{ok,data}` wrapper. Workflow secret variable values are blanked (names kept), the envelope carries the request-library entries the workflows reference verbatim, and env sets lose their whole secret table |
 | `POST /api/workflows/import` | `approval` | import one export envelope (plan Task 23); body `{file:<envelope>,projectId,confirmScripts?,confirmedScripts?}`. `projectId` names the target project (required, not checked for existence). File-level shape failures return `400 bad_request`; per-workflow shape issues skip that workflow and are reported. Scripts follow the M19 confirm semantics: without `confirmScripts` every collected script is cleared from the imported copy; with it only the keys in `confirmedScripts` (`workflowIndex:nodeIndex:kind`, kind `preProcess`\|`postProcess`\|`expression`) are kept verbatim. Imported names dedupe with a `(导入 N)` suffix; node ids/refIds/edge ids are fully regenerated. The envelope's `requests`/`envSets` are adjudicated conservatively: an id conflict with an existing entry skips the entry and reports the reason — existing entries are never overwritten; new ids are stored verbatim so the imported workflows keep resolving their requests. Returns `{imported:[{index,id,name}],skipped:[{index,name,issues}],requests:{imported,skipped:[{id,reason}]},envSets:{…}}` |
 
@@ -1124,9 +1193,9 @@ last-write-wins per `(runId, nodeId)`). Wire shapes are camelCase. `trigger` is 
 
 | Endpoint | Default | Contract |
 | --- | --- | --- |
-| `POST /api/flow/runs` | `approval` | body `{workflowId,sessionId?}`; `sessionId` defaults to the active Session. Preconditions are checked before the run row is created: a target Session must exist (`404 not_found` for a missing/archived id, `409 conflict` when none is active) and the graph must validate (`422 workflow_graph_invalid` with the joined issue messages). Replays run on a flow-dedicated connection generation, so the proxy does not need to be running. Success returns the run record (`id` `run-…`, status `running`, graph snapshot captured at dispatch) |
+| `POST /api/flow/runs` | `approval` | body `{workflowId,sessionId?,startNodeId?}`; `sessionId` defaults to the active Session. `startNodeId` selects the entry start node of a multi-start workflow (every start node is a potential entry; the unchosen chains settle `skipped`) and must reference an existing `start` node. Preconditions are checked before the run row is created: a target Session must exist (`404 not_found` for a missing/archived id, `409 conflict` when none is active), the graph must have no error-level structural issue (`422 workflow_graph_invalid` with the joined messages), and the entry must resolve (`422 workflow_graph_invalid` when a multi-start workflow is triggered without `startNodeId` — the message lists all start ids — or when `startNodeId` is not a start node). Single-start workflows ignore a `startNodeId` that matches their start. Replays run on a flow-dedicated connection generation, so the proxy does not need to be running. Success returns the run record (`id` `run-…`, status `running`, resolved `startNodeId`, graph snapshot captured at dispatch) |
 | `GET /api/flow/runs` | `allow` | `{runs:[FlowRunRecord],total}`, newest first; `workflowId` and `status` filter before pagination, `limit` defaults to 200 (capped at 1000, `400 bad_request` outside 1–1000), `offset` skips entries |
-| `GET /api/flow/runs/{id}` | `allow` | run detail: the flattened `FlowRunRecord` plus `nodeRuns:[FlowNodeRunRecord]` (per-node `status`/`input`/`output`/`error`/`startedAt`/`durationMs`/`iterations`; snapshots are secret-masked). `404 not_found` when absent |
+| `GET /api/flow/runs/{id}` | `allow` | run detail: the flattened `FlowRunRecord` plus `nodeRuns:[FlowNodeRunRecord]` (per-node `status`/`input`/`output`/`error`/`startedAt`/`durationMs`/`iterations`; snapshots are secret-masked — configured secret values plus write-backs to keys marked secret in the dispatch-time env set). `404 not_found` when absent |
 | `POST /api/flow/runs/{id}/cancel` | `approval` | requests cancellation; the engine stops scheduling at the next batch boundary (the current node completes) and the run settles `cancelled` (cancel wins over failure). `404 not_found` when the run is unknown or already finished. Idempotence is not promised — a second cancel after the run settled returns `404` |
 
 Triggering and cancelling broadcast a `FlowRuns` UI change on success. In addition, the run
@@ -1134,6 +1203,35 @@ orchestrator bridges node-level and run-level progress events (`started`/`node`/
 the same change channel as one `FlowRuns` resource, so the UI reloads the run list / open run
 detail as the run progresses. Stored snapshots (node input/output, error text) are masked against
 the run's secret inventory before persistence and broadcast.
+
+## Workflow storage
+
+Workflow-scoped persistent key/value storage lives in `flow/workflow-data/{workflowId}.json` (one
+versioned envelope per workflow: `{schemaVersion, entries: {<key>: {value, updatedAt}}}`), owned by
+`flow/workflow_data.rs`. It is the workflow *data* store, deliberately distinct from the env
+family: env sets are activation-frozen string tables shared across workflows with batched script
+write-back, while the storage binds to one workflow id, accepts arbitrary JSON values, and
+persists every write immediately. All runs of a workflow — plus these endpoints and the MCP tools
+— observe the same file, so values written by one run are visible to later and concurrent runs in
+real time (`host.storage.get` reads live, `host.storage.put` returns after the file is durable).
+Runs seed their `{{ storage.* }}` template namespace and the condition-expression `storage`
+snapshot from the same file at dispatch and keep an in-run mirror in sync (script writes are
+visible to later nodes without re-reading). Keys are ASCII `[A-Za-z0-9._-]` (no `.`/`..`), at
+most 128 bytes; quotas: 256 KiB per value, 4 MiB + 10,000 entries per workflow (violations map to
+`400 bad_request`). Concurrent writes serialize process-wide and merge per key (same-key
+last-write-wins; no transactions). Corrupt/newer envelopes degrade reads to empty with a warning
+and refuse writes (never silently wiped). The store is not a secret vault: values carry no secret
+marking and reach run records unmasked. Deleting a workflow cascade-deletes its storage file
+best-effort. Writes broadcast a `WorkflowStorage` UI change; no desktop Tauri commands exist for
+this family yet (the HTTP/CLI port covers management, and `Backend.workflowStorage` remains
+unimplemented on the desktop face until a UI panel lands).
+
+| Endpoint | Default | Contract |
+| --- | --- | --- |
+| `GET /api/workflows/{id}/storage` | `allow` | `{workflowId, entries:[{key,value,updatedAt}]}` sorted by key; the owning workflow must exist (`404 not_found`) |
+| `PUT /api/workflows/{id}/storage/{key}` | `approval` | upsert one key with an arbitrary JSON value; body `{value}`; returns the refreshed entry list. Key charset violations and quota overruns return `400 bad_request` |
+| `DELETE /api/workflows/{id}/storage/{key}` | `approval` | delete one key; returns the refreshed entry list. A missing file or key maps to `404 not_found` |
+| `DELETE /api/workflows/{id}/storage` | `approval` | clear all entries (the file is removed outright); returns the emptied entry list |
 
 ## Redaction library and bindings
 
@@ -1299,11 +1397,11 @@ Use `scripts/bundle-import.mjs --file bundle.zip --accepted-intent-ids '["sessio
 
 `POST /mcp` serves a stateless JSON-RPC 2.0 envelope implemented in-repo (no MCP SDK). It is permission-controlled like `/api/*` and registered in the same permission catalog as the `POST /mcp` action (default `allow`, read-class); every request is independently authenticated through the existing identity system — trusted local callers (loopback peer, local Host/Origin) use the unauthenticated local identity, everyone else must send exactly one `Authorization: Bearer <key>`. The endpoint shares no session state between requests; the curated tool surface grows in Task 25.
 
-Supported methods: `initialize` negotiates the MCP protocol version — a client-requested version from `2024-11-05`/`2025-03-26`/`2025-06-18` is echoed back verbatim, while `latest`, a missing, or an unsupported version falls back to the implementation's newest version (`2025-06-18`); the result declares `capabilities.tools` and `serverInfo` (`proxy-crab` + crate version). `tools/list` returns the curated registry: each entry carries `name`, `description`, and an object `inputSchema` derived from the tool's declared parameter contract.
+Supported methods: `initialize` negotiates the MCP protocol version — a client-requested version from `2024-11-05`/`2025-03-26`/`2025-06-18` is echoed back verbatim, while `latest`, a missing, or an unsupported version falls back to the implementation's newest version (`2025-06-18`); the result declares `capabilities.tools` and `serverInfo` (`proxy-crab` + crate version). `tools/list` returns the curated registry (30 tools across the read/write/execute tiers — the full catalog table lives in [mcp.md](mcp.md)): each entry carries `name`, `description`, and an object `inputSchema` derived from the tool's declared parameter contract.
 
 `tools/call` runs per-tool authorization (plan Task 24 Step 3): every curated tool declares the management route it mirrors, and the call runs a second `check_permission` against that route's catalog action for the same caller identity. The endpoint-level check (`POST /mcp`, done by the auth middleware) and the mapped-route check must both pass, so the stricter tier wins; when the mapped route resolves to `approval`, the existing desktop approval-window chain is reused (the call waits on the shared approval queue with its own timeout). Denial and approval timeout/rejection surface as the MCP tool-level error shape — HTTP 200 with `result.isError: true` and a readable text `content` entry (e.g. `tool 'workflow_runs_list': permission denied: management API approval timed out`) — never as a silent downgrade or a hang; a missing/empty tool `name` is `-32602`, unknown tool names and invalid arguments are tool-level errors. The first curated tool is `workflow_runs_list` (mirrors `GET /api/flow/runs`; arguments `workflowId`/`status`/`limit`/`offset` match `FlowRunListQuery`), which returns the same `{runs, total}` page shape as the HTTP route as a text `content` entry.
 
-Call boundaries (plan Task 24 Step 4): a single execution is capped at 30 seconds (timeout yields the tool-level error `execution timed out after 30s` and the underlying work is cancelled); at most 4 tool calls are in flight process-wide, additional calls fail fast with `too many concurrent tool calls; retry later` (no queuing); a client disconnect drops the handler future, which cancels the in-flight tool execution. Error text is centrally mapped and never contains file paths or credentials — only `bad_request` validation messages from the manager are passed through verbatim, every other manager error degrades to its stable error code.
+Call boundaries (plan Task 24 Step 4): a single execution is capped at 30 seconds (timeout yields the tool-level error `execution timed out after 30s` and the underlying work is cancelled); at most 4 tool calls are in flight process-wide, additional calls fail fast with `too many concurrent tool calls; retry later` (no queuing); a client disconnect drops the handler future, which cancels the in-flight tool execution. Error text is centrally mapped and never contains file paths or credentials — curated business categories (`bad_request`, `not_found`, `conflict`, `workflow_graph_invalid`) pass the manager's message through verbatim so callers can self-correct, every other manager error degrades to its stable error code.
 
 Unknown methods get `-32601`, structurally broken envelopes get `-32600` (with the id preserved when possible), unparsable JSON gets `-32700`, and notifications (no `id`) are acknowledged with `202 Accepted` and no body. Request bodies are capped at 1 MiB; read failures map to `-32700`.
 

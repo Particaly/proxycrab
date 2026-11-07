@@ -18,6 +18,7 @@ ReqFlow 复刻（计划 `docs/superpowers/plans/2026-11-03-request-workflow-repr
 | A-10 | 请求库导入三格式入库核对 | cURL/HAR/Postman 导入 | 8 | 可执行 |
 | A-11 | 环境变量集激活切换与 secret 脱敏显示 | 激活切换、掩码读写、运行期冻结 | 17 | 可执行 |
 | A-12 | 内置假数据模板变量（{{ fake.* }}） | fake 命名空间渲染、同执行一致性与重随机、独立重放窗口渲染 | 20 | 可执行 |
+| A-13 | 工作流存储（host.storage 与 {{ storage.* }}） | 工作流级持久化 KV：脚本实时读写、跨运行共享、模板/条件快照、管理 API 核对 | 19+ | 可执行 |
 
 通用说明：运行记录/运行画布已可用（主计划 Task 1–28 已完成，桌面 Tauri 接线已合入）。运行态核对优先走桌面入口：工作流编辑器已内嵌主界面（左侧边栏手风琴「工作流」区块，资产菜单同名项也切到该区块），区块内点「运行」直接触发并进入运行画布，左侧手风琴「运行记录」区块可查看列表、运行详情与取消（侧栏为筛选 + 分页运行列表，点行在主区打开运行详情画布；资产菜单「运行记录」同名项也切到该区块）；HTTP 路径（`GET /api/flow/runs` / `GET /api/flow/runs/{id}`，本机回环默认 `LocalLoopback` 身份可读）仍是可用的核对手段。经 HTTP 触发时 `POST /api/flow/runs` 默认档位 `approval`，本机回环需先在 设置 > 管理接口 将该 action 调为 `allow`（或届时点审批）；桌面「运行」按钮走信任面 Tauri 命令，不经审批链。注意：管理 HTTP 服务未启动时桌面无实时运行进度，运行记录区块的手动刷新兜底。
 
@@ -30,7 +31,8 @@ ReqFlow 复刻（计划 `docs/superpowers/plans/2026-11-03-request-workflow-repr
   1. 日志表选中一条目标请求，右键「存入请求库」（或详情页入库入口）。
   2. 切到左侧边栏手风琴「请求库」区块核对新条目：命名 `METHOD host+path`、来源徽标「抓包入库」、Headers/Query/Body/Response 四 tab 与原请求一致。
   3. 切到手风琴「工作流」区块新建流程，拖入一个「请求」节点并从请求库选中该条目，连接 开始 → 请求 → 结束（画布自动保存，约 1 秒后工具条圆点转灰）。
-  4. 触发运行（桌面入口可用：编辑器内直接点「运行」；或 `curl -X POST http://127.0.0.1:18089/api/flow/runs -H 'Content-Type: application/json' -d '{"workflowId":"<id>"}'`）。
+  4. （可选，模板核对）触发前预览请求面：`curl -X POST http://127.0.0.1:18089/api/flow/render-preview -H 'Content-Type: application/json' -d '{"workflowId":"<id>","nodeId":"<节点id>"}'`——一次性 VM 内渲染「将要发出」的请求（基线 + 覆盖 + 模板 + 头保真/Cookie），零出站、不落库；`{{ env.* }}`/`{{ var.* }}` 按激活环境集与三层变量表解析，`{{ fake.* }}` 每次预览采样一次且 url/headers/body 同值，secret 值以 `******` 掩码返回；`variableOverrides` 可为 setVariable 声明的运行期变量提供采样值。预览不执行 preProcess 脚本（脚本验证走 `POST /api/flow/script/dry-run` 组合）。
+  5. 触发运行（桌面入口可用：编辑器内直接点「运行」；或 `curl -X POST http://127.0.0.1:18089/api/flow/runs -H 'Content-Type: application/json' -d '{"workflowId":"<id>"}'`）。
 - 预期结果：
   - 返回立即给出 run id；`GET /api/flow/runs/{id}` 终态 `success`，`nodeRuns` 中请求节点有入参/返回值快照与耗时。
   - 桌面端左侧手风琴「运行记录」区块出现该 run，运行详情（运行画布）的逐节点状态与耗时和 `nodeRuns` 一致，可与 API 核对互相印证。
@@ -96,8 +98,8 @@ ReqFlow 复刻（计划 `docs/superpowers/plans/2026-11-03-request-workflow-repr
 - 预期结果：
   - `dev` 集合出现 `token` 键；同 run 下游节点与后续运行的 `{{ env.token }}` 都能读到新值。
   - 写回目标为派发时定格的集合：运行中切换激活集不影响本次写回去向，也不影响进行中 run 读到的快照。
-  - 将 token 键加入 secret 表后重跑：节点快照与错误文本中该值显示 `******`（写回值动态并入掩码清单）。
-- 失败排查：写回未出现 → 核对脚本是否真赋值（`undefined` 不产生写回）与目标集合 id 是否为派发时捕获的那个；新值未脱敏 → 动态新键默认落普通表，需手动标记 secret。
+  - 将 token 键加入 secret 表后重跑：节点快照与错误文本中该值显示 `******`（secret 表内键的写回值并入掩码清单）；普通表业务键（如 `applyId`）的写回值保持明文可查——掩码只跟随显式的键级标记，无键名/值模式匹配。
+- 失败排查：写回未出现 → 核对脚本是否真赋值（`undefined` 不产生写回）与目标集合 id 是否为派发时捕获的那个；新值未脱敏 → 动态新键默认落普通表，需手动标记 secret（把键移入 secret 表，改天重跑生效——标记随派发时快照定格）。
 
 ## A-06 运行中断与重启收敛
 
@@ -211,3 +213,21 @@ ReqFlow 复刻（计划 `docs/superpowers/plans/2026-11-03-request-workflow-repr
   - 条件节点左右值写 `{{ fake.* }}` 时保存校验阻断（提示条件沙箱仅支持 input / var）；未知生成器（如 `{{ fake.nope }}`）渲染为空且节点 checkpoint 带告警，运行不失败。
   - 独立重放窗口发送后 capture 同样呈现已替换值；URL 与 body 同表达式取同一值；非 fake 表达式（如 `{{ var.x }}`）保持原文不动。
 - 失败排查：模板原样未替换 → 流程节点未触发运行（仅保存不渲染），或独立重放窗口表达式写错（失败保留原文便于肉眼发现）；建议浮层无 fake. 根 → 输入框非表达式建议组件（body 原生 textarea 走「插入假数据」按钮）；值形态可疑 → 对照 fake.ts 元数据表的示例口径。
+
+## A-13 工作流存储（host.storage 与 {{ storage.* }}）
+
+覆盖工作流级持久化 KV（`flow/workflow-data/{workflowId}.json`）：脚本经 `host.storage` 同步实时读写、同工作流全部运行共享同一份数据、模板 `{{ storage.* }}` 与条件表达式 storage 快照逐节点取镜像值；与 env 的差异（激活冻结的字符串快照 + 批量写回 + 全局共享）可对照 A-05 / A-11 核对。
+
+- 前置条件：工作区正常打开，存在一个项目；HTTP 核对路径可用（`GET/PUT/DELETE /api/workflows/{id}/storage*`，读默认 `allow`、写默认 `approval`，本机回环按需在 设置 > 管理接口 调整）。
+- 操作步骤：
+  1. 新建流程（记下 workflowId，画布 URL 或 `GET /api/workflows` 可查）：开始 → 请求节点 A（前置脚本 `host.storage.put("counter", (host.storage.get("counter").value ?? 0) + 1); return {};`，URL 填 `http://127.0.0.1:9/unreachable`）→ 请求节点 B（URL 模板 `http://127.0.0.1:9/{{ storage.counter }}`）。两个节点预期请求失败，不影响存储链路核对。
+  2. 触发运行到终态（允许 failed——A 节点出站失败即 failed，但前置脚本已执行、存储已落盘）。
+  3. `GET /api/workflows/{id}/storage` 核对 `counter` 键与 `value = 1`（首次）及 `updatedAt` 时间戳。
+  4. 再次触发一次运行，重新 `GET` 核对 `counter = 2`（跨运行共享、脚本实时累加）。
+  5. `PUT /api/workflows/{id}/storage/threshold`（body `{"value": 3}`）外部注入，再建一个条件节点（表达式 `return storage.counter < storage.threshold;`）触发运行，从运行详情核对该条件节点的 output.branch。
+  6. `DELETE /api/workflows/{id}/storage/counter` 删单键、`DELETE /api/workflows/{id}/storage` 清空，分别 `GET` 核对；删除工作流后再查工作区 `flow/workflow-data/` 目录确认文件已级联清理。
+- 预期结果：
+  - 每次 put 返回后 `GET` 立即可见（实时落盘，无批量写回窗口）；键名违反 `[A-Za-z0-9._-]`（如 `bad/key`）返回 `400 bad_request`；删除缺失键返回 `404 not_found`。
+  - 运行内脚本 put 后，后续节点模板 `{{ storage.counter }}` 立即取到新值（运行内镜像）；脚本 get 能读到上次运行与外部 API 写入的值。
+  - 对比 env：激活切换另一环境集不影响 storage 数据（storage 绑定 workflowId，不随激活迁移）；脚本 env 写回走 `env-sets.json` 批量队列，storage 走 `workflow-data/` 逐键即时写。
+- 失败排查：脚本报 `blocked` → 键名/配额违规（单值 256KiB、总量 4MiB、条目 10000），看错误文案；模板渲染空串 → 派发前键不存在（核对 `GET storage`）；MCP 侧 `workflow_storage_list` 与 HTTP 读不一致 → 核对工具档位（read 关闭时工具不可见）。

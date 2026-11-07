@@ -11,7 +11,9 @@ import type { WorkflowNode } from "./types";
  *     已完成轮次照常结算；显式 signal / 无宿主桥时不接线（既有行为不变）；
  *   - resume 透传：指定节点重跑的上游闭包预置与「缺输出建档前判 failed」
  *     经公开契约可用（执行器语义由 executor.pinned-resume.test.mts 锁定，
- *     此处只锁装配面透传）。
+ *     此处只锁装配面透传）；
+ *   - entryNodeId 透传：多 start 工作流的入口选择经公开契约可用（执行器
+ *     语义由 executor.test.mts 锁定，此处只锁装配面透传）。
  *
  * 全部用桩宿主（假重放）与 fake timers，不发请求、不落库。
  */
@@ -226,6 +228,47 @@ describe("runWorkflow 指定节点重跑装配面（Task 20）", () => {
     expect(summary.status).toBe("failed");
     expect(summary.error).toContain("a");
     expect(summary.error).toContain("无成功输出");
+    expect(Object.keys(summary.nodeRuns)).toEqual([]);
+    expect(replay).not.toHaveBeenCalled();
+  });
+});
+
+describe("runWorkflow 入口选择透传（多 start 工作流）", () => {
+  /** 双入口图：s1→a、s2→b 两条互不连通的 start 链条 */
+  function multiStartWorkflow() {
+    return {
+      id: asWorkflowId("wf-entry"),
+      nodes: [
+        makeNode("s1", "start"),
+        makeNode("a", "httpReplay", {
+          manualRequest: { method: "GET", url: "https://example.test/a" },
+        }),
+        makeNode("s2", "start"),
+        makeNode("b", "httpReplay", {
+          manualRequest: { method: "GET", url: "https://example.test/b" },
+        }),
+      ],
+      edges: [makeEdge("s1", "a"), makeEdge("s2", "b")],
+    };
+  }
+
+  it("entryNodeId 透传执行器：只执行选中入口链条，另一 start 链条收尾 skipped", async () => {
+    const replay = stubReplayHost();
+    const summary = await runWorkflow(multiStartWorkflow(), { entryNodeId: asNodeId("s2") });
+    expect(summary.status).toBe("success");
+    // 只有选中入口的链条出站
+    expect(replay).toHaveBeenCalledTimes(1);
+    expect(summary.nodeRuns[asNodeId("s2")]?.status).toBe("success");
+    expect(summary.nodeRuns[asNodeId("b")]?.status).toBe("success");
+    expect(summary.nodeRuns[asNodeId("s1")]?.status).toBe("skipped");
+    expect(summary.nodeRuns[asNodeId("a")]?.status).toBe("skipped");
+  });
+
+  it("多 start 未指定入口：装配面同样以入口歧义 failed 收尾，不执行任何节点", async () => {
+    const replay = stubReplayHost();
+    const summary = await runWorkflow(multiStartWorkflow());
+    expect(summary.status).toBe("failed");
+    expect(summary.error).toContain("entryNodeId");
     expect(Object.keys(summary.nodeRuns)).toEqual([]);
     expect(replay).not.toHaveBeenCalled();
   });

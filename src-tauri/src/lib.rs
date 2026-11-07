@@ -20,18 +20,18 @@ use proxy_crab_mgr::{
         CreateRequestLibraryRequest, CreateSessionRequest, DebugFilterScriptRequest, DeleteCount,
         EnvSetsPayload, EnvWriteBackRequest, EnvWriteBackResult, ExecuteTemporaryScriptRequest,
         ExtendBreakpointRequest, FlowListQuery, FlowProjectCreateRequest, FlowProjectPage,
-        FlowProjectUpdateRequest, FlowRunDetailPayload, FlowRunListQuery, FlowRunPage,
-        FlowRunTriggerRequest, FlowScriptDryRunRequest, HttpApiChange, HttpApiResource,
-        HttpServiceStatus, IngestCaptureRequest, InterceptorCreateRequest, InterceptorDetail,
-        InterceptorLibraryList, InterceptorUpdateRequest, LogDetail, LogIdsPayload, LogIdsRequest,
-        LogViewsPayload, LogViewsRequest, ManagerError, ReplaceActiveEnvSetRequest,
-        ReplaceEnvGlobalsRequest, ReplaceSessionInterceptorsRequest, ReplaceSessionViewRequest,
-        ReplayRequestPayload, ReplayResult, RequestLibraryPage, RequestLibraryQuery,
-        RoutingSelection, SaveEnvSetRequest, ScriptRequest, SessionInterceptorsPayload,
-        SessionViewPayload, SessionsPayload, SystemLogsQuery, UpdateAgentsPresetRequest,
-        UpdateRequestLibraryRequest, UpdateScriptRequest, UpdateSessionRequest,
-        WorkflowCreateRequest, WorkflowImportRequest, WorkflowImportResult, WorkflowListQuery,
-        WorkflowPage, WorkflowUpdateRequest, WorkflowValidationIssue,
+        FlowProjectUpdateRequest, FlowRenderPreviewRequest, FlowRunDetailPayload, FlowRunListQuery,
+        FlowRunPage, FlowRunTriggerRequest, FlowScriptDryRunRequest, HttpApiChange,
+        HttpApiResource, HttpServiceStatus, IngestCaptureRequest, InterceptorCreateRequest,
+        InterceptorDetail, InterceptorLibraryList, InterceptorUpdateRequest, LogDetail,
+        LogIdsPayload, LogIdsRequest, LogViewsPayload, LogViewsRequest, ManagerError,
+        ReplaceActiveEnvSetRequest, ReplaceEnvGlobalsRequest, ReplaceSessionInterceptorsRequest,
+        ReplaceSessionViewRequest, ReplayRequestPayload, ReplayResult, RequestLibraryPage,
+        RequestLibraryQuery, RoutingSelection, SaveEnvSetRequest, ScriptRequest,
+        SessionInterceptorsPayload, SessionViewPayload, SessionsPayload, SystemLogsQuery,
+        UpdateAgentsPresetRequest, UpdateRequestLibraryRequest, UpdateScriptRequest,
+        UpdateSessionRequest, WorkflowCreateRequest, WorkflowImportRequest, WorkflowImportResult,
+        WorkflowListQuery, WorkflowPage, WorkflowUpdateRequest, WorkflowValidationIssue,
     },
     http::{HttpServerHandle, start_http_server_with_routes},
     session_share::{
@@ -47,6 +47,7 @@ use proxy_crab_mitm::{
         mcp_audit::McpAuditEntry,
         mcp_tiers::McpTiers,
         model::{Project, Workflow},
+        render_preview::RenderPreviewOutput,
         run_store::FlowRunRecord,
         store::{EnvVariableSet, RequestLibraryEntry},
         transfer,
@@ -1022,6 +1023,18 @@ async fn flow_script_dry_run(
     state.manager().flow_script_dry_run(request).await
 }
 
+/// 预览一个 httpReplay 节点的请求面（模板渲染 dry-run）：一次性 VM 内渲染
+/// 「将要发出」的请求，零出站、不落库、不广播；preProcess 脚本不执行。
+/// 成功返回 `{ok,baseline,request,warnings}`（secret 已脱敏），工作流/节点
+/// 不存在或节点无请求面按 HTTP 同构错误返回。
+#[tauri::command]
+async fn flow_render_preview(
+    state: State<'_, BackendState>,
+    request: FlowRenderPreviewRequest,
+) -> Result<RenderPreviewOutput, ManagerError> {
+    state.manager().flow_render_preview(request).await
+}
+
 /* ---- MCP 暴露档位 / 调用审计（设置窗口两分区）---- */
 
 /// 读取 MCP 暴露三档开关（读/写/执行；缺省读开、写/执行关）。
@@ -1618,6 +1631,7 @@ pub fn run() {
             trigger_flow_run,
             cancel_flow_run,
             flow_script_dry_run,
+            flow_render_preview,
             get_mcp_tiers,
             replace_mcp_tiers,
             list_mcp_audit,

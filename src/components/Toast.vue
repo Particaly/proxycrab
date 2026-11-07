@@ -10,15 +10,22 @@ import {
 
 <template>
   <div class="toast-container">
-    <div v-for="toast in appStore.toasts" :key="toast.id" class="toast" :class="toast.kind">
-      <Io5CheckmarkCircle v-if="toast.kind === 'success'" :size="15" class="toast-icon" />
-      <Io5CloseCircle v-else-if="toast.kind === 'error'" :size="15" class="toast-icon" />
-      <Io5InformationCircle v-else :size="15" class="toast-icon" />
-      <span class="toast-message">{{ toast.message }}</span>
-      <button class="btn icon" @click="appStore.dismissToast(toast.id)">
-        <Io5Close :size="13" />
-      </button>
-    </div>
+    <TransitionGroup name="toast">
+      <div
+        v-for="toast in appStore.toasts"
+        :key="toast.id"
+        class="toast"
+        :class="toast.kind"
+      >
+        <Io5CheckmarkCircle v-if="toast.kind === 'success'" :size="15" class="toast-icon" />
+        <Io5CloseCircle v-else-if="toast.kind === 'error'" :size="15" class="toast-icon" />
+        <Io5InformationCircle v-else :size="15" class="toast-icon" />
+        <span class="toast-message">{{ toast.message }}</span>
+        <button class="btn icon" @click="appStore.dismissToast(toast.id)">
+          <Io5Close :size="13" />
+        </button>
+      </div>
+    </TransitionGroup>
   </div>
 </template>
 
@@ -30,17 +37,17 @@ import {
   transform: translateX(-50%);
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  z-index: 100000;
+  gap: var(--space-2);
+  z-index: var(--z-toast);
   pointer-events: none;
 }
 .toast {
   pointer-events: auto;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   max-width: 520px;
-  padding: 8px 12px;
+  padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-md);
   background: var(--bg-elevated);
   border: 1px solid var(--border-strong);

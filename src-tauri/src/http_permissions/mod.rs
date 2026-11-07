@@ -307,7 +307,7 @@ mod tests {
         let service = HttpPermissionService::open(directory.path(), Arc::new(|_| {})).unwrap();
         let catalog = service.catalog();
 
-        assert_eq!(catalog.len(), 118);
+        assert_eq!(catalog.len(), 120);
         assert!(
             catalog
                 .iter()

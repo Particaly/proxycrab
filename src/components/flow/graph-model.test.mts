@@ -4,6 +4,7 @@ import {
   applyNodePositions,
   createWorkflowEdge,
   createWorkflowNode,
+  EDGE_ARROW_MARKER,
   graphSignature,
   starterGraph,
   toFlowEdges,
@@ -66,10 +67,24 @@ describe("model to Vue Flow projection", () => {
 
   test("edges pass the branch handle through with 真/假 labels and omit undefined handles", () => {
     expect(toFlowEdges([edge("e1", "a", "b", "true"), edge("e2", "b", "c")])).toEqual([
-      { id: "e1", source: "a", target: "b", sourceHandle: "true", label: "真" },
-      { id: "e2", source: "b", target: "c" },
+      {
+        id: "e1",
+        source: "a",
+        target: "b",
+        markerEnd: EDGE_ARROW_MARKER,
+        sourceHandle: "true",
+        label: "真",
+      },
+      { id: "e2", source: "b", target: "c", markerEnd: EDGE_ARROW_MARKER, type: "floating" },
     ]);
     expect(toFlowEdges([edge("e3", "a", "b", "false")])[0]!.label).toBe("假");
+  });
+
+  test("all edges share one arrow marker (context-stroke, no per-edge copies)", () => {
+    const projected = toFlowEdges([edge("e1", "a", "b"), edge("e2", "b", "c")]);
+    expect(projected[0]!.markerEnd).toBe(projected[1]!.markerEnd);
+    expect(projected[0]!.markerEnd.type).toBe("arrowclosed");
+    expect(projected[0]!.markerEnd.color).toBe("context-stroke");
   });
 });
 

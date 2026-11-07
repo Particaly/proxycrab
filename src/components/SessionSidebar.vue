@@ -9,6 +9,7 @@ import { confirmDialog, openContextMenu } from "../stores/dialog";
 import { formatActivityCount } from "../utils/format";
 import { appStore } from "../stores/app";
 import { workspaceStore } from "../stores/workspace-view";
+import type { WorkspaceSection } from "../stores/workspace-view";
 import { useRequestLibraryStore } from "../stores/request-library";
 import { useBackend } from "../api";
 import SessionListItem from "./SessionListItem.vue";
@@ -23,14 +24,20 @@ import {
   openSessionExportShare,
 } from "../windows/launcher";
 import type { SessionMetadata } from "../api/types";
+import type { Component } from "vue";
 import {
   Io5Add,
   Io5Archive,
   Io5ChevronForward,
   Io5Create,
   Io5Eye,
+  Io5GitNetwork,
+  Io5LibraryOutline,
   Io5Link,
+  Io5Options,
+  Io5Pulse,
   Io5RadioButtonOn,
+  Io5Time,
 } from "vue-icons-plus/io5";
 import { IoArrowForwardCircle } from "vue-icons-plus/io";
 
@@ -46,13 +53,23 @@ const library = reactive(useRequestLibraryStore());
  * （能力位缺失的区块不渲染）。展开项与主内容区由 workspaceStore 共享；
  * 点已展开区块头不收起（避免主区空屏）。
  */
-const sections = [
-  { key: "capture", label: "抓包", available: () => true },
-  { key: "workflow", label: "工作流", available: () => Boolean(backend.workflows) },
-  { key: "library", label: "请求库", available: () => Boolean(backend.requestLibrary) },
-  { key: "env", label: "环境变量", available: () => Boolean(backend.envSets) },
-  { key: "runs", label: "运行记录", available: () => Boolean(backend.flowRuns) },
-] as const;
+const sections: ReadonlyArray<{
+  key: WorkspaceSection;
+  label: string;
+  icon: Component;
+  available: () => boolean;
+}> = [
+  { key: "capture", label: "抓包", icon: Io5Pulse, available: () => true },
+  { key: "workflow", label: "工作流", icon: Io5GitNetwork, available: () => Boolean(backend.workflows) },
+  {
+    key: "library",
+    label: "请求库",
+    icon: Io5LibraryOutline,
+    available: () => Boolean(backend.requestLibrary),
+  },
+  { key: "env", label: "环境变量", icon: Io5Options, available: () => Boolean(backend.envSets) },
+  { key: "runs", label: "运行记录", icon: Io5Time, available: () => Boolean(backend.flowRuns) },
+];
 
 const creating = ref(false);
 const editingId = ref<number | null>(null);
@@ -254,15 +271,19 @@ watch(sidebarWidth, updatePopupPos);
         v-if="section.available()"
         class="sb-acc-head"
         :class="{ open: workspaceStore.section === section.key }"
+        :aria-expanded="workspaceStore.section === section.key"
         @click="workspaceStore.open(section.key)"
       >
         <Io5ChevronForward :size="12" class="sb-acc-chevron" />
+        <component :is="section.icon" :size="14" class="sb-acc-icon" />
         <span>{{ section.label }}</span>
       </button>
-      <div
-        v-if="section.available() && workspaceStore.section === section.key"
-        class="sb-acc-body"
-      >
+      <Transition name="acc" mode="out-in">
+        <div
+          v-if="section.available() && workspaceStore.section === section.key"
+          :key="section.key"
+          class="sb-acc-body"
+        >
         <!-- 抓包：会话列表 + 分流入口（首页原有内容） -->
         <template v-if="section.key === 'capture'">
           <div class="sb-top">
@@ -327,7 +348,7 @@ watch(sidebarWidth, updatePopupPos);
               v-if="!sessionsStore.loading && sessionsStore.sessions.length === 0"
               class="empty-hint"
             >
-              暂无会话，点击右上角 + 新建
+              暂无会话，点击 + 新建
             </div>
           </div>
           <button class="sb-archived" @click="openArchivedSessions">
@@ -367,7 +388,8 @@ watch(sidebarWidth, updatePopupPos);
         <EnvSetsNav v-else-if="section.key === 'env'" />
         <!-- 运行记录：筛选 + 分页运行列表 -->
         <RunHistoryNav v-else-if="section.key === 'runs'" />
-      </div>
+        </div>
+      </Transition>
     </template>
 
     <Teleport to="body">
@@ -439,13 +461,14 @@ watch(sidebarWidth, updatePopupPos);
   background: var(--accent);
 }
 .sb-acc-head {
+  position: relative;
   flex: none;
   width: 100%;
   min-height: 32px;
-  padding: 0 12px;
+  padding: 0 var(--space-3);
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-2);
   border: 0;
   border-bottom: 1px solid var(--border);
   background: var(--bg-panel);
@@ -455,18 +478,56 @@ watch(sidebarWidth, updatePopupPos);
   font-weight: 600;
   text-align: left;
   cursor: pointer;
+  transition:
+    background var(--dur-fast) ease,
+    color var(--dur-fast) ease;
+}
+/* 展开态左缘 accent 指示条 */
+.sb-acc-head::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 7px;
+  bottom: 7px;
+  width: 2px;
+  border-radius: 0 2px 2px 0;
+  background: var(--accent);
+  opacity: 0;
+  transform: scaleY(0.4);
+  transition:
+    opacity var(--dur-fast) ease,
+    transform var(--dur-base) var(--ease-out);
 }
 .sb-acc-head:hover {
   background: var(--bg-hover);
   color: var(--text);
 }
+.sb-acc-head.open {
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 5%, var(--bg-panel));
+}
+.sb-acc-head.open::before {
+  opacity: 1;
+  transform: none;
+}
+.sb-acc-head:focus-visible {
+  outline-offset: -2px;
+}
 .sb-acc-chevron {
   flex: none;
   color: var(--text-faint);
-  transition: transform 0.15s;
+  transition: transform var(--dur-base) var(--ease-out);
 }
 .sb-acc-head.open .sb-acc-chevron {
   transform: rotate(90deg);
+}
+.sb-acc-icon {
+  flex: none;
+  color: var(--text-faint);
+  transition: color var(--dur-fast) ease;
+}
+.sb-acc-head.open .sb-acc-icon {
+  color: var(--accent);
 }
 .sb-acc-body {
   flex: 1;
@@ -485,7 +546,7 @@ watch(sidebarWidth, updatePopupPos);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 12px;
+  padding: var(--space-2) var(--space-3);
 }
 .sb-title {
   font-size: 12px;
@@ -495,17 +556,17 @@ watch(sidebarWidth, updatePopupPos);
 .sb-header-actions {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-05);
 }
 .sb-routing {
   width: calc(100% - 16px);
   box-sizing: border-box;
-  min-height: 30px;
-  margin: 0 8px 7px;
-  padding: 5px 9px;
+  min-height: 32px;
+  margin: 0 var(--space-2) var(--space-2);
+  padding: var(--space-1) var(--space-2);
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   background: var(--bg-input);
@@ -514,6 +575,10 @@ watch(sidebarWidth, updatePopupPos);
   font-size: 11px;
   text-align: left;
   cursor: pointer;
+  transition:
+    border-color var(--dur-fast) ease,
+    background var(--dur-fast) ease,
+    color var(--dur-fast) ease;
 }
 .sb-routing:hover {
   border-color: var(--border-strong);
@@ -538,13 +603,25 @@ watch(sidebarWidth, updatePopupPos);
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 10px;
+  gap: var(--space-2);
+  padding: var(--space-3);
   background: var(--bg-elevated);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-popup);
-  z-index: 100000;
+  z-index: var(--z-toast);
+  transform-origin: top right;
+  animation: sb-edit-in var(--dur-base) var(--ease-out);
+}
+@keyframes sb-edit-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 .sb-edit-arrow {
   position: absolute;
@@ -573,16 +650,16 @@ watch(sidebarWidth, updatePopupPos);
 .sb-list {
   flex: 1;
   overflow-y: auto;
-  padding: 4px;
+  padding: var(--space-1);
 }
 .sb-archived {
   flex: none;
   width: 100%;
-  min-height: 38px;
-  padding: 8px 12px;
+  min-height: 36px;
+  padding: var(--space-2) var(--space-3);
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: var(--space-2);
   border: 0;
   border-top: 1px solid var(--border);
   background: var(--bg-panel);
@@ -591,6 +668,9 @@ watch(sidebarWidth, updatePopupPos);
   font-size: 12px;
   text-align: left;
   cursor: pointer;
+  transition:
+    background var(--dur-fast) ease,
+    color var(--dur-fast) ease;
 }
 .sb-archived:hover {
   background: var(--bg-hover);

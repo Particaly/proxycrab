@@ -1,6 +1,7 @@
 import { createApp } from "vue";
 import ShareLanding from "./landing/ShareLanding.vue";
 import "./styles/base.css";
+import "./styles/motion.css";
 
 const app = createApp(ShareLanding);
 

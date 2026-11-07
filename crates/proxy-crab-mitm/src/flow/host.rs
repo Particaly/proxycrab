@@ -96,6 +96,11 @@ impl FlowError {
         Self::new(FlowErrorKind::Script, message)
     }
 
+    /// 环境性拒绝便捷构造（归 blocked 类：运行环境拒绝该能力或参数）。
+    pub fn blocked(message: impl Into<String>) -> Self {
+        Self::new(FlowErrorKind::Blocked, message)
+    }
+
     /// 预算耗尽便捷构造（归一为 timeout 类）。
     pub fn timeout(message: impl Into<String>) -> Self {
         Self::new(FlowErrorKind::Timeout, message)
@@ -193,4 +198,38 @@ pub trait FlowHost: Send + Sync + 'static {
 
     /// `host.cancelled()` —— 取消轮询：立即返回当前是否已取消（布尔）。
     async fn cancelled(&self) -> Result<JsonValue, FlowError>;
+
+    // ------------------------------------------------------------------
+    // 同步工作流存储面（host.storage.*）：脚本沙箱为同步求值（new Function
+    // 体，无 await），存储能力因此以同步函数注入。实现约定：调用在 VM 执行
+    // 线程内直接完成，必须快速返回（本地小文件 + 进程级写锁，毫秒级）；同步
+    // 调用不参与取消竞速（不可被打断，天然短促无实质风险）。
+    // ------------------------------------------------------------------
+
+    /// `host.storage.get(key)` —— 实时读取工作流存储的一个键。
+    /// 返回 `{"found": bool, "value": <任意JSON>}`（未找到时 value 为 null）。
+    fn storage_get(&self, key: &str) -> Result<JsonValue, FlowError> {
+        let _ = key;
+        Err(FlowError::blocked("宿主未提供 host.storage 能力"))
+    }
+
+    /// `host.storage.put(key, value)` —— 写入一个键并立即持久化（put 即
+    /// 落盘，失败以 FlowError 抛出）。返回 `{"updatedAt": 毫秒}`。
+    fn storage_put(&self, key: &str, value: &JsonValue) -> Result<JsonValue, FlowError> {
+        let _ = (key, value);
+        Err(FlowError::blocked("宿主未提供 host.storage 能力"))
+    }
+
+    /// `host.storage.delete(key)` —— 删除一个键。返回 `{"deleted": bool}`
+    /// （键不存在亦为成功，deleted 为 false）。
+    fn storage_delete(&self, key: &str) -> Result<JsonValue, FlowError> {
+        let _ = key;
+        Err(FlowError::blocked("宿主未提供 host.storage 能力"))
+    }
+
+    /// `host.storage.keys()` —— 实时列出工作流存储的全部键名（字典序）。
+    /// 返回 `{"keys": ["<键名>", ...]}`。
+    fn storage_keys(&self) -> Result<JsonValue, FlowError> {
+        Err(FlowError::blocked("宿主未提供 host.storage 能力"))
+    }
 }

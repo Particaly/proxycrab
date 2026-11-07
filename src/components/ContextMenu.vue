@@ -10,30 +10,38 @@ function run(item: (typeof contextMenuState.items)[number]): void {
 
 <template>
   <Teleport to="body">
-    <div
-      v-if="contextMenuState.visible"
-      class="ctx-mask"
-      @click="closeContextMenu"
-      @contextmenu.prevent="closeContextMenu"
-    >
+    <Transition name="fade">
       <div
-        class="ctx-menu"
-        :style="{ left: contextMenuState.x + 'px', top: contextMenuState.y + 'px' }"
+        v-if="contextMenuState.visible"
+        class="ctx-mask"
+        @click="closeContextMenu"
+        @contextmenu.prevent="closeContextMenu"
       >
-        <template v-for="(item, i) in contextMenuState.items" :key="i">
-          <div v-if="item.dividerBefore" class="ctx-divider" />
-          <button
-            class="ctx-item"
-            :class="{ danger: item.danger }"
-            :disabled="item.disabled"
-            @click="run(item)"
+        <Transition name="pop" appear>
+          <div
+            class="ctx-menu"
+            :style="{
+              left: contextMenuState.x + 'px',
+              top: contextMenuState.y + 'px',
+              transformOrigin: 'top left',
+            }"
           >
-            <component :is="item.icon" v-if="item.icon" :size="14" class="ctx-icon" />
-            <span :title="item.title">{{ item.label }}</span>
-          </button>
-        </template>
+            <template v-for="(item, i) in contextMenuState.items" :key="i">
+              <div v-if="item.dividerBefore" class="ctx-divider" />
+              <button
+                class="ctx-item"
+                :class="{ danger: item.danger }"
+                :disabled="item.disabled"
+                @click="run(item)"
+              >
+                <component :is="item.icon" v-if="item.icon" :size="14" class="ctx-icon" />
+                <span :title="item.title">{{ item.label }}</span>
+              </button>
+            </template>
+          </div>
+        </Transition>
       </div>
-    </div>
+    </Transition>
   </Teleport>
 </template>
 
@@ -41,12 +49,12 @@ function run(item: (typeof contextMenuState.items)[number]): void {
 .ctx-mask {
   position: fixed;
   inset: 0;
-  z-index: 100002;
+  z-index: var(--z-menu);
 }
 .ctx-menu {
   position: fixed;
   min-width: 160px;
-  padding: 5px;
+  padding: var(--space-1);
   background: var(--bg-elevated);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
@@ -58,14 +66,15 @@ function run(item: (typeof contextMenuState.items)[number]): void {
 }
 .ctx-divider {
   height: 1px;
-  margin: 5px 4px;
+  margin: var(--space-1) var(--space-1);
   background: var(--border);
 }
 .ctx-item {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  min-height: 28px;
   border: none;
   border-radius: var(--radius-sm);
   background: transparent;
@@ -74,12 +83,16 @@ function run(item: (typeof contextMenuState.items)[number]): void {
   font-size: 12px;
   text-align: left;
   cursor: pointer;
+  transition: background var(--dur-fast) ease;
 }
 .ctx-item:hover:not(:disabled) {
   background: var(--bg-hover);
 }
 .ctx-item.danger {
   color: var(--danger);
+}
+.ctx-item.danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
 }
 .ctx-item:disabled {
   opacity: 0.45;

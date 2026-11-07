@@ -46,15 +46,17 @@ use crate::{
         CreateRequestLibraryRequest, CreateSessionRequest, DebugFilterScriptRequest,
         DeleteBypassRequest, EnvWriteBackRequest, ErrorCode, ExecuteTemporaryScriptRequest,
         ExtendBreakpointRequest, FlowListQuery, FlowProjectCreateRequest, FlowProjectUpdateRequest,
-        FlowRunListQuery, FlowRunTriggerRequest, FlowScriptDryRunRequest, HttpApiChange,
-        HttpApiResource, IngestCaptureRequest, InterceptorCreateRequest, InterceptorUpdateRequest,
-        LogIdsRequest, LogViewsRequest, ManagerError, ManagerResult, ReplaceActiveEnvSetRequest,
-        ReplaceEnvGlobalsRequest, ReplaceSessionInterceptorsRequest, ReplaceSessionViewRequest,
-        ReplayRequestPayload, RequestLibraryBodyQuery, RequestLibraryQuery, RoutingSelection,
-        SaveEnvSetRequest, ScriptRequest, SessionQuery, SystemLogsQuery,
-        UpdateRequestLibraryRequest, UpdateScriptRequest, UpdateSessionRequest, WebSocketQuery,
-        WorkflowCreateRequest, WorkflowExportQuery, WorkflowImportRequest, WorkflowListQuery,
-        WorkflowUpdateRequest, default_body_max_size,
+        FlowRenderPreviewRequest, FlowRunListQuery, FlowRunTriggerRequest, FlowScriptDryRunRequest,
+        HttpApiChange, HttpApiResource, IngestCaptureRequest, InterceptorCreateRequest,
+        InterceptorUpdateRequest, LogIdsRequest, LogSearchRequest, LogViewsRequest, ManagerError,
+        ManagerResult, ReplaceActiveEnvSetRequest, ReplaceEnvGlobalsRequest,
+        ReplaceSessionInterceptorsRequest, ReplaceSessionViewRequest, ReplayHttpRequest,
+        RequestLibraryBodyQuery, RequestLibraryQuery, RoutingSelection, SaveEnvSetRequest,
+        ScriptRequest, SessionQuery, SystemLogsQuery, UpdateRequestLibraryRequest,
+        UpdateScriptRequest, UpdateSessionRequest, WebSocketQuery, WorkflowCreateRequest,
+        WorkflowDeepValidateRequest, WorkflowExportQuery, WorkflowImportRequest, WorkflowListQuery,
+        WorkflowPatchRequest, WorkflowStoragePutRequest, WorkflowUpdateRequest,
+        default_body_max_size,
     },
     manager::ProxyCrabManager,
     mcp,
@@ -388,6 +390,7 @@ fn router_with_changes_and_extra(
             get(get_session_share).delete(disable_session_share),
         )
         .route("/api/logs/ids", post(log_ids))
+        .route("/api/logs/search", post(log_search))
         .route("/api/logs/views", post(log_views))
         .route("/api/logs/{id}/body", get(log_body))
         .route("/api/logs/{id}/websocket/messages", get(websocket_messages))
@@ -512,10 +515,25 @@ fn router_with_changes_and_extra(
         .route("/api/workflows", get(workflows).post(create_workflow))
         .route(
             "/api/workflows/{id}",
-            get(workflow).put(update_workflow).delete(delete_workflow),
+            get(workflow)
+                .put(update_workflow)
+                .patch(patch_workflow)
+                .delete(delete_workflow),
         )
         .route("/api/workflows/{id}/validate", post(validate_workflow))
+        .route("/api/flow/validate", post(validate_workflow_deep))
+        /* ---- Workflow storage: workflow-scoped persistent KV (read allow,
+        writes approval, same posture as other flow mutation routes) ---- */
+        .route(
+            "/api/workflows/{id}/storage",
+            get(workflow_storage_read).delete(workflow_storage_clear),
+        )
+        .route(
+            "/api/workflows/{id}/storage/{key}",
+            axum::routing::put(workflow_storage_put).delete(workflow_storage_delete_key),
+        )
         .route("/api/flow/script/dry-run", post(flow_script_dry_run))
+        .route("/api/flow/render-preview", post(flow_render_preview))
         /* ---- Workflow run domain (plan Task 19): standalone section ---- */
         .route(
             "/api/flow/runs",
@@ -842,6 +860,11 @@ fn change_for_request(method: &Method, path: &str, query: Option<&str>) -> Optio
         {
             vec![HttpApiResource::EnvSets]
         }
+        (&Method::PUT | &Method::DELETE, value)
+            if value.starts_with("/api/workflows/") && value.contains("/storage") =>
+        {
+            vec![HttpApiResource::WorkflowStorage]
+        }
         (&Method::POST, "/api/session-shares") => vec![HttpApiResource::SessionShare],
         (&Method::DELETE, value) if value.starts_with("/api/session-shares/") => {
             vec![HttpApiResource::SessionShare]
@@ -939,7 +962,9 @@ fn session_id_from_query(query: Option<&str>) -> Option<u64> {
 
 #[derive(Debug, Deserialize)]
 struct ReplayQuery {
-    session: u64,
+    /// Optional: omitted replays target the active session (same resolution
+    /// as every other session-scoped endpoint).
+    session: Option<u64>,
 }
 
 async fn assets(State(manager): State<ManagerState>) -> ApiResult {
@@ -949,9 +974,13 @@ async fn assets(State(manager): State<ManagerState>) -> ApiResult {
 async fn replay(
     State(manager): State<ManagerState>,
     ApiQuery(query): ApiQuery<ReplayQuery>,
-    Json(request): Json<ReplayRequestPayload>,
+    Json(mut request): Json<ReplayHttpRequest>,
 ) -> ApiResult {
-    success(manager.replay(query.session, request).await?)
+    // Query wins over the body's session_id (both name the same resolution).
+    if query.session.is_some() {
+        request.session_id = query.session;
+    }
+    success(manager.replay_request(request).await?)
 }
 
 async fn get_config(State(manager): State<ManagerState>) -> ApiResult {
@@ -1140,6 +1169,13 @@ async fn log_ids(
     ApiJson(request): ApiJson<LogIdsRequest>,
 ) -> ApiResult {
     success(manager.log_ids(request).await?)
+}
+
+async fn log_search(
+    ReadManager(manager): ReadManager,
+    ApiJson(request): ApiJson<LogSearchRequest>,
+) -> ApiResult {
+    success(manager.log_search(request).await?)
 }
 
 async fn log_views(
@@ -1760,6 +1796,17 @@ async fn update_workflow(
     success(manager.update_workflow(id, request).await?)
 }
 
+/// Patch one workflow graph incrementally: add/update/remove by id without
+/// resending the whole definition. Returns the compact patch summary; the
+/// full updated document stays available via `GET /api/workflows/{id}`.
+async fn patch_workflow(
+    State(manager): State<ManagerState>,
+    ApiPath(id): ApiPath<String>,
+    ApiJson(request): ApiJson<WorkflowPatchRequest>,
+) -> ApiResult {
+    success(manager.patch_workflow(id, request).await?)
+}
+
 async fn delete_workflow(
     State(manager): State<ManagerState>,
     ApiPath(id): ApiPath<String>,
@@ -1775,6 +1822,16 @@ async fn validate_workflow(
     success(json!({ "issues": manager.validate_workflow(id).await? }))
 }
 
+// Deep validation is editor diagnostics: it reads the request library and env
+// family but writes nothing, so it is registered as a read (`allow`) like the
+// stored-graph validate above.
+async fn validate_workflow_deep(
+    State(manager): State<ManagerState>,
+    ApiJson(request): ApiJson<WorkflowDeepValidateRequest>,
+) -> ApiResult {
+    success(json!({ "issues": manager.validate_workflow_deep(request).await? }))
+}
+
 // Pre/post script dry-run (plan Task 18): executes in a throwaway flow VM —
 // no entity is created, nothing is persisted or broadcast, and the request
 // body (which embeds the script) is excluded from the permission audit preview.
@@ -1783,6 +1840,18 @@ async fn flow_script_dry_run(
     ApiJson(request): ApiJson<FlowScriptDryRunRequest>,
 ) -> ApiResult {
     success(manager.flow_script_dry_run(request).await?)
+}
+
+// httpReplay node request-surface preview (template render dry-run): the
+// run-chain inputs are assembled from storage and the exact outgoing request
+// is rendered in a throwaway VM — zero outbound traffic, nothing persisted or
+// broadcast, and preProcess scripts are not executed (script_dry_run covers
+// those). The rendered request and warnings are secret-masked server-side.
+async fn flow_render_preview(
+    State(manager): State<ManagerState>,
+    ApiJson(request): ApiJson<FlowRenderPreviewRequest>,
+) -> ApiResult {
+    success(manager.flow_render_preview(request).await?)
 }
 
 // Workflow transfer (plan Task 23). The export response is the raw envelope
@@ -1900,6 +1969,47 @@ async fn env_write_back(
     ApiJson(request): ApiJson<EnvWriteBackRequest>,
 ) -> ApiResult {
     success(manager.env_write_back(request).await?)
+}
+
+// Workflow storage (workflow-scoped persistent key/value storage). Reads and
+// writes operate on the same store the run chain accesses live via
+// `host.storage`; mutating endpoints return the refreshed full payload.
+
+async fn workflow_storage_read(
+    State(manager): State<ManagerState>,
+    ApiPath(workflow_id): ApiPath<String>,
+) -> ApiResult {
+    success(manager.workflow_storage(workflow_id).await?)
+}
+
+async fn workflow_storage_put(
+    State(manager): State<ManagerState>,
+    ApiPath((workflow_id, key)): ApiPath<(String, String)>,
+    ApiJson(request): ApiJson<WorkflowStoragePutRequest>,
+) -> ApiResult {
+    success(
+        manager
+            .workflow_storage_put(workflow_id, key, request)
+            .await?,
+    )
+}
+
+async fn workflow_storage_delete_key(
+    State(manager): State<ManagerState>,
+    ApiPath((workflow_id, key)): ApiPath<(String, String)>,
+) -> ApiResult {
+    success(
+        manager
+            .workflow_storage_delete_key(workflow_id, key)
+            .await?,
+    )
+}
+
+async fn workflow_storage_clear(
+    State(manager): State<ManagerState>,
+    ApiPath(workflow_id): ApiPath<String>,
+) -> ApiResult {
+    success(manager.workflow_storage_clear(workflow_id).await?)
 }
 
 async fn bypass_entries(
@@ -2927,6 +3037,88 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn log_search_and_deep_validate_routes_round_trip() {
+        let app_data = tempdir().unwrap();
+        let runtime = ProxyCrab::open(app_data.path(), Arc::new(LogBuffer::default())).unwrap();
+        let session = runtime
+            .create_session(NewSession {
+                ..Default::default()
+            })
+            .unwrap();
+        {
+            let store = proxy_crab_mitm::storage::CaptureStore::open(
+                session.id,
+                runtime.workspace().root(),
+            )
+            .unwrap();
+            store
+                .begin(
+                    "127.0.0.1",
+                    &proxy_crab_mitm::model::RequestData {
+                        method: "POST".into(),
+                        uri: "https://api.example.com/v1/login".into(),
+                        version: "HTTP/1.1".into(),
+                        headers: proxy_crab_mitm::model::HeaderValues::new(),
+                        tags: Default::default(),
+                    },
+                    "request",
+                )
+                .unwrap();
+        }
+        let app = router(MitmManager::new(runtime), allow_all());
+
+        // POST /api/logs/search：谓词检索回显 session 并返回紧凑摘要。
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::POST,
+            "/api/logs/search",
+            Some(&format!(
+                r#"{{"session_id":{},"path":"/login","method":"post"}}"#,
+                session.id
+            )),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(payload["ok"], true);
+        assert_eq!(payload["data"]["session_id"], session.id);
+        let matches = payload["data"]["matches"].as_array().unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0]["method"], "POST");
+        assert_eq!(matches[0]["uri"], "https://api.example.com/v1/login");
+        assert_eq!(matches[0]["code"], "...");
+
+        // POST /api/flow/validate：草稿深校验报告 requestId 缺失（error 级），
+        // 且注册为 read（allow_all 身份即可调用）。
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::POST,
+            "/api/flow/validate",
+            Some(
+                r##"{"nodes":[{"id":"s","type":"start","position":{"x":0,"y":0},"config":{}},{"id":"r","type":"httpReplay","position":{"x":1,"y":0},"config":{"requestId":"req-ghost"}}],"edges":[{"id":"e1","source":"s","target":"r"}]}"##,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let issues = payload["data"]["issues"].as_array().unwrap();
+        let missing = issues
+            .iter()
+            .find(|issue| issue["code"] == "request-id-missing")
+            .expect("request-id-missing issue");
+        assert_eq!(missing["severity"], "error");
+        assert_eq!(missing["nodeIds"], json!(["r"]));
+
+        // 深校验两种模式互斥：id + 内联图返回 bad_request。
+        let (status, _) = flow_request(
+            app,
+            Method::POST,
+            "/api/flow/validate",
+            Some(r#"{"id":"wf-1","nodes":[],"edges":[]}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
     async fn workflow_domain_endpoints_cover_crud_and_validation() {
         let app_data = tempdir().unwrap();
         let runtime = ProxyCrab::open(app_data.path(), Arc::new(LogBuffer::default())).unwrap();
@@ -3091,6 +3283,145 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(payload["error"]["code"], "not_found");
+    }
+
+    #[tokio::test]
+    async fn workflow_storage_endpoints_round_trip() {
+        let app_data = tempdir().unwrap();
+        let runtime = ProxyCrab::open(app_data.path(), Arc::new(LogBuffer::default())).unwrap();
+        let manager = MitmManager::new(runtime);
+        let (permissions, recorded) = recording_permissions(None);
+        let app = router(manager, permissions);
+
+        // Fixture: one project + one workflow to own the storage.
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::POST,
+            "/api/flow-projects",
+            Some(r#"{"name":"demo"}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let project_id = payload["data"]["id"].as_str().unwrap().to_owned();
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::POST,
+            "/api/workflows",
+            Some(
+                &json!({
+                    "projectId": project_id,
+                    "name": "storage",
+                    "nodes": [
+                        {"id": "s1", "type": "start", "position": {"x": 0, "y": 0}, "config": {}}
+                    ],
+                    "edges": []
+                })
+                .to_string(),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let workflow_id = payload["data"]["id"].as_str().unwrap().to_owned();
+
+        // Empty storage reads as an empty entry list.
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::GET,
+            &format!("/api/workflows/{workflow_id}/storage"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(payload["data"]["workflowId"], workflow_id.as_str());
+        assert_eq!(payload["data"]["entries"].as_array().unwrap().len(), 0);
+
+        // PUT upserts arbitrary JSON and returns the refreshed payload.
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::PUT,
+            &format!("/api/workflows/{workflow_id}/storage/counter"),
+            Some(r#"{"value": {"hits": 3}}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(payload["data"]["entries"].as_array().unwrap().len(), 1);
+        assert_eq!(payload["data"]["entries"][0]["key"], "counter");
+        assert_eq!(payload["data"]["entries"][0]["value"]["hits"], 3);
+        assert!(payload["data"]["entries"][0]["updatedAt"].is_u64());
+
+        // A second key merges without clobbering the first; entry order is
+        // key-sorted.
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::PUT,
+            &format!("/api/workflows/{workflow_id}/storage/alpha"),
+            Some(r#"{"value": "x"}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let entries = payload["data"]["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["key"], "alpha");
+        assert_eq!(entries[1]["key"], "counter");
+
+        // Invalid key charset maps to 400.
+        let (status, _) = flow_request(
+            app.clone(),
+            Method::PUT,
+            &format!("/api/workflows/{workflow_id}/storage/bad%2Fkey"),
+            Some(r#"{"value": 1}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        // Deleting a missing key maps to 404; deleting an existing key works.
+        let (status, _) = flow_request(
+            app.clone(),
+            Method::DELETE,
+            &format!("/api/workflows/{workflow_id}/storage/missing"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::DELETE,
+            &format!("/api/workflows/{workflow_id}/storage/alpha"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(payload["data"]["entries"].as_array().unwrap().len(), 1);
+
+        // Clear empties the storage (and leaves no stale file behind).
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::DELETE,
+            &format!("/api/workflows/{workflow_id}/storage"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(payload["data"]["entries"].as_array().unwrap().len(), 0);
+
+        // Storage of a nonexistent workflow reads as 404 (definition check).
+        let (status, _) = flow_request(
+            app.clone(),
+            Method::GET,
+            "/api/workflows/wf-none/storage",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        // Permission catalog matched the storage actions.
+        assert!(
+            recorded
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|action| action.id == "GET /api/workflows/{id}/storage")
+        );
     }
 
     #[tokio::test]
@@ -6000,7 +6331,7 @@ mod tests {
         // 新工作区缺省档：读开 / 写关 / 执行关，读类工具在 tools/list。
         let payload = mcp_tools_list(app.clone(), 1).await;
         let tools = payload["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 11);
+        assert_eq!(tools.len(), 17);
         assert!(
             tools
                 .iter()
@@ -6024,16 +6355,20 @@ mod tests {
             json!({ "read": false, "write": false, "execute": true })
         );
         let payload = mcp_tools_list(app.clone(), 2).await;
-        // 读档关闭后，清单只剩执行类工具（trigger/cancel）；读类工具既不
-        // 出现在 tools/list，tools/call 直呼工具名也被硬拒。
+        // 读档关闭后，清单只剩执行类工具（replay/dry-run/preview/trigger/cancel）；
+        // 读类工具既不出现在 tools/list，tools/call 直呼工具名也被硬拒。
         let tools = payload["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 2);
-        assert!(
-            tools
-                .iter()
-                .all(|tool| tool["name"] == "workflow_run_trigger"
-                    || tool["name"] == "workflow_run_cancel")
-        );
+        assert_eq!(tools.len(), 5);
+        assert!(tools.iter().all(|tool| {
+            [
+                "replay_once",
+                "script_dry_run",
+                "workflow_render_preview",
+                "workflow_run_trigger",
+                "workflow_run_cancel",
+            ]
+            .contains(&tool["name"].as_str().unwrap_or_default())
+        }));
         let payload = mcp_tools_call_workflow_runs_list(app.clone(), 3).await;
         assert_eq!(payload["result"]["isError"], true);
         assert!(
@@ -7116,7 +7451,7 @@ mod tests {
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(payload["error"]["code"], "not_found");
 
-        // 成功触发：run 记录返回 `running` 且携带图快照。
+        // 成功触发：run 记录返回 `running` 且携带图快照与解析后的入口节点。
         let (status, payload) = flow_request(
             app.clone(),
             Method::POST,
@@ -7133,9 +7468,61 @@ mod tests {
         assert_eq!(run["status"], "running");
         assert_eq!(run["trigger"], "manual");
         assert_eq!(run["sessionId"], session.id);
+        assert_eq!(run["startNodeId"], "s");
         assert!(run["graphSnapshot"].is_object());
         let run_id = run["id"].as_str().unwrap().to_owned();
         let payload = settle_run(&app, &run_id).await;
+        assert_eq!(payload["data"]["status"], "success");
+
+        // 多 start（多入口工作流）：未指定入口 422（错误列出全部 start）；
+        // 入口非 start 节点同样 422；指定合法入口成功且入口落库。
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::POST,
+            "/api/workflows",
+            Some(&format!(
+                r#"{{"projectId":"{project_id}","name":"multi-start","nodes":[{{"id":"s1","type":"start","position":{{"x":0,"y":0}},"config":{{}}}},{{"id":"d1","type":"delay","position":{{"x":1,"y":0}},"config":{{"durationMs":200}}}},{{"id":"s2","type":"start","position":{{"x":0,"y":1}},"config":{{}}}},{{"id":"d2","type":"delay","position":{{"x":1,"y":1}},"config":{{"durationMs":200}}}}],"edges":[{{"id":"e1","source":"s1","target":"d1"}},{{"id":"e2","source":"s2","target":"d2"}}]}}"#
+            )),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let multi_start_id = payload["data"]["id"].as_str().unwrap().to_owned();
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::POST,
+            "/api/flow/runs",
+            Some(&format!(r#"{{"workflowId":"{multi_start_id}"}}"#)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(payload["error"]["code"], "workflow_graph_invalid");
+        let message = payload["error"]["message"].as_str().unwrap();
+        assert!(message.contains("需指定入口 startNodeId"), "{message}");
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::POST,
+            "/api/flow/runs",
+            Some(&format!(
+                r#"{{"workflowId":"{multi_start_id}","startNodeId":"d1"}}"#
+            )),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(payload["error"]["code"], "workflow_graph_invalid");
+        let (status, payload) = flow_request(
+            app.clone(),
+            Method::POST,
+            "/api/flow/runs",
+            Some(&format!(
+                r#"{{"workflowId":"{multi_start_id}","sessionId":{},"startNodeId":"s2"}}"#,
+                session.id
+            )),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(payload["data"]["startNodeId"], "s2");
+        let multi_run_id = payload["data"]["id"].as_str().unwrap().to_owned();
+        let payload = settle_run(&app, &multi_run_id).await;
         assert_eq!(payload["data"]["status"], "success");
 
         // 权限检查按具体路由模板解析。

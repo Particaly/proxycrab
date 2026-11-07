@@ -7,6 +7,7 @@ import PermissionEditor from "./PermissionEditor.vue";
 
 const redactedActions = [
   "POST /api/logs/ids",
+  "POST /api/logs/search",
   "POST /api/logs/views",
   "GET /api/logs/{id}",
   "GET /api/logs/{id}/body",

@@ -633,7 +633,7 @@ const bodyExtra = computed(() => {
 /* 与详情页 summary 头部对齐：URL 独占一行、无外框 */
 .summary {
   flex: none;
-  padding: 6px 12px;
+  padding: var(--space-2) var(--space-3);
   background: var(--bg-panel);
 }
 
@@ -642,7 +642,7 @@ const bodyExtra = computed(() => {
 }
 
 .notice-btn {
-  padding: 0 6px;
+  padding: 0 var(--space-2);
   font-size: 11px;
   line-height: 18px;
 }
@@ -652,8 +652,8 @@ const bodyExtra = computed(() => {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 8px;
+  gap: var(--space-2);
+  padding: var(--space-2);
 }
 
 .record-strip {
@@ -662,14 +662,14 @@ const bodyExtra = computed(() => {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 4px;
+  gap: var(--space-1);
   overflow: hidden;
 }
 
 .record-chip {
   flex: none;
   height: 18px;
-  padding: 0 7px;
+  padding: 0 var(--space-2);
   border: 1px solid var(--border);
   border-radius: 9px;
   background: var(--bg-panel);
@@ -678,6 +678,9 @@ const bodyExtra = computed(() => {
   font-size: 11px;
   line-height: 16px;
   cursor: pointer;
+  transition:
+    border-color var(--dur-fast) ease,
+    color var(--dur-fast) ease;
 }
 
 .record-chip:hover {
@@ -698,7 +701,7 @@ const bodyExtra = computed(() => {
   align-items: stretch;
   height: 26px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: var(--bg-panel);
 }
 
@@ -709,9 +712,9 @@ const bodyExtra = computed(() => {
 .send-group > .method-select :deep(.select-trigger) {
   height: 100%;
   min-height: 0;
-  padding: 2px 6px 2px 9px;
+  padding: var(--space-05) var(--space-2) var(--space-05) var(--space-3);
   border: none;
-  border-radius: 5px 0 0 5px;
+  border-radius: calc(var(--radius-sm) - 1px) 0 0 calc(var(--radius-sm) - 1px);
   background: transparent;
   font-size: 11px;
 }
@@ -724,7 +727,7 @@ const bodyExtra = computed(() => {
   width: 100%;
   min-width: 0;
   box-sizing: border-box;
-  padding: 4px 7px;
+  padding: var(--space-1) var(--space-2);
   border-radius: var(--radius-sm);
   font-size: 11px;
 }
@@ -744,9 +747,9 @@ const bodyExtra = computed(() => {
   display: flex;
   flex: 1;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   max-width: 200px;
-  padding: 2px 6px 2px 9px;
+  padding: var(--space-05) var(--space-2) var(--space-05) var(--space-3);
   border: none;
   background: transparent;
   color: var(--text);
@@ -768,7 +771,7 @@ const bodyExtra = computed(() => {
 .session-trigger > svg {
   flex: none;
   color: var(--text-secondary);
-  transition: transform 0.12s;
+  transition: transform var(--dur-fast) var(--ease-out);
 }
 
 .session-trigger.open > svg {
@@ -795,10 +798,11 @@ const bodyExtra = computed(() => {
   padding: 0;
   border: none;
   border-left: 1px solid var(--border);
-  border-radius: 0 5px 5px 0;
+  border-radius: 0 calc(var(--radius-sm) - 1px) calc(var(--radius-sm) - 1px) 0;
   background: transparent;
   color: var(--accent);
   cursor: pointer;
+  transition: background var(--dur-fast) ease;
 }
 
 .send-btn:hover:not(:disabled) {
@@ -813,17 +817,18 @@ const bodyExtra = computed(() => {
 
 .session-picker {
   position: absolute;
-  z-index: 100006;
-  top: calc(100% + 4px);
+  z-index: var(--z-select);
+  top: calc(100% + var(--space-1));
   left: -1px;
   right: -1px;
   max-height: 280px;
   overflow-y: auto;
-  padding: 4px;
+  padding: var(--space-1);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
   background: var(--bg-elevated);
   box-shadow: var(--shadow-popup);
+  transform-origin: top center;
 }
 
 .picker-row:focus-visible {
@@ -837,8 +842,8 @@ const bodyExtra = computed(() => {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 0px 8px 8px;
+  gap: var(--space-2);
+  padding: 0 var(--space-2) var(--space-2);
   overflow: hidden;
 }
 

@@ -1,10 +1,11 @@
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use async_trait::async_trait;
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use proxy_crab_mitm::{
     ProxyCrab, ReplayBody, ReplayError, ReplayRequest,
     asset::{Asset, AssetError, AssetUpload},
@@ -15,13 +16,18 @@ use proxy_crab_mitm::{
         },
         mcp_audit::McpAuditEntry,
         mcp_tiers::McpTiers,
-        model::{Project, WORKFLOW_SCHEMA_VERSION, Workflow, generate_ref_id},
+        model::{
+            Project, WORKFLOW_SCHEMA_VERSION, Workflow, WorkflowEdge, WorkflowNode, generate_ref_id,
+        },
+        render_preview::{self, RenderPreviewLoadError, RenderPreviewOutput},
         request_library::{CapturedRequest, RequestLibraryEntry, RequestSource},
         run::{FlowRunEvent, FlowRunManager, RunTriggerError},
-        run_store::FlowRunRecord,
+        run_store::{FlowNodeRunRecord, FlowRunRecord, flow_run_status_is_terminal},
         store::{EnvVariableSet, FlowStore, generate_flow_id},
         transfer,
-        validate::{ValidationIssue, validate_workflow_graph},
+        validate::{ValidationIssue, ValidationSeverity, validate_workflow_graph},
+        validate_deep::{DeepValidationIssue, deep_issues},
+        workflow_data::WorkflowStorageEntry,
     },
     lua::{CaptureBodyAccess, ColumnEvaluator, FilterEvaluator},
     model::{
@@ -49,22 +55,25 @@ use crate::{
         CreateRequestLibraryRequest, CreateSessionRequest, DebugFilterScriptRequest, DeleteCount,
         EnvSetsPayload, EnvWriteBackRequest, EnvWriteBackResult, ErrorCode,
         ExecuteTemporaryScriptRequest, ExtendBreakpointRequest, FLOW_RUN_DEFAULT_LIMIT,
-        FLOW_RUN_MAX_LIMIT, FlowListQuery, FlowProjectCreateRequest, FlowProjectPage,
-        FlowProjectUpdateRequest, FlowRunDetailPayload, FlowRunListQuery, FlowRunPage,
-        FlowRunTriggerRequest, FlowScriptDryRunRequest, HeaderItem, IngestCaptureRequest,
-        InterceptorCreateRequest, InterceptorDetail, InterceptorLibraryList,
-        InterceptorUpdateRequest, LogDetail, LogIdsPayload, LogIdsRequest, LogViewException,
-        LogViewRow, LogViewsPayload, LogViewsRequest, ManagerError, ManagerResult,
-        REQUEST_LIBRARY_DEFAULT_LIMIT, REQUEST_LIBRARY_MAX_LIMIT, ReplaceActiveEnvSetRequest,
-        ReplaceEnvGlobalsRequest, ReplaceSessionInterceptorsRequest, ReplaceSessionViewRequest,
-        ReplayBodyPayload, ReplayRequestPayload, ReplayResult, RequestDetail, RequestLibraryPage,
-        RequestLibraryQuery, ResponseDetail, RoutingSelection, SaveEnvSetRequest, ScriptRequest,
-        SessionInterceptorItem, SessionInterceptorsPayload, SessionViewPayload, SessionsPayload,
-        SystemLogsQuery, UpdateAgentsPresetRequest, UpdateRequestLibraryRequest,
-        UpdateScriptRequest, UpdateSessionRequest, WorkflowCreateRequest, WorkflowImportCreated,
-        WorkflowImportExtensionSkipped, WorkflowImportRequest, WorkflowImportResult,
-        WorkflowImportSkipped, WorkflowListQuery, WorkflowPage, WorkflowUpdateRequest,
-        WorkflowValidationIssue,
+        FLOW_RUN_MAX_LIMIT, FlowListQuery, FlowNodeRunDigest, FlowProjectCreateRequest,
+        FlowProjectPage, FlowProjectUpdateRequest, FlowRenderPreviewRequest, FlowRunDetailPayload,
+        FlowRunListQuery, FlowRunPage, FlowRunTriggerRequest, FlowRunWaitPayload,
+        FlowScriptDryRunRequest, HeaderItem, IngestCaptureRequest, InterceptorCreateRequest,
+        InterceptorDetail, InterceptorLibraryList, InterceptorUpdateRequest, LogDetail,
+        LogIdsPayload, LogIdsRequest, LogSearchMatch, LogSearchPayload, LogSearchRequest,
+        LogViewException, LogViewRow, LogViewsPayload, LogViewsRequest, ManagerError,
+        ManagerResult, REQUEST_LIBRARY_DEFAULT_LIMIT, REQUEST_LIBRARY_MAX_LIMIT,
+        ReplaceActiveEnvSetRequest, ReplaceEnvGlobalsRequest, ReplaceSessionInterceptorsRequest,
+        ReplaceSessionViewRequest, ReplayBodyPayload, ReplayHttpRequest, ReplayOverridePayload,
+        ReplayRequestPayload, ReplayResult, RequestDetail, RequestLibraryPage, RequestLibraryQuery,
+        ResponseDetail, RoutingSelection, SaveEnvSetRequest, ScriptRequest, SessionInterceptorItem,
+        SessionInterceptorsPayload, SessionViewPayload, SessionsPayload, SystemLogsQuery,
+        UpdateAgentsPresetRequest, UpdateRequestLibraryRequest, UpdateScriptRequest,
+        UpdateSessionRequest, WorkflowCreateRequest, WorkflowDeepValidateRequest,
+        WorkflowImportCreated, WorkflowImportExtensionSkipped, WorkflowImportRequest,
+        WorkflowImportResult, WorkflowImportSkipped, WorkflowListQuery, WorkflowPage,
+        WorkflowPatchRequest, WorkflowPatchResult, WorkflowStorageEntryDto, WorkflowStoragePayload,
+        WorkflowStoragePutRequest, WorkflowUpdateRequest, WorkflowValidationIssue,
     },
 };
 use tokio::sync::{Semaphore, broadcast, watch};
@@ -142,6 +151,10 @@ pub trait ProxyCrabManager: Send + Sync {
     async fn restore_session(&self, id: u64) -> ManagerResult<SessionMetadata>;
     async fn delete_archived_session(&self, id: u64) -> ManagerResult<()>;
     async fn log_ids(&self, request: LogIdsRequest) -> ManagerResult<LogIdsPayload>;
+    /// Search capture logs with simple AND-composed predicates (host/path/
+    /// keyword/method/status + id range + limit), returning compact match
+    /// summaries instead of bare ids (MCP `log_search`).
+    async fn log_search(&self, request: LogSearchRequest) -> ManagerResult<LogSearchPayload>;
     async fn log_views(&self, request: LogViewsRequest) -> ManagerResult<LogViewsPayload>;
     async fn log(&self, session_id: Option<u64>, id: u64) -> ManagerResult<LogDetail>;
     async fn websocket_messages(
@@ -165,6 +178,10 @@ pub trait ProxyCrabManager: Send + Sync {
         session_id: u64,
         request: ReplayRequestPayload,
     ) -> ManagerResult<ReplayResult>;
+    /// Envelope entry of `POST /api/replay` (MCP `replay_once`): replay a raw
+    /// request or a request-library entry (optionally overridden) into the
+    /// given (default: active) session and return the new capture id.
+    async fn replay_request(&self, request: ReplayHttpRequest) -> ManagerResult<ReplayResult>;
     async fn assets(&self) -> ManagerResult<Vec<proxy_crab_mitm::asset::AssetMetadata>>;
     async fn log_body_source(
         &self,
@@ -317,8 +334,25 @@ pub trait ProxyCrabManager: Send + Sync {
         id: String,
         request: WorkflowUpdateRequest,
     ) -> ManagerResult<Workflow>;
+    /// Patch one workflow graph incrementally (`PATCH /api/workflows/{id}`,
+    /// MCP `workflow_patch`): apply add/update/remove operations by id without
+    /// resending the whole definition, then structurally validate before
+    /// persisting. Returns the compact patch summary.
+    async fn patch_workflow(
+        &self,
+        id: String,
+        request: WorkflowPatchRequest,
+    ) -> ManagerResult<WorkflowPatchResult>;
     async fn delete_workflow(&self, id: String) -> ManagerResult<()>;
     async fn validate_workflow(&self, id: String) -> ManagerResult<Vec<WorkflowValidationIssue>>;
+    /// Deep-validate a workflow graph (`POST /api/flow/validate`, MCP
+    /// `workflow_validate_deep`): structural checks plus request-library,
+    /// template and assertion rules. Never gates saves or runs — deep issues
+    /// are editor diagnostics.
+    async fn validate_workflow_deep(
+        &self,
+        request: WorkflowDeepValidateRequest,
+    ) -> ManagerResult<Vec<WorkflowValidationIssue>>;
     /// Build the workflow export envelope for the given ids (plan Task 23):
     /// secret variable values are blanked, referenced request-library entries
     /// are carried along, env sets lose their whole secret table.
@@ -337,6 +371,14 @@ pub trait ProxyCrabManager: Send + Sync {
         &self,
         request: FlowScriptDryRunRequest,
     ) -> ManagerResult<ScriptDryRunOutput>;
+    /// Preview the rendered request of one httpReplay node (template render
+    /// dry-run): the run-chain inputs are assembled from storage and the exact
+    /// outgoing request is rendered in a throwaway VM — zero outbound traffic,
+    /// nothing persisted, preProcess scripts are not executed.
+    async fn flow_render_preview(
+        &self,
+        request: FlowRenderPreviewRequest,
+    ) -> ManagerResult<RenderPreviewOutput>;
     async fn trigger_workflow_run(
         &self,
         request: FlowRunTriggerRequest,
@@ -344,6 +386,17 @@ pub trait ProxyCrabManager: Send + Sync {
     async fn cancel_workflow_run(&self, run_id: String) -> ManagerResult<()>;
     async fn workflow_runs(&self, query: FlowRunListQuery) -> ManagerResult<FlowRunPage>;
     async fn workflow_run_detail(&self, run_id: String) -> ManagerResult<FlowRunDetailPayload>;
+    /// Poll a run server-side until it reaches a terminal state (MCP-only
+    /// convenience layered on `GET /api/flow/runs/{id}`; the wait deadline is
+    /// bounded so a single tool call stays under its 60s execution budget —
+    /// see `mcp::tools::WAIT_TOOL_CALL_TIMEOUT`) and return a
+    /// compact digest. `settled` is `false` when the deadline elapsed first.
+    async fn wait_workflow_run(
+        &self,
+        run_id: String,
+        timeout_ms: Option<u64>,
+        interval_ms: Option<u64>,
+    ) -> ManagerResult<FlowRunWaitPayload>;
     fn subscribe_flow_run_events(&self) -> broadcast::Receiver<FlowRunEvent>;
     async fn request_library_page(
         &self,
@@ -376,6 +429,15 @@ pub trait ProxyCrabManager: Send + Sync {
         id: String,
         request: SaveEnvSetRequest,
     ) -> ManagerResult<EnvVariableSet>;
+    /// MCP 侧受限保存：仅替换普通表与名称，secret 表（键级掩码标记）
+    /// 原样保留——标记对 MCP 只读，改动须经桌面 UI / HTTP 侧的
+    /// `save_env_set`（含 `******` 掩码恢复约定）。
+    async fn save_env_set_values(
+        &self,
+        id: String,
+        name: String,
+        values: BTreeMap<String, String>,
+    ) -> ManagerResult<EnvVariableSet>;
     async fn delete_env_set(&self, id: String) -> ManagerResult<()>;
     async fn replace_active_env_set(
         &self,
@@ -389,6 +451,27 @@ pub trait ProxyCrabManager: Send + Sync {
         &self,
         request: EnvWriteBackRequest,
     ) -> ManagerResult<EnvWriteBackResult>;
+    // ---- 工作流存储（工作流级持久化 KV，与 env 家族同域异用）----
+    /// 读一个工作流的全部存储条目（按键字典序）。目标工作流不存在 → 404。
+    async fn workflow_storage(&self, workflow_id: String) -> ManagerResult<WorkflowStoragePayload>;
+    /// 实时写入一个键并持久化（put 即落盘；配额/键名违规 → 400）。
+    async fn workflow_storage_put(
+        &self,
+        workflow_id: String,
+        key: String,
+        request: WorkflowStoragePutRequest,
+    ) -> ManagerResult<WorkflowStoragePayload>;
+    /// 删除一个键（缺键 → 404），返回刷新后的全量载荷。
+    async fn workflow_storage_delete_key(
+        &self,
+        workflow_id: String,
+        key: String,
+    ) -> ManagerResult<WorkflowStoragePayload>;
+    /// 清空一个工作流的全部存储条目，返回清空后的（空）载荷。
+    async fn workflow_storage_clear(
+        &self,
+        workflow_id: String,
+    ) -> ManagerResult<WorkflowStoragePayload>;
     async fn mcp_tiers(&self) -> ManagerResult<McpTiers>;
     async fn replace_mcp_tiers(&self, tiers: McpTiers) -> ManagerResult<McpTiers>;
     /// 追加一条 MCP 工具调用审计（plan Task 25 Step 4）。调用方（MCP 工具
@@ -684,6 +767,109 @@ impl MitmManager {
             in_progress_ids.push(item.id);
         }
         Ok(())
+    }
+}
+
+/// One compiled log-search predicate: substring by default, exact
+/// (case-insensitive) for method/status, or Rust regex with `regex = true`.
+enum SearchMatcher {
+    Substring(String),
+    Exact(String),
+    Regex(Regex),
+}
+
+impl SearchMatcher {
+    fn compile(value: &str, regex: bool, exact: bool) -> ManagerResult<Self> {
+        if regex {
+            return Ok(Self::Regex(
+                Regex::new(value).map_err(|error| ManagerError::bad_request(error.to_string()))?,
+            ));
+        }
+        if exact {
+            return Ok(Self::Exact(value.to_uppercase()));
+        }
+        Ok(Self::Substring(value.to_owned()))
+    }
+
+    fn is_match(&self, value: &str) -> bool {
+        match self {
+            Self::Substring(pattern) => value.contains(pattern.as_str()),
+            Self::Exact(pattern) => value.to_uppercase().contains(pattern.as_str()),
+            Self::Regex(regex) => regex.is_match(value),
+        }
+    }
+}
+
+/// Compiled AND-composed predicates of one capture-log search
+/// (`POST /api/logs/search`): every provided field must match, absent (or
+/// empty) fields are ignored — unlike the session filter, a bare or empty
+/// `keyword` never degrades to "match everything".
+struct PreparedLogSearch {
+    host: Option<SearchMatcher>,
+    path: Option<SearchMatcher>,
+    method: Option<SearchMatcher>,
+    status: Option<SearchMatcher>,
+    keyword: Option<SearchMatcher>,
+}
+
+impl PreparedLogSearch {
+    fn compile(request: &LogSearchRequest) -> ManagerResult<Self> {
+        fn one(
+            value: &Option<String>,
+            regex: bool,
+            exact: bool,
+        ) -> ManagerResult<Option<SearchMatcher>> {
+            match value.as_deref() {
+                Some(value) if !value.is_empty() => {
+                    Ok(Some(SearchMatcher::compile(value, regex, exact)?))
+                }
+                _ => Ok(None),
+            }
+        }
+        let regex = request.regex;
+        Ok(Self {
+            host: one(&request.host, regex, false)?,
+            path: one(&request.path, regex, false)?,
+            keyword: one(&request.keyword, regex, false)?,
+            method: one(&request.method, regex, true)?,
+            status: one(&request.status, regex, true)?,
+        })
+    }
+
+    /// AND-composition over the capture summary; `uri` is passed in already
+    /// redacted for redaction-bound readers.
+    fn matches(&self, item: &CaptureSummary, uri: &str) -> bool {
+        if let Some(matcher) = &self.host
+            && !matcher.is_match(uri)
+        {
+            return false;
+        }
+        if let Some(matcher) = &self.path
+            && !matcher.is_match(uri)
+        {
+            return false;
+        }
+        if let Some(matcher) = &self.keyword
+            && !matcher.is_match(uri)
+        {
+            return false;
+        }
+        if let Some(matcher) = &self.method
+            && !matcher.is_match(&item.request.method)
+        {
+            return false;
+        }
+        if let Some(matcher) = &self.status {
+            let code = item
+                .response
+                .as_ref()
+                .map(|response| response.status.to_string())
+                .unwrap_or_else(|| "...".into());
+            if !matcher.is_match(&code) {
+                return false;
+            }
+        }
+        true
     }
 }
 
@@ -1089,8 +1275,81 @@ impl ProxyCrabManager for MitmManager {
                 }
             }
             Ok(LogIdsPayload {
+                session_id,
                 matched_ids,
                 in_progress_ids,
+            })
+        })
+        .await
+    }
+
+    async fn log_search(&self, request: LogSearchRequest) -> ManagerResult<LogSearchPayload> {
+        const DEFAULT_LIMIT: usize = 200;
+        const MAX_LIMIT: usize = 10_000;
+        const SCAN_PAGE_SIZE: usize = 512;
+
+        let session_id = self.session_id(request.session_id)?;
+        let limit = request.limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT);
+        let ascending = request.min_id.is_some() && request.max_id.is_none();
+        let runtime = self.runtime.clone();
+        // 请求行（uri）会随命中回显，绑定脱敏的读取方统一先拿脱敏后的 uri。
+        let redactor = ReadRedactor::prepare(&self.read_policy)?;
+        self.run_blocking("log search", move || {
+            let prepared = PreparedLogSearch::compile(&request)?;
+            let mut matches = Vec::new();
+            let mut truncated = false;
+            let mut next_cursor = None;
+            if limit > 0 {
+                let mut min_id = request.min_id;
+                let mut max_id = request.max_id;
+                'scan: loop {
+                    let page = runtime
+                        .list_captures_range(session_id, SCAN_PAGE_SIZE, min_id, max_id, ascending)
+                        .map_err(map_error)?;
+                    if page.is_empty() {
+                        break;
+                    }
+                    let page_len = page.len();
+                    let cursor = page.last().map(|item| item.id);
+                    for item in page {
+                        let uri = match &redactor {
+                            Some(redactor) => redactor.uri(&item.request.uri)?,
+                            None => item.request.uri.clone(),
+                        };
+                        if prepared.matches(&item, &uri) {
+                            matches.push(LogSearchMatch {
+                                id: item.id,
+                                in_progress: item.outcome == CaptureOutcome::InProgress,
+                                method: item.request.method.clone(),
+                                uri,
+                                code: item
+                                    .response
+                                    .as_ref()
+                                    .map(|response| response.status.to_string())
+                                    .unwrap_or_else(|| "...".into()),
+                            });
+                        }
+                        if matches.len() == limit {
+                            truncated = true;
+                            next_cursor = Some(item.id);
+                            break 'scan;
+                        }
+                    }
+                    if page_len < SCAN_PAGE_SIZE {
+                        break;
+                    }
+                    if ascending {
+                        min_id = cursor;
+                    } else {
+                        max_id = cursor;
+                    }
+                }
+            }
+            Ok(LogSearchPayload {
+                session_id,
+                matches,
+                truncated,
+                next_cursor,
             })
         })
         .await
@@ -1293,6 +1552,40 @@ impl ProxyCrabManager for MitmManager {
                 }
             })?;
         Ok(ReplayResult { log_id })
+    }
+
+    async fn replay_request(&self, request: ReplayHttpRequest) -> ManagerResult<ReplayResult> {
+        let session_id = self.session_id(request.session_id)?;
+        let baseline = if let Some(library_id) = request.library_id.as_deref() {
+            if request.method.is_some() || request.url.is_some() {
+                return Err(ManagerError::bad_request(
+                    "library_id cannot be combined with method or url",
+                ));
+            }
+            if request.headers.is_some() || request.body.is_some() {
+                return Err(ManagerError::bad_request(
+                    "library_id replay takes header/body adjustments through `override` only",
+                ));
+            }
+            self.replay_baseline_from_library(library_id).await?
+        } else {
+            let (Some(method), Some(url)) = (request.method, request.url) else {
+                return Err(ManagerError::bad_request(
+                    "method and url are required when library_id is absent",
+                ));
+            };
+            ReplayRequestPayload {
+                method,
+                url,
+                headers: request.headers.unwrap_or_default(),
+                body: request.body,
+            }
+        };
+        let payload = match request.override_ {
+            Some(over) => Self::apply_replay_override(baseline, over),
+            None => baseline,
+        };
+        self.replay(session_id, payload).await
     }
 
     async fn assets(&self) -> ManagerResult<Vec<proxy_crab_mitm::asset::AssetMetadata>> {
@@ -2377,12 +2670,67 @@ impl ProxyCrabManager for MitmManager {
         .await
     }
 
+    async fn patch_workflow(
+        &self,
+        id: String,
+        request: WorkflowPatchRequest,
+    ) -> ManagerResult<WorkflowPatchResult> {
+        let flow_root = self.flow_root();
+        self.run_blocking("workflow patch", move || {
+            let store = FlowStore::open(&flow_root).map_err(map_flow_error)?;
+            let mut workflow = require_workflow(&flow_root, &id)?;
+            // 应用补丁（纯 JSON 层操作，id 级冲突在应用前拒绝），再按运行
+            // 门禁同款口径做结构校验，全过后才落盘。
+            let result = apply_workflow_patch(&workflow, &request)?;
+            workflow.nodes = result.nodes;
+            workflow.edges = result.edges;
+            let issues = validate_workflow_graph(&workflow.nodes, &workflow.edges);
+            let blocking: Vec<&ValidationIssue> = issues
+                .iter()
+                .filter(|issue| issue.severity == ValidationSeverity::Error)
+                .collect();
+            if !blocking.is_empty() {
+                let detail = blocking
+                    .iter()
+                    .map(|issue| issue.message.clone())
+                    .collect::<Vec<_>>()
+                    .join("；");
+                return Err(ManagerError::new(
+                    ErrorCode::WorkflowGraphInvalid,
+                    format!("workflow graph patch leaves the graph invalid: {detail}"),
+                ));
+            }
+            workflow.updated_at = now_millis();
+            store.put_workflow(&workflow).map_err(map_flow_error)?;
+            Ok(WorkflowPatchResult {
+                id: workflow.id,
+                project_id: workflow.project_id,
+                name: workflow.name,
+                node_count: workflow.nodes.len(),
+                edge_count: workflow.edges.len(),
+                added_node_ids: result.added_node_ids,
+                updated_node_ids: result.updated_node_ids,
+                removed_node_ids: result.removed_node_ids,
+                added_edge_ids: result.added_edge_ids,
+                updated_edge_ids: result.updated_edge_ids,
+                removed_edge_ids: result.removed_edge_ids,
+            })
+        })
+        .await
+    }
+
     async fn delete_workflow(&self, id: String) -> ManagerResult<()> {
         let flow_root = self.flow_root();
         self.run_blocking("workflow delete", move || {
             let store = FlowStore::open(&flow_root).map_err(map_flow_error)?;
             require_workflow(&flow_root, &id)?;
-            store.delete_workflow(&id).map_err(map_flow_error)
+            store.delete_workflow(&id).map_err(map_flow_error)?;
+            // 级联清理该工作流的持久化存储（best-effort：失败仅告警，不阻断
+            // 定义删除——孤儿存储文件无引用，可由后续清理任务回收）。
+            if let Err(error) = store.delete_workflow_data(&id) {
+                tracing::warn!("failed to cascade-delete workflow storage {id}: {error:#}");
+            }
+            Ok(())
         })
         .await
     }
@@ -2393,6 +2741,74 @@ impl ProxyCrabManager for MitmManager {
             let workflow = require_workflow(&flow_root, &id)?;
             let issues = validate_workflow_graph(&workflow.nodes, &workflow.edges);
             Ok(issues.into_iter().map(validation_issue).collect())
+        })
+        .await
+    }
+
+    async fn validate_workflow_deep(
+        &self,
+        request: WorkflowDeepValidateRequest,
+    ) -> ManagerResult<Vec<WorkflowValidationIssue>> {
+        let flow_root = self.flow_root();
+        self.run_blocking("workflow deep validate", move || {
+            let store = FlowStore::open(&flow_root).map_err(map_flow_error)?;
+            // 草稿模式：原始 JSON 保留未知 config 键（供未知字段检查），typed
+            // 解析在 manager 边界做（坏形状整体 400）。
+            let (workflow, raw_configs) = if let Some(id) = request.id.as_deref() {
+                if request.nodes.is_some() || request.edges.is_some() {
+                    return Err(ManagerError::bad_request(
+                        "validate either a stored workflow by id or an inline graph, not both",
+                    ));
+                }
+                (require_workflow(&flow_root, id)?, None)
+            } else {
+                let (Some(raw_nodes), Some(raw_edges)) =
+                    (request.nodes.as_ref(), request.edges.as_ref())
+                else {
+                    return Err(ManagerError::bad_request(
+                        "inline deep validation requires both nodes and edges",
+                    ));
+                };
+                let nodes: Vec<WorkflowNode> = raw_nodes
+                    .iter()
+                    .map(|raw| {
+                        serde_json::from_value(raw.clone())
+                            .map_err(|error| ManagerError::bad_request(format!("{error}")))
+                    })
+                    .collect::<ManagerResult<_>>()?;
+                let edges: Vec<WorkflowEdge> = raw_edges
+                    .iter()
+                    .map(|raw| {
+                        serde_json::from_value(raw.clone())
+                            .map_err(|error| ManagerError::bad_request(format!("{error}")))
+                    })
+                    .collect::<ManagerResult<_>>()?;
+                let workflow = Workflow {
+                    id: String::new(),
+                    project_id: String::new(),
+                    name: String::new(),
+                    description: String::new(),
+                    nodes,
+                    edges,
+                    variables: request.variables.clone(),
+                    secret_variables: request.secret_variables.clone(),
+                    schema_version: WORKFLOW_SCHEMA_VERSION,
+                    created_at: 0,
+                    updated_at: 0,
+                };
+                (workflow, Some(raw_nodes.clone()))
+            };
+            let mut issues: Vec<WorkflowValidationIssue> =
+                validate_workflow_graph(&workflow.nodes, &workflow.edges)
+                    .into_iter()
+                    .map(validation_issue)
+                    .collect();
+            issues.extend(
+                deep_issues(&store, &workflow, raw_configs.as_deref())
+                    .into_iter()
+                    .map(deep_issue),
+            );
+            Ok(issues)
         })
         .await
     }
@@ -2620,12 +3036,42 @@ impl ProxyCrabManager for MitmManager {
             .map_err(|error| ManagerError::internal(error.to_string()))
     }
 
+    /// 预览一次 httpReplay 节点的请求面（模板渲染 dry-run）：阻塞阶段复用运行
+    /// 链装配（变量三层合并 / 激活环境集 / 存储快照 / 请求库投影 / 脱敏清单）
+    /// 并做节点类型与请求基线的前提校验（404 / 422 语义），随后在一次性 VM 中
+    /// 渲染「将要发出」的请求——零出站、不建档、不落库；preProcess 脚本不执行
+    /// （输出附带提示，脚本验证走 flow_script_dry_run 组合）。
+    async fn flow_render_preview(
+        &self,
+        request: FlowRenderPreviewRequest,
+    ) -> ManagerResult<RenderPreviewOutput> {
+        let flow_root = self.flow_root();
+        let inputs = self
+            .run_blocking("flow render preview load", move || {
+                render_preview::load_render_preview_inputs(
+                    &flow_root,
+                    &request.workflow_id,
+                    &request.node_id,
+                    request.variable_overrides.as_ref(),
+                )
+                .map_err(map_render_preview_load_error)
+            })
+            .await?;
+        render_preview::render_preview(inputs)
+            .await
+            .map_err(|error| ManagerError::internal(format!("flow render preview failed: {error}")))
+    }
+
     async fn trigger_workflow_run(
         &self,
         request: FlowRunTriggerRequest,
     ) -> ManagerResult<FlowRunRecord> {
         self.flow_runs
-            .trigger(&request.workflow_id, request.session_id)
+            .trigger(
+                &request.workflow_id,
+                request.session_id,
+                request.start_node_id,
+            )
             .await
             .map_err(map_trigger_error)
     }
@@ -2669,6 +3115,82 @@ impl ProxyCrabManager for MitmManager {
         Ok(FlowRunDetailPayload {
             run: detail.run,
             node_runs: detail.node_runs,
+        })
+    }
+
+    async fn wait_workflow_run(
+        &self,
+        run_id: String,
+        timeout_ms: Option<u64>,
+        interval_ms: Option<u64>,
+    ) -> ManagerResult<FlowRunWaitPayload> {
+        // 等待上限须为 60s 的该工具 MCP 调用硬超时留出余量（workflow_run_wait
+        // 单独放宽了工具执行预算，见 mcp::tools；polling 只查主记录，终态后再
+        // 取一次节点 checkpoint 组摘要）。
+        const DEFAULT_TIMEOUT_MS: u64 = 20_000;
+        const MAX_TIMEOUT_MS: u64 = 55_000;
+        const DEFAULT_INTERVAL_MS: u64 = 500;
+        const MIN_INTERVAL_MS: u64 = 50;
+        const MAX_INTERVAL_MS: u64 = 60_000;
+        let timeout_ms = timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS);
+        if timeout_ms == 0 || timeout_ms > MAX_TIMEOUT_MS {
+            return Err(ManagerError::bad_request(format!(
+                "timeoutMs must be between 1 and {MAX_TIMEOUT_MS}"
+            )));
+        }
+        let interval_ms = interval_ms.unwrap_or(DEFAULT_INTERVAL_MS);
+        if !(MIN_INTERVAL_MS..=MAX_INTERVAL_MS).contains(&interval_ms) {
+            return Err(ManagerError::bad_request(format!(
+                "intervalMs must be between {MIN_INTERVAL_MS} and {MAX_INTERVAL_MS}"
+            )));
+        }
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        let run = loop {
+            let current = self
+                .flow_runs
+                .get_run(&run_id)
+                .await
+                .map_err(map_error)?
+                .ok_or_else(|| {
+                    ManagerError::not_found(format!("workflow run {run_id} not found"))
+                })?;
+            if flow_run_status_is_terminal(&current.status) || Instant::now() >= deadline {
+                break current;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            tokio::time::sleep(remaining.min(Duration::from_millis(interval_ms))).await;
+        };
+        // 终态（或到点未终态）补一次 checkpoint 读取；摘要不带
+        // graphSnapshot 与节点 input/output（重载荷走 workflow_run_detail）。
+        let node_runs = self
+            .flow_runs
+            .get_run_detail(&run_id)
+            .await
+            .map_err(map_error)?
+            .map(|detail| detail.node_runs)
+            .unwrap_or_default();
+        let settled = flow_run_status_is_terminal(&run.status);
+        Ok(FlowRunWaitPayload {
+            id: run.id,
+            workflow_id: run.workflow_id,
+            workflow_name: run.workflow_name,
+            trigger: run.trigger,
+            status: run.status,
+            session_id: run.session_id,
+            start_node_id: run.start_node_id,
+            started_at: run.started_at,
+            finished_at: run.finished_at,
+            error: run.error,
+            settled,
+            nodes: node_runs
+                .into_iter()
+                .map(|node: FlowNodeRunRecord| FlowNodeRunDigest {
+                    node_id: node.node_id,
+                    status: node.status,
+                    duration_ms: node.duration_ms,
+                    error: node.error,
+                })
+                .collect(),
         })
     }
 
@@ -2885,10 +3407,17 @@ impl ProxyCrabManager for MitmManager {
             let store = FlowStore::open(&root).map_err(map_error)?;
             let sets = store.list_env_sets().map_err(map_error)?;
             let existing = find_env_set(&sets, &id)?;
-            // Masked secret values the caller did not overwrite keep their
-            // stored plaintext; explicit values override.
-            let mut secret_values = request.secret_values;
-            restore_masked_secret_values(&mut secret_values, &existing.secret_values);
+            // secret 表缺省（字段未传）= 存量 secret 原样保留（普通客户端 /
+            // MCP 不传该字段时不得擦库）；整表提供 = 全表替换，其中掩码条目
+            // 恢复存量明文、缺键删除（逐键语义见 restore_masked_secret_values）。
+            let secret_values = match request.secret_values {
+                None => existing.secret_values.clone(),
+                Some(map) => {
+                    let mut map = map;
+                    restore_masked_secret_values(&mut map, &existing.secret_values);
+                    map
+                }
+            };
             let set = EnvVariableSet {
                 id,
                 name: request.name,
@@ -2908,6 +3437,32 @@ impl ProxyCrabManager for MitmManager {
         self.run_blocking("delete env set", move || {
             let store = FlowStore::open(&root).map_err(map_error)?;
             store.delete_env_set(&id).map_err(map_error)
+        })
+        .await
+    }
+
+    async fn save_env_set_values(
+        &self,
+        id: String,
+        name: String,
+        values: BTreeMap<String, String>,
+    ) -> ManagerResult<EnvVariableSet> {
+        let root = self.runtime.workspace().root().to_path_buf();
+        self.run_blocking("save env set values", move || {
+            let store = FlowStore::open(&root).map_err(map_error)?;
+            let sets = store.list_env_sets().map_err(map_error)?;
+            let existing = find_env_set(&sets, &id)?;
+            // secret 表（键级掩码标记）原样保留：MCP 侧标记只读。
+            let set = EnvVariableSet {
+                id,
+                name,
+                values,
+                secret_values: existing.secret_values.clone(),
+                created_at: existing.created_at,
+                updated_at: unix_millis(),
+            };
+            store.save_env_set(&set).map_err(map_error)?;
+            Ok(mask_env_set(&set))
         })
         .await
     }
@@ -2971,6 +3526,79 @@ impl ProxyCrabManager for MitmManager {
         .await
     }
 
+    async fn workflow_storage(&self, workflow_id: String) -> ManagerResult<WorkflowStoragePayload> {
+        let flow_root = self.flow_root();
+        self.run_blocking("workflow storage read", move || {
+            let store = FlowStore::open(&flow_root).map_err(map_error)?;
+            require_workflow(&flow_root, &workflow_id)?;
+            let entries = store
+                .workflow_storage_entries(&workflow_id)
+                .map_err(map_error)?;
+            Ok(workflow_storage_payload(&workflow_id, entries))
+        })
+        .await
+    }
+
+    async fn workflow_storage_put(
+        &self,
+        workflow_id: String,
+        key: String,
+        request: WorkflowStoragePutRequest,
+    ) -> ManagerResult<WorkflowStoragePayload> {
+        let flow_root = self.flow_root();
+        self.run_blocking("workflow storage put", move || {
+            let store = FlowStore::open(&flow_root).map_err(map_error)?;
+            require_workflow(&flow_root, &workflow_id)?;
+            store
+                .workflow_storage_put(&workflow_id, &key, &request.value)
+                .map_err(map_error)?;
+            let entries = store
+                .workflow_storage_entries(&workflow_id)
+                .map_err(map_error)?;
+            Ok(workflow_storage_payload(&workflow_id, entries))
+        })
+        .await
+    }
+
+    async fn workflow_storage_delete_key(
+        &self,
+        workflow_id: String,
+        key: String,
+    ) -> ManagerResult<WorkflowStoragePayload> {
+        let flow_root = self.flow_root();
+        self.run_blocking("workflow storage delete", move || {
+            let store = FlowStore::open(&flow_root).map_err(map_error)?;
+            require_workflow(&flow_root, &workflow_id)?;
+            store
+                .workflow_storage_delete(&workflow_id, &key)
+                .map_err(map_error)?;
+            let entries = store
+                .workflow_storage_entries(&workflow_id)
+                .map_err(map_error)?;
+            Ok(workflow_storage_payload(&workflow_id, entries))
+        })
+        .await
+    }
+
+    async fn workflow_storage_clear(
+        &self,
+        workflow_id: String,
+    ) -> ManagerResult<WorkflowStoragePayload> {
+        let flow_root = self.flow_root();
+        self.run_blocking("workflow storage clear", move || {
+            let store = FlowStore::open(&flow_root).map_err(map_error)?;
+            require_workflow(&flow_root, &workflow_id)?;
+            store
+                .workflow_storage_clear(&workflow_id)
+                .map_err(map_error)?;
+            let entries = store
+                .workflow_storage_entries(&workflow_id)
+                .map_err(map_error)?;
+            Ok(workflow_storage_payload(&workflow_id, entries))
+        })
+        .await
+    }
+
     async fn mcp_tiers(&self) -> ManagerResult<McpTiers> {
         let root = self.runtime.workspace().root().to_path_buf();
         self.run_blocking("read mcp tiers", move || {
@@ -3029,6 +3657,110 @@ impl MitmManager {
     fn flow_root(&self) -> std::path::PathBuf {
         self.runtime.workspace().root().to_path_buf()
     }
+
+    /// Resolve a request-library entry into the replay baseline: the first HAR
+    /// request, with blob-backed bodies read back in (the flow engine's
+    /// baseline convention: base64 postData text decoded to bytes).
+    async fn replay_baseline_from_library(&self, id: &str) -> ManagerResult<ReplayRequestPayload> {
+        let runtime = self.runtime.clone();
+        let id = id.to_owned();
+        self.run_blocking("replay baseline", move || {
+            let store = flow_store(&runtime)?;
+            let entry = store.get_request(&id).map_err(map_error)?.ok_or_else(|| {
+                ManagerError::not_found(format!("request library entry {id} not found"))
+            })?;
+            let har_request = entry
+                .har
+                .log
+                .entries
+                .first()
+                .map(|har_entry| &har_entry.request)
+                .ok_or_else(|| {
+                    ManagerError::bad_request(format!(
+                        "request library entry {id} carries no HAR request"
+                    ))
+                })?;
+            let mut body_text = match &har_request.post_data {
+                Some(post_data) => match (&post_data.text, post_data.encoding.as_deref()) {
+                    (Some(text), Some("base64")) => {
+                        let bytes = BASE64_STANDARD.decode(text).map_err(|error| {
+                            ManagerError::bad_request(format!(
+                                "entry {id} postData base64 decode failed: {error}"
+                            ))
+                        })?;
+                        String::from_utf8_lossy(&bytes).into_owned()
+                    }
+                    (Some(text), _) => text.clone(),
+                    (None, _) => String::new(),
+                },
+                None => String::new(),
+            };
+            // body 落 blob 的条目回填正文；与 flow 引擎同口径（UTF-8 lossy）。
+            if body_text.is_empty()
+                && let Some(bytes) = store.read_request_body(&entry).map_err(map_error)?
+                && !bytes.is_empty()
+            {
+                body_text = String::from_utf8_lossy(&bytes).into_owned();
+            }
+            let body = (!body_text.is_empty()).then_some(ReplayBodyPayload::Text {
+                text: body_text,
+                charset: None,
+            });
+            Ok(ReplayRequestPayload {
+                method: har_request.method.clone(),
+                url: har_request.url.clone(),
+                headers: har_request
+                    .headers
+                    .iter()
+                    .map(|header| (header.name.clone(), header.value.clone()))
+                    .collect(),
+                body,
+            })
+        })
+        .await
+    }
+
+    /// Apply wire overrides on top of a resolved replay baseline: method/url
+    /// replacement, removed-then-applied headers (case-insensitive names),
+    /// and body text replacement (charset stays UTF-8).
+    fn apply_replay_override(
+        mut payload: ReplayRequestPayload,
+        over: ReplayOverridePayload,
+    ) -> ReplayRequestPayload {
+        if let Some(method) = over.method {
+            payload.method = method;
+        }
+        if let Some(url) = over.url {
+            payload.url = url;
+        }
+        if !over.removed_headers.is_empty() {
+            let removed: BTreeSet<String> = over
+                .removed_headers
+                .iter()
+                .map(|name| name.to_ascii_lowercase())
+                .collect();
+            payload
+                .headers
+                .retain(|(name, _)| !removed.contains(&name.to_ascii_lowercase()));
+        }
+        for (name, value) in over.headers {
+            match payload
+                .headers
+                .iter_mut()
+                .find(|(existing, _)| existing.eq_ignore_ascii_case(&name))
+            {
+                Some(slot) => slot.1 = value,
+                None => payload.headers.push((name, value)),
+            }
+        }
+        if let Some(body) = over.body {
+            payload.body = Some(ReplayBodyPayload::Text {
+                text: body,
+                charset: None,
+            });
+        }
+        payload
+    }
 }
 
 fn require_flow_project(flow_root: &std::path::Path, id: &str) -> ManagerResult<Project> {
@@ -3045,6 +3777,24 @@ fn require_workflow(flow_root: &std::path::Path, id: &str) -> ManagerResult<Work
         .ok_or_else(|| ManagerError::not_found(format!("workflow {id} not found")))
 }
 
+/// 把持久层的键 -> 条目表转成读响应载荷（条目按键字典序，BTreeMap 天然有序）。
+fn workflow_storage_payload(
+    workflow_id: &str,
+    entries: BTreeMap<String, WorkflowStorageEntry>,
+) -> WorkflowStoragePayload {
+    WorkflowStoragePayload {
+        workflow_id: workflow_id.to_owned(),
+        entries: entries
+            .into_iter()
+            .map(|(key, entry)| WorkflowStorageEntryDto {
+                key,
+                value: entry.value,
+                updated_at: entry.updated_at,
+            })
+            .collect(),
+    }
+}
+
 /// Apply `limit`/`offset` pagination to an already sorted list.
 fn paginate<T>(items: &mut Vec<T>, query: FlowListQuery) {
     let offset = query.offset.unwrap_or(0).min(items.len());
@@ -3057,6 +3807,16 @@ fn paginate<T>(items: &mut Vec<T>, query: FlowListQuery) {
 fn validation_issue(issue: ValidationIssue) -> WorkflowValidationIssue {
     WorkflowValidationIssue {
         code: issue.code.as_str().to_owned(),
+        severity: issue.severity.as_str().to_owned(),
+        message: issue.message,
+        node_ids: issue.node_ids,
+    }
+}
+
+fn deep_issue(issue: DeepValidationIssue) -> WorkflowValidationIssue {
+    WorkflowValidationIssue {
+        code: issue.code.to_owned(),
+        severity: issue.severity.as_str().to_owned(),
         message: issue.message,
         node_ids: issue.node_ids,
     }
@@ -3081,6 +3841,315 @@ fn map_flow_error(error: anyhow::Error) -> ManagerError {
     }
 }
 
+/// RFC 7386 JSON Merge Patch：对象递归合并、null 删键、数组/标量整体替换
+/// （patch 为对象时逐键处理；其余形态整体替换——调用方在 DTO 层已保证
+/// config 为对象形态）。
+fn json_merge_patch(target: &mut JsonValue, patch: &JsonValue) {
+    match (target, patch) {
+        (JsonValue::Object(target_map), JsonValue::Object(patch_map)) => {
+            for (key, value) in patch_map {
+                if value.is_null() {
+                    target_map.remove(key);
+                } else {
+                    json_merge_patch(
+                        target_map.entry(key.clone()).or_insert(JsonValue::Null),
+                        value,
+                    );
+                }
+            }
+        }
+        (target, patch) => *target = patch.clone(),
+    }
+}
+
+/// 一次工作流图补丁的应用结果：改写后的节点/边（保持画布次序）与逐类操作
+/// 实际生效的 id 清单。
+#[derive(Debug)]
+struct WorkflowPatchApplied {
+    nodes: Vec<WorkflowNode>,
+    edges: Vec<WorkflowEdge>,
+    added_node_ids: Vec<String>,
+    updated_node_ids: Vec<String>,
+    removed_node_ids: Vec<String>,
+    added_edge_ids: Vec<String>,
+    updated_edge_ids: Vec<String>,
+    removed_edge_ids: Vec<String>,
+}
+
+/// 应用工作流图补丁（纯函数，不落盘）：全部操作按 id 生效，任一 id 冲突/
+/// 缺失/字段非法都以 bad_request 整体拒绝（不部分应用）；节点/边在 JSON 层
+/// 改写后转回 typed 文档。removeNodes 级联删除关联边；removeEdges 对已被
+/// 级联删除的边幂等通过。
+fn apply_workflow_patch(
+    workflow: &Workflow,
+    request: &WorkflowPatchRequest,
+) -> ManagerResult<WorkflowPatchApplied> {
+    if request.add_nodes.is_empty()
+        && request.update_nodes.is_empty()
+        && request.remove_nodes.is_empty()
+        && request.add_edges.is_empty()
+        && request.update_edges.is_empty()
+        && request.remove_edges.is_empty()
+    {
+        return Err(ManagerError::bad_request(
+            "workflow patch requires at least one of addNodes/updateNodes/removeNodes/addEdges/updateEdges/removeEdges",
+        ));
+    }
+    // JSON 层有序表：保留画布节点/边次序，改动原位生效。
+    let mut nodes: Vec<(String, JsonValue)> = workflow
+        .nodes
+        .iter()
+        .map(|node| {
+            serde_json::to_value(node)
+                .map(|value| (node.id.clone(), value))
+                .map_err(|error| map_flow_error(error.into()))
+        })
+        .collect::<Result<_, ManagerError>>()?;
+    let mut edges: Vec<(String, JsonValue)> = workflow
+        .edges
+        .iter()
+        .map(|edge| {
+            serde_json::to_value(edge)
+                .map(|value| (edge.id.clone(), value))
+                .map_err(|error| map_flow_error(error.into()))
+        })
+        .collect::<Result<_, ManagerError>>()?;
+
+    let mut added_node_ids = Vec::new();
+    let mut updated_node_ids = Vec::new();
+    let mut removed_node_ids = Vec::new();
+    let mut added_edge_ids = Vec::new();
+    let mut updated_edge_ids = Vec::new();
+    let mut removed_edge_ids = Vec::new();
+
+    // addNodes：id 不得与现有节点或本请求内重复。
+    for node in &request.add_nodes {
+        if nodes.iter().any(|(id, _)| id == &node.id) || added_node_ids.contains(&node.id) {
+            return Err(ManagerError::bad_request(format!(
+                "workflow patch adds an existing node id: {}",
+                node.id
+            )));
+        }
+        let value = serde_json::to_value(node).map_err(|error| map_flow_error(error.into()))?;
+        added_node_ids.push(node.id.clone());
+        nodes.push((node.id.clone(), value));
+    }
+
+    // updateNodes：id 必须存在；仅接受已知字段——position 整体替换，
+    // label/refId 替换（null 清除），config 走 JSON Merge Patch。
+    for patch in &request.update_nodes {
+        let object = patch.as_object().ok_or_else(|| {
+            ManagerError::bad_request("workflow patch updateNodes entries must be objects")
+        })?;
+        let id = object
+            .get("id")
+            .and_then(JsonValue::as_str)
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| {
+                ManagerError::bad_request(
+                    "workflow patch updateNodes entries require a non-empty string id",
+                )
+            })?;
+        let position = nodes
+            .iter()
+            .position(|(existing, _)| existing == id)
+            .ok_or_else(|| {
+                ManagerError::bad_request(format!("workflow patch updates a missing node id: {id}"))
+            })?;
+        for (key, value) in object {
+            let entry = nodes[position]
+                .1
+                .as_object_mut()
+                .expect("serialized node stays an object");
+            match key.as_str() {
+                "id" => {}
+                "position" | "label" | "refId" => {
+                    if value.is_null() {
+                        entry.remove(key);
+                    } else {
+                        entry.insert(key.clone(), value.clone());
+                    }
+                }
+                "config" => {
+                    json_merge_patch(entry.entry("config").or_insert(JsonValue::Null), value)
+                }
+                other => {
+                    return Err(ManagerError::bad_request(format!(
+                        "workflow patch updateNodes entry has an unknown field: {other} (allowed: id, position, label, refId, config)"
+                    )));
+                }
+            }
+        }
+        updated_node_ids.push(id.to_owned());
+    }
+
+    // removeNodes：id 必须存在；级联删除关联边（记录被删的边 id）。
+    for id in &request.remove_nodes {
+        let before = nodes.len();
+        nodes.retain(|(existing, _)| existing != id);
+        if nodes.len() == before {
+            return Err(ManagerError::bad_request(format!(
+                "workflow patch removes a missing node id: {id}"
+            )));
+        }
+        removed_node_ids.push(id.clone());
+    }
+    if !removed_node_ids.is_empty() {
+        edges.retain(|(_, edge)| {
+            let source = edge.get("source").and_then(JsonValue::as_str);
+            let target = edge.get("target").and_then(JsonValue::as_str);
+            let touches_removed = removed_node_ids
+                .iter()
+                .any(|id| Some(id.as_str()) == source || Some(id.as_str()) == target);
+            if touches_removed {
+                if let Some(edge_id) = edge.get("id").and_then(JsonValue::as_str) {
+                    removed_edge_ids.push(edge_id.to_owned());
+                }
+                false
+            } else {
+                true
+            }
+        });
+    }
+
+    // addEdges：id 唯一（可复用刚被级联删除的 id）；source/target 必须指向
+    // 补丁应用后的现存节点。
+    for edge in &request.add_edges {
+        if edges.iter().any(|(id, _)| id == &edge.id) || added_edge_ids.contains(&edge.id) {
+            return Err(ManagerError::bad_request(format!(
+                "workflow patch adds an existing edge id: {}",
+                edge.id
+            )));
+        }
+        if edge.source.is_empty() || edge.target.is_empty() {
+            return Err(ManagerError::bad_request(format!(
+                "workflow patch edge {} requires non-empty source and target",
+                edge.id
+            )));
+        }
+        for endpoint in [&edge.source, &edge.target] {
+            if !nodes.iter().any(|(id, _)| id == endpoint) {
+                return Err(ManagerError::bad_request(format!(
+                    "workflow patch edge {} references a missing node id: {}",
+                    edge.id, endpoint
+                )));
+            }
+        }
+        let value = serde_json::to_value(edge).map_err(|error| map_flow_error(error.into()))?;
+        added_edge_ids.push(edge.id.clone());
+        edges.push((edge.id.clone(), value));
+    }
+
+    // updateEdges：id 必须存在（未被本补丁级联删除）；仅接受已知字段——
+    // source/target 必须指向现存节点，sourceHandle 仅接受 true/false/null。
+    for patch in &request.update_edges {
+        let object = patch.as_object().ok_or_else(|| {
+            ManagerError::bad_request("workflow patch updateEdges entries must be objects")
+        })?;
+        let id = object
+            .get("id")
+            .and_then(JsonValue::as_str)
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| {
+                ManagerError::bad_request(
+                    "workflow patch updateEdges entries require a non-empty string id",
+                )
+            })?;
+        let position = edges
+            .iter()
+            .position(|(existing, _)| existing == id)
+            .ok_or_else(|| {
+                if removed_edge_ids.iter().any(|removed| removed == id) {
+                    ManagerError::bad_request(format!(
+                        "workflow patch updates edge {id} after removeNodes cascaded it away"
+                    ))
+                } else {
+                    ManagerError::bad_request(format!(
+                        "workflow patch updates a missing edge id: {id}"
+                    ))
+                }
+            })?;
+        for (key, value) in object {
+            let entry = edges[position]
+                .1
+                .as_object_mut()
+                .expect("serialized edge stays an object");
+            match key.as_str() {
+                "id" => {}
+                "source" | "target" => {
+                    let node_id = value.as_str().filter(|id| !id.is_empty()).ok_or_else(|| {
+                        ManagerError::bad_request(format!(
+                            "workflow patch updateEdges entry field {key} must be a non-empty string"
+                        ))
+                    })?;
+                    if !nodes.iter().any(|(existing, _)| existing == node_id) {
+                        return Err(ManagerError::bad_request(format!(
+                            "workflow patch edge {id} references a missing node id: {node_id}"
+                        )));
+                    }
+                    entry.insert(key.clone(), value.clone());
+                }
+                "sourceHandle" => {
+                    if value.is_null() {
+                        entry.remove(key);
+                    } else if !matches!(value.as_str(), Some("true") | Some("false")) {
+                        return Err(ManagerError::bad_request(
+                            "workflow patch updateEdges entry field sourceHandle must be \"true\", \"false\" or null",
+                        ));
+                    } else {
+                        entry.insert(key.clone(), value.clone());
+                    }
+                }
+                other => {
+                    return Err(ManagerError::bad_request(format!(
+                        "workflow patch updateEdges entry has an unknown field: {other} (allowed: id, source, target, sourceHandle)"
+                    )));
+                }
+            }
+        }
+        updated_edge_ids.push(id.to_owned());
+    }
+
+    // removeEdges：id 必须存在；已被 removeNodes 级联删除的边视为同一删除
+    // （幂等通过，不重复计入清单）。
+    for id in &request.remove_edges {
+        let before = edges.len();
+        edges.retain(|(existing, _)| existing != id);
+        if edges.len() < before {
+            removed_edge_ids.push(id.clone());
+        } else if !removed_edge_ids.contains(id) {
+            return Err(ManagerError::bad_request(format!(
+                "workflow patch removes a missing edge id: {id}"
+            )));
+        }
+    }
+
+    // 转回 typed 文档：应用阶段已保证形状；转换失败按上游形状问题处理。
+    let nodes = nodes
+        .into_iter()
+        .map(|(_, value)| {
+            serde_json::from_value(value).map_err(|error| map_flow_error(error.into()))
+        })
+        .collect::<Result<Vec<WorkflowNode>, ManagerError>>()?;
+    let edges = edges
+        .into_iter()
+        .map(|(_, value)| {
+            serde_json::from_value(value).map_err(|error| map_flow_error(error.into()))
+        })
+        .collect::<Result<Vec<WorkflowEdge>, ManagerError>>()?;
+
+    Ok(WorkflowPatchApplied {
+        nodes,
+        edges,
+        added_node_ids,
+        updated_node_ids,
+        removed_node_ids,
+        added_edge_ids,
+        updated_edge_ids,
+        removed_edge_ids,
+    })
+}
+
 /// Map a run trigger failure to the HTTP error envelope (plan Task 19):
 /// unknown workflow / target session are 404, a missing active session is 409,
 /// an invalid graph is 422, and storage faults stay internal errors. Replays
@@ -3095,6 +4164,23 @@ fn map_trigger_error(error: RunTriggerError) -> ManagerError {
         RunTriggerError::NotValid(_) => ManagerError::new(ErrorCode::WorkflowGraphInvalid, message),
         RunTriggerError::NoSession => ManagerError::conflict(message),
         RunTriggerError::Storage(error) => map_error(error),
+    }
+}
+
+/// Map a render-preview load failure to the HTTP error envelope: unknown
+/// workflow / node are 404, a non-httpReplay node or a missing request
+/// baseline is a 422 graph-data issue, and storage faults stay internal
+/// errors. The messages carry no internal paths.
+fn map_render_preview_load_error(error: RenderPreviewLoadError) -> ManagerError {
+    let message = error.to_string();
+    match error {
+        RenderPreviewLoadError::WorkflowNotFound(_) | RenderPreviewLoadError::NodeNotFound(_) => {
+            ManagerError::not_found(message)
+        }
+        RenderPreviewLoadError::InvalidNode(_) | RenderPreviewLoadError::MissingBaseline(_) => {
+            ManagerError::new(ErrorCode::WorkflowGraphInvalid, message)
+        }
+        RenderPreviewLoadError::Storage(fault) => map_error(fault),
     }
 }
 
@@ -3392,14 +4478,141 @@ mod tests {
 
     use crate::dto::{
         CreateAgentsPresetRequest, DebugFilterScriptRequest, ErrorCode, InterceptorCreateRequest,
-        LogIdsRequest, LogViewItem, LogViewsRequest, ReplaceSessionInterceptorsRequest,
-        ReplaceSessionViewRequest, ScriptRequest, SessionInterceptorInput, SessionViewInput,
-        UpdateAgentsPresetRequest, UpdateScriptRequest,
+        LogIdsRequest, LogSearchRequest, LogViewItem, LogViewsRequest,
+        ReplaceSessionInterceptorsRequest, ReplaceSessionViewRequest, ScriptRequest,
+        SessionInterceptorInput, SessionViewInput, UpdateAgentsPresetRequest, UpdateScriptRequest,
     };
 
     use super::{
         MAX_BLOCKING_MANAGEMENT_TASKS, MitmManager, PreparedFilter, ProxyCrabManager, status_text,
     };
+
+    /// RFC 7386 合并语义：对象递归合并、null 删键、数组/标量整体替换。
+    #[test]
+    fn json_merge_patch_follows_rfc_7386() {
+        use serde_json::json;
+        let mut target = json!({ "a": 1, "b": { "x": 1, "y": 2 }, "c": [1, 2] });
+        super::json_merge_patch(
+            &mut target,
+            &json!({ "a": null, "b": { "y": null, "z": 3 }, "c": [9] }),
+        );
+        assert_eq!(target, json!({ "b": { "x": 1, "z": 3 }, "c": [9] }));
+        // 非 object 的 patch 整体替换（RFC 对象键之外的价值语义）。
+        super::json_merge_patch(&mut target, &json!("scalar"));
+        assert_eq!(target, json!("scalar"));
+    }
+
+    /// 图补丁纯函数：merge-patch 只动目标片段、次序保留、级联删边、
+    /// 幂等 removeEdges；id 冲突/缺失整体拒绝。
+    #[test]
+    fn apply_workflow_patch_merges_cascades_and_rejects_conflicts() {
+        use crate::dto::WorkflowPatchRequest;
+        use proxy_crab_mitm::flow::model::{
+            NodeConfig, Position, WorkflowEdge, WorkflowNode, WorkflowNodeType,
+        };
+        use serde_json::json;
+
+        let node = |id: &str, node_type| WorkflowNode {
+            id: id.to_owned(),
+            node_type,
+            position: Position { x: 0.0, y: 0.0 },
+            config: NodeConfig::default(),
+            label: None,
+            ref_id: None,
+        };
+        let edge = |id: &str, source: &str, target: &str| WorkflowEdge {
+            id: id.to_owned(),
+            source: source.to_owned(),
+            target: target.to_owned(),
+            source_handle: None,
+        };
+        let workflow = proxy_crab_mitm::flow::model::Workflow {
+            id: "wf".into(),
+            project_id: "p".into(),
+            name: "n".into(),
+            description: String::new(),
+            nodes: vec![
+                node("s", WorkflowNodeType::Start),
+                // d1 带初始 config：供尾部「源文档未被就地改动」断言对照。
+                WorkflowNode {
+                    config: NodeConfig {
+                        duration_ms: Some(120),
+                        ..NodeConfig::default()
+                    },
+                    ..node("d1", WorkflowNodeType::Delay)
+                },
+                node("d2", WorkflowNodeType::Delay),
+            ],
+            edges: vec![edge("e1", "s", "d1"), edge("e2", "d1", "d2")],
+            variables: Default::default(),
+            secret_variables: Default::default(),
+            schema_version: 1,
+            created_at: 0,
+            updated_at: 0,
+        };
+        let parse = |value: serde_json::Value| {
+            serde_json::from_value::<WorkflowPatchRequest>(value).unwrap()
+        };
+
+        // 冲突整体拒绝：add 重复 id / update 缺失 id / removeNodes 级联后
+        // 再 update 该边被拒。
+        for (request, expected) in [
+            (
+                parse(
+                    json!({"addNodes":[{"id":"d1","type":"delay","position":{"x":0.0,"y":0.0},"config":{}}]}),
+                ),
+                "adds an existing node id",
+            ),
+            (
+                parse(json!({"updateNodes":[{"id":"ghost","label":"x"}]})),
+                "updates a missing node id",
+            ),
+            (
+                parse(json!({"addEdges":[{"id":"e1","source":"s","target":"d1"}]})),
+                "adds an existing edge id",
+            ),
+            (
+                parse(json!({"addEdges":[{"id":"e9","source":"ghost","target":"d1"}]})),
+                "references a missing node id",
+            ),
+        ] {
+            let error = super::apply_workflow_patch(&workflow, &request).unwrap_err();
+            assert!(error.message.contains(expected), "{error:?}");
+        }
+
+        // 合并/重接/级联：改 d1 config、label 置值；removeNodes d1 级联删
+        // e1（s→d1）与 e2（d1→d2）两条关联边；addEdges 复用 e2 的 id 重接为
+        // s→d2（实现约定：updateEdges 只作用于存活的边，被级联删除的边用
+        // addEdges 复用 id 重接）。
+        let request = parse(json!({
+            "updateNodes": [{ "id": "d1", "label": "renamed", "config": { "durationMs": 250 } }],
+            "removeNodes": ["d1"],
+            "addEdges": [{ "id": "e2", "source": "s", "target": "d2" }],
+        }));
+        let applied = super::apply_workflow_patch(&workflow, &request).unwrap();
+        assert_eq!(applied.updated_node_ids, vec!["d1"]);
+        assert_eq!(applied.removed_node_ids, vec!["d1"]);
+        assert_eq!(applied.added_edge_ids, vec!["e2"]);
+        assert_eq!(applied.updated_edge_ids, Vec::<String>::new());
+        assert_eq!(applied.removed_edge_ids, vec!["e1", "e2"]);
+        // 次序保留：剩余节点仍按画布次序 s → d2。
+        let remaining: Vec<&str> = applied.nodes.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(remaining, ["s", "d2"]);
+        let d1 = &workflow.nodes[1];
+        assert_eq!(d1.config.duration_ms, Some(120));
+        // 源文档未被就地改动（纯函数）。
+        assert_eq!(workflow.nodes[1].label, None);
+
+        // removeEdges 幂等：级联已删的 e1 再显式删除不报错、不重复计入；
+        // e2（d1→d2）随 removeNodes d1 一并级联删除。
+        let request = parse(json!({ "removeNodes": ["d1"], "removeEdges": ["e1"] }));
+        let applied = super::apply_workflow_patch(&workflow, &request).unwrap();
+        assert_eq!(applied.removed_edge_ids, vec!["e1", "e2"]);
+        // 未被级联覆盖的缺失边仍拒绝。
+        let request = parse(json!({ "removeEdges": ["ghost"] }));
+        let error = super::apply_workflow_patch(&workflow, &request).unwrap_err();
+        assert!(error.message.contains("removes a missing edge id"));
+    }
 
     #[tokio::test]
     async fn websocket_reads_apply_policy_and_never_expose_containers() {
@@ -3837,6 +5050,182 @@ mod tests {
                 min_id: Some(0),
                 max_id: None,
                 limit: None,
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(invalid.code, ErrorCode::BadRequest);
+    }
+
+    #[tokio::test]
+    async fn log_search_composes_predicates_and_echoes_the_session() {
+        let app_data = tempdir().unwrap();
+        let runtime = ProxyCrab::open(app_data.path(), Arc::new(LogBuffer::default())).unwrap();
+        let session = runtime.create_session(NewSession::default()).unwrap();
+        let store = CaptureStore::open(session.id, runtime.workspace().root()).unwrap();
+        store
+            .begin("127.0.0.1", &request("first"), "request")
+            .unwrap();
+        store
+            .begin("127.0.0.1", &request("second"), "request")
+            .unwrap();
+        let mut third = request("third");
+        third.method = "POST".into();
+        third.uri = "http://api.example.com/v1/third".into();
+        store.begin("127.0.0.1", &third, "request").unwrap();
+        let manager = MitmManager::new(runtime);
+
+        // host + path AND 组合只命中第三条；响应回显解析后的 session。
+        let result = manager
+            .log_search(LogSearchRequest {
+                session_id: Some(session.id),
+                host: Some("api.example.com".into()),
+                path: Some("/v1".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(result.session_id, session.id);
+        assert_eq!(result.matches.len(), 1);
+        assert_eq!(result.matches[0].method, "POST");
+        // begin() 只建请求侧：在途 capture 的 code 为 "..."。
+        assert_eq!(result.matches[0].code, "...");
+        assert!(result.matches[0].in_progress);
+
+        // method 大小写不敏感；status "..." 命中全部在途，"200" 无命中。
+        let post = manager
+            .log_search(LogSearchRequest {
+                session_id: Some(session.id),
+                method: Some("post".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(post.matches.len(), 1);
+        let pending = manager
+            .log_search(LogSearchRequest {
+                session_id: Some(session.id),
+                status: Some("...".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(pending.matches.len(), 3);
+        let ok200 = manager
+            .log_search(LogSearchRequest {
+                session_id: Some(session.id),
+                status: Some("200".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(ok200.matches.is_empty());
+
+        // 空字符串谓词按缺省忽略，不退化为「匹配一切」之外的特殊语义。
+        let empty_keyword = manager
+            .log_search(LogSearchRequest {
+                session_id: Some(session.id),
+                keyword: Some(String::new()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(empty_keyword.matches.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn log_search_paginates_with_truncation_cursor() {
+        let app_data = tempdir().unwrap();
+        let runtime = ProxyCrab::open(app_data.path(), Arc::new(LogBuffer::default())).unwrap();
+        let session = runtime.create_session(NewSession::default()).unwrap();
+        let store = CaptureStore::open(session.id, runtime.workspace().root()).unwrap();
+        let first = store
+            .begin("127.0.0.1", &request("first"), "request")
+            .unwrap();
+        let second = store
+            .begin("127.0.0.1", &request("second"), "request")
+            .unwrap();
+        let third = store
+            .begin("127.0.0.1", &request("third"), "request")
+            .unwrap();
+        let manager = MitmManager::new(runtime);
+
+        // 默认降序：limit=2 截断并给出游标（独占边界，续页不重复）。
+        let page = manager
+            .log_search(LogSearchRequest {
+                session_id: Some(session.id),
+                limit: Some(2),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(page.truncated);
+        assert_eq!(page.matches.len(), 2);
+        assert_eq!(page.matches[0].id, third);
+        assert_eq!(page.matches[1].id, second);
+        let cursor = page.next_cursor.unwrap();
+        assert_eq!(cursor, second);
+        let rest = manager
+            .log_search(LogSearchRequest {
+                session_id: Some(session.id),
+                limit: Some(2),
+                max_id: Some(cursor),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(!rest.truncated);
+        assert_eq!(rest.matches.len(), 1);
+        assert_eq!(rest.matches[0].id, first);
+
+        // 只有 min_id 时按升序扫描。
+        let ascending = manager
+            .log_search(LogSearchRequest {
+                session_id: Some(session.id),
+                min_id: Some(first),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(!ascending.truncated);
+        let ids: Vec<u64> = ascending.matches.iter().map(|hit| hit.id).collect();
+        assert_eq!(ids, vec![second, third]);
+    }
+
+    #[tokio::test]
+    async fn log_search_supports_regex_and_rejects_invalid_patterns() {
+        let app_data = tempdir().unwrap();
+        let runtime = ProxyCrab::open(app_data.path(), Arc::new(LogBuffer::default())).unwrap();
+        let session = runtime.create_session(NewSession::default()).unwrap();
+        let store = CaptureStore::open(session.id, runtime.workspace().root()).unwrap();
+        store
+            .begin("127.0.0.1", &request("first"), "request")
+            .unwrap();
+        store
+            .begin("127.0.0.1", &request("second"), "request")
+            .unwrap();
+        store
+            .begin("127.0.0.1", &request("third"), "request")
+            .unwrap();
+        let manager = MitmManager::new(runtime);
+
+        let matched = manager
+            .log_search(LogSearchRequest {
+                session_id: Some(session.id),
+                path: Some("/(first|third)".into()),
+                regex: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let ids: Vec<u64> = matched.matches.iter().map(|hit| hit.id).collect();
+        assert_eq!(ids.len(), 2);
+
+        let invalid = manager
+            .log_search(LogSearchRequest {
+                session_id: Some(session.id),
+                path: Some("(".into()),
+                regex: true,
+                ..Default::default()
             })
             .await
             .unwrap_err();

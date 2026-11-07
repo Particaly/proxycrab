@@ -8,6 +8,7 @@
 
 mod flow_e2e {
     use std::{
+        collections::BTreeMap,
         path::Path,
         sync::{Arc, Mutex},
         time::Duration,
@@ -24,7 +25,7 @@ mod flow_e2e {
             },
             request_library::CapturedRequest,
             run::{FlowRunEvent, FlowRunManager},
-            store::{FlowStore, generate_flow_id},
+            store::{EnvVariableSet, FlowStore, generate_flow_id},
         },
         log_buffer::LogBuffer,
         model::{BodySourceType, HeaderValues, NewSession, RequestData, ResponseData},
@@ -321,7 +322,7 @@ mod flow_e2e {
 
         // 阶段三：触发运行，建单即返回 running 记录。
         let mut rx = manager.subscribe_events();
-        let record = manager.trigger(&wf.id, Some(session)).await.unwrap();
+        let record = manager.trigger(&wf.id, Some(session), None).await.unwrap();
         assert_eq!(record.status, "running");
         assert_eq!(record.trigger, "manual");
         assert_eq!(record.session_id, Some(session));
@@ -419,6 +420,116 @@ mod flow_e2e {
         assert!(targets[1].contains("/round-i0"), "targets: {targets:?}");
         assert!(targets[2].contains("/round-i1"), "targets: {targets:?}");
         drop(targets);
+        upstream.abort();
+    }
+
+    /// 脚本 env 写回的掩码口径（显式键级标记）：激活集合 secret 表内的键
+    /// （token）写回值在 checkpoint 里掩码；普通业务键（applyId）保持明文
+    /// 可查——不做键名/值模式匹配。落库侧同口径双表路由（secret 键回
+    /// secret 表、新键落普通表）。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn script_write_back_masks_only_explicit_secret_keys() {
+        let (root, _runtime, manager, session) = setup().await;
+
+        // 激活集合：token 在 secret 表（显式标记），无普通表项。
+        let store = FlowStore::open(root.path()).unwrap();
+        store
+            .save_env_set(&EnvVariableSet {
+                id: "env-e2e".into(),
+                name: "e2e".into(),
+                values: BTreeMap::new(),
+                secret_values: BTreeMap::from([("token".into(), "seed-token".into())]),
+                created_at: 1,
+                updated_at: 1,
+            })
+            .unwrap();
+        store.set_active_env_set(Some("env-e2e")).unwrap();
+
+        // 请求库条目（httpReplay 基线）+ 本地上游。
+        let captures = CaptureStore::open(session, root.path()).unwrap();
+        let capture_id = begin(
+            &captures,
+            "GET",
+            "https://api.example.com/v1/login",
+            "HTTP/1.1",
+        );
+        complete_ok(&captures, capture_id);
+        let entry = store
+            .ingest_capture(&captured(&captures, capture_id), None, &[])
+            .unwrap();
+
+        let (upstream_port, _targets, upstream) = json_upstream(r#"{"ok":true}"#).await;
+        let upstream_base = format!("http://127.0.0.1:{upstream_port}");
+        // post 脚本写回 secret 键 + 业务键，并在输出带出两值供掩码断言。
+        // 值经拼接构造：脚本源码（图快照）不携带完整字面量。
+        let post_script = r#"
+env.token = "super-" + "token-v1";
+env.applyId = "A2024-" + "001";
+return { note: "token=" + env.token + " applyId=" + env.applyId };
+"#;
+        let wf = workflow(
+            vec![
+                node("s", WorkflowNodeType::Start, NodeConfig::default()),
+                node(
+                    "r",
+                    WorkflowNodeType::HttpReplay,
+                    NodeConfig {
+                        request_id: Some(entry.id.clone()),
+                        override_: Some(RequestOverride {
+                            url: Some(format!("{upstream_base}/v1/login")),
+                            ..RequestOverride::default()
+                        }),
+                        post_process: Some(post_script.into()),
+                        ..NodeConfig::default()
+                    },
+                ),
+            ],
+            vec![edge("e1", "s", "r")],
+        );
+        put_workflow(root.path(), &wf);
+
+        // 触发运行并等待终态。
+        let mut rx = manager.subscribe_events();
+        let record = manager.trigger(&wf.id, Some(session), None).await.unwrap();
+        collect_until_finished(&mut rx).await;
+
+        // checkpoint：post 脚本返回值即节点 output——secret 键写回值掩码，
+        // 业务键写回值明文可见。
+        let detail = manager.get_run_detail(&record.id).await.unwrap().unwrap();
+        assert_eq!(
+            detail.run.status, "success",
+            "run error: {:?}",
+            detail.run.error
+        );
+        let replay_output = detail
+            .node_runs
+            .iter()
+            .find(|checkpoint| checkpoint.node_id == "r")
+            .expect("replay checkpoint")
+            .output
+            .as_ref()
+            .expect("post script output");
+        assert_eq!(
+            replay_output["note"],
+            json!("token=****** applyId=A2024-001"),
+            "output: {replay_output}"
+        );
+        // 全量记录（checkpoint + 图快照）不落 secret 写回明文。
+        let detail_json = serde_json::to_string(&detail).unwrap();
+        assert!(!detail_json.contains("super-token-v1"), "{detail_json}");
+
+        // 落库路由：secret 键写回更新回 secret 表（运行快照语义），业务键
+        // 落普通表。
+        let sets = store.list_env_sets().unwrap();
+        let set = sets.iter().find(|set| set.id == "env-e2e").unwrap();
+        assert_eq!(
+            set.secret_values.get("token").map(String::as_str),
+            Some("super-token-v1")
+        );
+        assert_eq!(
+            set.values.get("applyId").map(String::as_str),
+            Some("A2024-001")
+        );
         upstream.abort();
     }
 }

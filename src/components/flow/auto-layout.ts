@@ -10,8 +10,12 @@ import { FLOW_NODE_SIZE } from "./graph-model";
  *   - 环兜底：环上节点永远入度为 0 不可达，BFS 排空后按「注册顺序」（节点
  *     数组顺序）取第一个未分层节点强制入队，保证 O(V+E) 内必然终止、不死
  *     循环，且同输入结果确定；
- *   - 坐标：层 = 列（从左到右，层间距恒定），同层节点按数组顺序自上而下
- *     垂直均布（行距恒定）。
+ *   - 坐标（蛇形铺排）：层 = 列，列按「带」分组——每带最多
+ *     AUTO_LAYOUT_BAND_COLUMNS 列，超出后向下折行；偶数带从左到右、奇数带
+ *     从右到左往返铺排（boustrophedon），避免长串行链拉成一条超宽直线。
+ *     列位固定在 BAND_COLUMNS 列网格上，折行处（带尾列 → 下一带头列）x
+ *     相同、连线竖直短距。带内同层节点按数组顺序自上而下垂直均布（行距
+ *     恒定），带与带之间的垂直间距 = 最高列高度 + 带间距。
  *
  * 容错：连线端点不在节点集合（悬空边）与自环边不参与分层；全部输入节点
  * 都会得到坐标。无 Vue / store 依赖，vitest node 环境可直接单测。
@@ -22,6 +26,12 @@ export const AUTO_LAYOUT_COLUMN_GAP = 100;
 
 /** 同层相邻两节点的垂直间距（像素）。 */
 export const AUTO_LAYOUT_ROW_GAP = 40;
+
+/** 蛇形铺排：每条横向带最多容纳的列数（层数），超出后向下折行反向铺排。 */
+export const AUTO_LAYOUT_BAND_COLUMNS = 6;
+
+/** 蛇形带与带之间的垂直间距（像素，不含带内最高列自身高度）。 */
+export const AUTO_LAYOUT_BAND_GAP = 80;
 
 /**
  * 计算自动布局坐标：按拓扑层级分层，返回每个节点的左上角坐标。
@@ -102,13 +112,32 @@ export function autoLayout(
   }
 
   const positions: Record<string, { x: number; y: number }> = {};
+  const COLUMN_PITCH = FLOW_NODE_SIZE.width + AUTO_LAYOUT_COLUMN_GAP;
+  const ROW_PITCH = FLOW_NODE_SIZE.height + AUTO_LAYOUT_ROW_GAP;
+  // 列按蛇形带分组：每带最多 AUTO_LAYOUT_BAND_COLUMNS 列（列号连续，带号
+  // 不跳档，bands 无稀疏空洞）
+  const bands: string[][][] = [];
   columns.forEach((column, columnIndex) => {
-    column.forEach((id, rowIndex) => {
-      positions[id] = {
-        x: columnIndex * (FLOW_NODE_SIZE.width + AUTO_LAYOUT_COLUMN_GAP),
-        y: rowIndex * (FLOW_NODE_SIZE.height + AUTO_LAYOUT_ROW_GAP),
-      };
+    const band = Math.floor(columnIndex / AUTO_LAYOUT_BAND_COLUMNS);
+    (bands[band] ??= []).push(column);
+  });
+
+  let bandTop = 0;
+  bands.forEach((bandColumns, bandIndex) => {
+    // 偶数带从左到右、奇数带从右到左；列位固定在 BAND_COLUMNS 列网格上，
+    // 折行处（带尾列 → 下一带头列）槽位相同，连线竖直不横穿画布。
+    bandColumns.forEach((column, indexInBand) => {
+      const slot = bandIndex % 2 === 0 ? indexInBand : AUTO_LAYOUT_BAND_COLUMNS - 1 - indexInBand;
+      column.forEach((id, rowIndex) => {
+        positions[id] = {
+          x: slot * COLUMN_PITCH,
+          y: bandTop + rowIndex * ROW_PITCH,
+        };
+      });
     });
+    // 下一带顶 = 本带顶 + 最高列实占高度（行数 - 1）* 行距 + 节点高 + 带间距
+    const bandRows = Math.max(...bandColumns.map((column) => column.length));
+    bandTop += (bandRows - 1) * ROW_PITCH + FLOW_NODE_SIZE.height + AUTO_LAYOUT_BAND_GAP;
   });
   return positions;
 }

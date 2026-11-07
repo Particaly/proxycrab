@@ -50,6 +50,11 @@ pub struct FlowRunRecord {
     /// [`super::run`], which prechecks the target).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<u64>,
+    /// Entry start node the run began from. `Some` for every run created by
+    /// [`super::run`] (single-start runs resolve to their only start node);
+    /// `None` only for legacy rows persisted before multi-entry workflows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_node_id: Option<String>,
     pub started_at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<u64>,
@@ -59,6 +64,13 @@ pub struct FlowRunRecord {
     /// skeleton when over the size cap — see `super::run`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub graph_snapshot: Option<JsonValue>,
+}
+
+/// Whether a run status is terminal (`success | failed | cancelled |
+/// interrupted`; the same literal set as the archived contract and the
+/// `run-wait.mjs` skill script). `workflow_run_wait` polls until this holds.
+pub fn flow_run_status_is_terminal(status: &str) -> bool {
+    matches!(status, "success" | "failed" | "cancelled" | "interrupted")
 }
 
 /// One node checkpoint (the `flow_node_runs` row): the last execution snapshot
@@ -132,6 +144,7 @@ impl RunStore {
                 trigger_kind   TEXT NOT NULL DEFAULT 'manual',
                 status         TEXT NOT NULL,
                 session_id     INTEGER,
+                start_node_id  TEXT,
                 started_at     INTEGER NOT NULL,
                 finished_at    INTEGER,
                 error          TEXT,
@@ -153,6 +166,11 @@ impl RunStore {
                 PRIMARY KEY (run_id, node_id)
              );",
         )?;
+        // 迁移（多入口工作流）：建表语句之外的旧库补 start_node_id 列
+        // （守卫式幂等；老行保持 NULL = 运行记录缺省缺入口）。
+        if !crate::migration::table_has_column(&connection, "flow_runs", "start_node_id")? {
+            connection.execute("ALTER TABLE flow_runs ADD COLUMN start_node_id TEXT", [])?;
+        }
         Ok(Self {
             connection: Mutex::new(connection),
         })
@@ -166,8 +184,9 @@ impl RunStore {
     pub fn insert_run(&self, run: &FlowRunRecord) -> Result<()> {
         self.connection().execute(
             "INSERT INTO flow_runs (id, workflow_id, workflow_name, trigger_kind, status,
-                                    session_id, started_at, finished_at, error, graph_snapshot)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                                    session_id, start_node_id, started_at, finished_at,
+                                    error, graph_snapshot)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 run.id,
                 run.workflow_id,
@@ -175,6 +194,7 @@ impl RunStore {
                 run.trigger,
                 run.status,
                 run.session_id.map(|id| id as i64),
+                run.start_node_id,
                 run.started_at as i64,
                 run.finished_at.map(|value| value as i64),
                 run.error,
@@ -254,7 +274,7 @@ impl RunStore {
             .connection()
             .query_row(
                 "SELECT id, workflow_id, workflow_name, trigger_kind, status, session_id,
-                        started_at, finished_at, error, graph_snapshot
+                        start_node_id, started_at, finished_at, error, graph_snapshot
                  FROM flow_runs WHERE id = ?1",
                 params![run_id],
                 run_from_row,
@@ -296,7 +316,7 @@ impl RunStore {
         )?;
         let mut statement = connection.prepare(
             "SELECT id, workflow_id, workflow_name, trigger_kind, status, session_id,
-                    started_at, finished_at, error, graph_snapshot
+                    start_node_id, started_at, finished_at, error, graph_snapshot
              FROM flow_runs
              WHERE (?1 IS NULL OR workflow_id = ?1) AND (?2 IS NULL OR status = ?2)
              ORDER BY started_at DESC, id DESC
@@ -334,11 +354,12 @@ fn run_from_row(row: &Row<'_>) -> rusqlite::Result<FlowRunRecord> {
         trigger: row.get(3)?,
         status: row.get(4)?,
         session_id: row.get::<_, Option<i64>>(5)?.map(|value| value as u64),
-        started_at: row.get::<_, i64>(6)? as u64,
-        finished_at: row.get::<_, Option<i64>>(7)?.map(|value| value as u64),
-        error: row.get(8)?,
+        start_node_id: row.get(6)?,
+        started_at: row.get::<_, i64>(7)? as u64,
+        finished_at: row.get::<_, Option<i64>>(8)?.map(|value| value as u64),
+        error: row.get(9)?,
         graph_snapshot: row
-            .get::<_, Option<String>>(9)?
+            .get::<_, Option<String>>(10)?
             .and_then(|text| serde_json::from_str(&text).ok()),
     })
 }
@@ -375,6 +396,7 @@ mod tests {
             trigger: "manual".into(),
             status: "running".into(),
             session_id: Some(7),
+            start_node_id: Some("s".into()),
             started_at: 1000,
             finished_at: None,
             error: None,
@@ -430,6 +452,7 @@ mod tests {
         let run = store.get_run("run-1").unwrap().unwrap();
         assert_eq!(run.status, "running");
         assert_eq!(run.session_id, Some(7));
+        assert_eq!(run.start_node_id.as_deref(), Some("s"));
         let nodes = store.get_node_runs("run-1").unwrap();
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].status, "success");

@@ -2,8 +2,8 @@
 //!
 //! 对领域模型图（[`WorkflowNode`]/[`WorkflowEdge`]）做结构性校验，产出问题
 //! 清单；规则与产出顺序对齐归档 ReqFlow `components/flow/graph-validation.ts`
-//! 的 error 级子集。定位：**运行门禁**——校验失败（问题清单非空）在创建运行
-//! 单之前直接判失败（计划 Task 19 的建单前置检查与 Task 11 的 validate API
+//! 的 error 级子集。定位：**运行门禁**——error 级问题非空时在创建运行单
+//! 之前直接判失败（计划 Task 19 的建单前置检查与 Task 11 的 validate API
 //! 共用本模块）；**不是保存门禁**——编辑中的不完整图允许照常落盘（与 ReqFlow
 //! 「校验徽标提示、运行按钮拦截」的分层一致；warning/info 级的画布徽标校验
 //! 由计划 Task 13 的前端移植承担）。
@@ -13,7 +13,9 @@
 //!
 //! 规则清单（issue code）：
 //!   - missing-start    error  无任何开始节点（含空流程：只报本条不重复报）；
-//!   - multiple-start   error  存在多个开始节点（nodeIds 列出全部）；
+//!   - multiple-start   warning 存在多个开始节点（多入口工作流合法；nodeIds
+//!     列出全部。运行时不阻断，但触发必须指定 startNodeId 入口，缺省多 start
+//!     在 run 触发侧判 NotValid）；
 //!   - dangling-edge    error  连线 source/target 指向不存在的节点（每条一条）；
 //!   - sticky-note-edge error  便签节点出现连线（便签纯注释不入执行拓扑、
 //!     不可连线，落盘数据里出现即结构性错误）；
@@ -53,10 +55,29 @@ impl ValidationIssueCode {
     }
 }
 
-/// 一条校验问题（本模块产出的问题均为阻断级）。
+/// 问题严重级：error 阻断运行（建单前清单非空即失败）；warning 仅提示，
+/// 不阻断保存与运行（深度校验 [`crate::flow::validate_deep`] 的提示级产物）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValidationSeverity {
+    Error,
+    Warning,
+}
+
+impl ValidationSeverity {
+    /// 稳定的 wire 字面量（camelCase wire 上的单个小写词）。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::Warning => "warning",
+        }
+    }
+}
+
+/// 一条校验问题（结构规则以 error 级为主；`multiple-start` 为 warning 级）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidationIssue {
     pub code: ValidationIssueCode,
+    pub severity: ValidationSeverity,
     /// 可直接展示的信息（含定位所需的节点标识）。
     pub message: String,
     /// 关联节点 id（定位用；流程级问题为空）。
@@ -64,9 +85,22 @@ pub struct ValidationIssue {
 }
 
 impl ValidationIssue {
+    /// 结构校验问题（恒为 error 级）。
     fn new(code: ValidationIssueCode, message: impl Into<String>, node_ids: Vec<String>) -> Self {
+        Self::with_severity(ValidationSeverity::Error, code, message, node_ids)
+    }
+
+    /// 供深度校验（[`crate::flow::validate_deep`]）构造带严重级的扩展问题：
+    /// 结构 code 恒走 [`ValidationIssue::new`]。
+    pub(crate) fn with_severity(
+        severity: ValidationSeverity,
+        code: ValidationIssueCode,
+        message: impl Into<String>,
+        node_ids: Vec<String>,
+    ) -> Self {
         Self {
             code,
+            severity,
             message: message.into(),
             node_ids,
         }
@@ -97,10 +131,13 @@ pub fn validate_workflow_graph(
             Vec::new(),
         ));
     } else if start_nodes.len() > 1 {
-        issues.push(ValidationIssue::new(
+        // 多 start 已合法（多入口工作流）：降为 warning 提示，不阻断运行；
+        // 入口歧义由 run 触发侧把关（缺省未指定 startNodeId → NotValid）。
+        issues.push(ValidationIssue::with_severity(
+            ValidationSeverity::Warning,
             ValidationIssueCode::MultipleStart,
             format!(
-                "存在 {} 个开始节点，流程只能有一个开始节点",
+                "存在 {} 个开始节点（多入口流程），运行时需指定开始入口",
                 start_nodes.len()
             ),
             start_nodes.iter().map(|node| node.id.clone()).collect(),
@@ -190,9 +227,12 @@ pub fn validate_workflow_graph(
     issues
 }
 
-/// 是否存在阻断运行的问题。本模块产出均为阻断级问题：建单前清单非空即判失败。
+/// 是否存在阻断运行的问题（error 级）：建单前清单非空即判失败；warning 级
+/// （`multiple-start`）仅提示，不阻断。
 pub fn has_blocking_issues(issues: &[ValidationIssue]) -> bool {
-    !issues.is_empty()
+    issues
+        .iter()
+        .any(|issue| issue.severity == ValidationSeverity::Error)
 }
 
 #[cfg(test)]
@@ -256,7 +296,11 @@ mod tests {
         let issues = validate_workflow_graph(&nodes, &[]);
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].code, ValidationIssueCode::MultipleStart);
+        assert_eq!(issues[0].severity, ValidationSeverity::Warning);
+        assert!(issues[0].message.contains("需指定开始入口"));
         assert_eq!(issues[0].node_ids, vec!["s1".to_owned(), "s2".to_owned()]);
+        // 多 start 本身不再阻断运行（入口歧义由 run 触发侧把关）。
+        assert!(!has_blocking_issues(&issues));
     }
 
     #[test]
@@ -348,6 +392,7 @@ mod tests {
                 ValidationIssueCode::RefIdConflict,
             ]
         );
+        // multiple-start 是 warning；其余 error 级问题仍使清单阻断运行。
         assert!(has_blocking_issues(&issues));
     }
 
